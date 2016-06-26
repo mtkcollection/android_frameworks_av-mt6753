@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2007 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -60,6 +65,14 @@ private:
         p->c = (p->y2 - p->y0) >> 1;
     }
     state left, right;
+//<MTK_ADDED
+public:
+    AudioResamplerCubic(int bitDepth, int inChannelCount, int32_t sampleRate) :
+        AudioResampler(bitDepth, inChannelCount, sampleRate, MED_QUALITY) {
+            }
+private:
+    void init(int32_t SrcSampleRate);
+//MTK_ADDED>
 };
 
 // ----------------------------------------------------------------------------

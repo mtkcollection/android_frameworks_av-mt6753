@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright 2013, The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,7 +27,12 @@
 
 #include <media/stagefright/foundation/ADebug.h>
 
+///M: Support portrait-resolution
+#include <cutils/properties.h>
+#include <stdlib.h>
+
 namespace android {
+
 
 // static
 const VideoFormats::config_t VideoFormats::mResolutionTable[][32] = {
@@ -45,8 +55,8 @@ const VideoFormats::config_t VideoFormats::mResolutionTable[][32] = {
         { 1920, 1080, 50, true, 0, 0},
         { 1280, 720, 24, false, 0, 0},
         { 1920, 1080, 24, false, 0, 0},
-        { 0, 0, 0, false, 0, 0},
-        { 0, 0, 0, false, 0, 0},
+        { 720, 1280, 30, false, 0, 0}, //index:17, 720p Portrait WFD support
+        { 1080, 1920, 30, false, 0, 0}, //index: 18, 1080p Portrait WFD support
         { 0, 0, 0, false, 0, 0},
         { 0, 0, 0, false, 0, 0},
         { 0, 0, 0, false, 0, 0},
@@ -194,6 +204,11 @@ void VideoFormats::enableResolutionUpto(
             if (GetConfiguration((ResolutionType)i, j,
                     &width, &height, &fps, &interlaced)
                     && score >= width * height * fps * (!interlaced + 1)) {
+
+                ///M: Support portrait-resolution
+                if (width < height) {
+                    continue;
+                }
                 setResolutionEnabled((ResolutionType)i, j);
                 setProfileLevel((ResolutionType)i, j, profile, level);
             }
@@ -433,7 +448,134 @@ AString VideoFormats::getFormatSpec(bool forM4Message) const {
     //   1 byte framerate-control-support
     //   max-hres (none or 2 byte)
     //   max-vres (none or 2 byte)
+#ifdef MTK_WFD_SINK_SUPPORT
+        if(!forM4Message)
+        {
+            AString sp               = " ";
+            AString comma            = ",";
 
+            AString native           ="00";    // Index to CEA resolution/refresh rates
+            AString prfr_dsp_mod_supt= "00";     // Not supported
+            AString fst_profile      = "02";         // CHP(Constrained High Profile)
+            AString fst_level        = "10";         // H.264 Level 4.2
+            AString fst_cea_support  = "0001FFFF";   /* support all */
+            AString fst_vesa_support = "0F3FFFFF";   /* support all except for 1600x1200p30/p60 & 1920x1200p30/p60 */
+            AString fst_hh_support   = "00000FFF";   /* support all */
+
+            AString fst_latency              = "00";
+            AString fst_min_slice_size       = "0000";
+            AString fst_slice_enc_params     = "0000";
+            /* as per to the WFD testplan, the frame skipping interval should be set to 500 ms */
+            AString fst_frm_rate_ctl_supt    = "13";         // Frame skipping support, max time-interval 2s
+
+            AString fst_max_hres             = "none";
+            AString fst_max_vres             = "none";
+
+            AString fst_misc_params;
+
+            ///M: Support portrait-resolution
+            char portrait[PROPERTY_VALUE_MAX];
+            if (property_get("media.wfd.portrait", portrait, NULL)) {
+                int value = atoi(portrait);
+                if(value == 1){
+                    ALOGI("media.wfd.portrait:%s", portrait);
+                    fst_cea_support = "0007FFFF";    /* support all + portrait */
+                }
+            }
+
+            fst_misc_params.append(fst_cea_support);
+            fst_misc_params.append(sp);
+            fst_misc_params.append(fst_vesa_support);
+            fst_misc_params.append(sp);
+            fst_misc_params.append(fst_hh_support);
+            fst_misc_params.append(sp);
+            fst_misc_params.append(fst_latency);
+            fst_misc_params.append(sp);
+            fst_misc_params.append(fst_min_slice_size);
+            fst_misc_params.append(sp);
+            fst_misc_params.append(fst_slice_enc_params);
+            fst_misc_params.append(sp);
+            fst_misc_params.append(fst_frm_rate_ctl_supt);
+            fst_misc_params.append(sp);
+            fst_misc_params.append(fst_max_hres);
+            fst_misc_params.append(sp);
+            fst_misc_params.append(fst_max_vres);
+
+
+            AString fst_format_list;
+            fst_format_list.append("02 ");
+            fst_format_list.append("10 ");
+            fst_format_list.append(fst_misc_params);
+            fst_format_list.append(comma);
+
+            fst_format_list.append(sp);
+            fst_format_list.append("02 ");
+            fst_format_list.append("08 ");
+            fst_format_list.append(fst_misc_params);
+            fst_format_list.append(comma);
+
+            fst_format_list.append(sp);
+            fst_format_list.append("02 ");
+            fst_format_list.append("04 ");
+            fst_format_list.append(fst_misc_params);
+            fst_format_list.append(comma);
+
+            fst_format_list.append(sp);
+            fst_format_list.append("02 ");
+            fst_format_list.append("02 ");
+            fst_format_list.append(fst_misc_params);
+            fst_format_list.append(comma);
+
+            fst_format_list.append(sp);
+            fst_format_list.append("02 ");
+            fst_format_list.append("01 ");
+            fst_format_list.append(fst_misc_params);
+            fst_format_list.append(comma);
+
+            fst_format_list.append(sp);
+            fst_format_list.append("01 ");
+            fst_format_list.append("10 ");
+            fst_format_list.append(fst_misc_params);
+            fst_format_list.append(comma);
+
+            fst_format_list.append(sp);
+            fst_format_list.append("01 ");
+            fst_format_list.append("08 ");
+            fst_format_list.append(fst_misc_params);
+            fst_format_list.append(comma);
+
+            fst_format_list.append(sp);
+            fst_format_list.append("01 ");
+            fst_format_list.append("04 ");
+            fst_format_list.append(fst_misc_params);
+            fst_format_list.append(comma);
+
+            fst_format_list.append(sp);
+            fst_format_list.append("01 ");
+            fst_format_list.append("02 ");
+            fst_format_list.append(fst_misc_params);
+            fst_format_list.append(comma);
+
+            fst_format_list.append(sp);
+            fst_format_list.append("01 ");
+            fst_format_list.append("01 ");
+            fst_format_list.append(fst_misc_params);
+
+
+            AString reply;
+            reply.append(native);
+            reply.append(sp);
+            reply.append(prfr_dsp_mod_supt);
+            reply.append(sp);
+            reply.append(fst_format_list);
+
+
+            return reply;
+        }
+
+
+
+#endif
     return AStringPrintf(
             "%02x 00 %02x %02x %08x %08x %08x 00 0000 0000 00 none none",
             forM4Message ? 0x00 : ((mNativeIndex << 3) | mNativeType),
@@ -512,6 +654,11 @@ bool VideoFormats::PickBestFormat(
             uint32_t score = width * height * framesPerSecond;
             if (!interlaced) {
                 score *= 2;
+            }
+
+            ///M: Support portrait-resolution
+            if (width < height) {
+                score *= 4;
             }
 
             if (first || score > bestScore) {

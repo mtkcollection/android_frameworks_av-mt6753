@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2007 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,11 +24,18 @@
 
 #include <private/media/AudioTrackShared.h>
 #include <utils/Log.h>
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <cutils/log.h>
+#include <media/AudioTrackCenter.h>
+#endif
 
 #include <linux/futex.h>
 #include <sys/syscall.h>
 
 namespace android {
+#ifdef MTK_AOSP_ENHANCEMENT
+extern AudioTrackCenter gAudioTrackCenter;
+#endif
 
 // used to clamp a value to size_t.  TODO: move to another file.
 template <typename T>
@@ -168,6 +180,10 @@ status_t ClientProxy::obtainBuffer(Buffer* buffer, const struct timespec *reques
         }
         // don't allow filling pipe beyond the nominal size
         size_t avail = mIsOut ? mFrameCount - filled : filled;
+#if defined(CONFIG_MT_ENG_BUILD)
+        //ALOGD("front(%d), mIsOut %d, avail %d, mFrameCount %d, filled %d",
+        //    (int)cblk->u.mStreaming.mFront, (int)mIsOut, (int)avail, (int)mFrameCount, (int)filled);
+#endif
         if (avail > 0) {
             // 'avail' may be non-contiguous, so return only the first contiguous chunk
             size_t part1;
@@ -238,8 +254,17 @@ status_t ClientProxy::obtainBuffer(Buffer* buffer, const struct timespec *reques
                 beforeIsValid = true;
             }
             errno = 0;
+#if defined(CONFIG_MT_ENG_BUILD)
+            //ALOGD("front(%d), mIsOut %d, obtainBuffer() FUTEX_WAIT", cblk->u.mStreaming.mFront, mIsOut);
+#endif
+            errno = 0;
+#ifdef MTK_AOSP_ENHANCEMENT
+            int val = syscall(__NR_futex, &cblk->mFutex,
+                    mClientInServer ? FUTEX_WAIT_PRIVATE : FUTEX_WAIT, old & ~CBLK_FUTEX_WAKE, ts);
+#else
             (void) syscall(__NR_futex, &cblk->mFutex,
                     mClientInServer ? FUTEX_WAIT_PRIVATE : FUTEX_WAIT, old & ~CBLK_FUTEX_WAKE, ts);
+#endif
             // update total elapsed time spent waiting
             if (measure) {
                 struct timespec after;
@@ -257,6 +282,22 @@ status_t ClientProxy::obtainBuffer(Buffer* buffer, const struct timespec *reques
                 before = after;
                 beforeIsValid = true;
             }
+            #ifdef MTK_AOSP_ENHANCEMENT
+            if(val == -1){ // only when system call return value == -1, we read errno
+                switch (errno) {
+                case 0:            // normal wakeup by server, or by binderDied()
+                case EWOULDBLOCK:  // benign race condition with server
+                case EINTR:        // wait was interrupted by signal or other spurious wakeup
+                case ETIMEDOUT:    // time-out expired
+                    // FIXME these error/non-0 status are being dropped
+                    break;
+                default:
+                    status = errno;
+                    ALOGE("%s unexpected error %s", __func__, strerror(status));
+                    goto end;
+                }
+            }
+            #else
             switch (errno) {
             case 0:            // normal wakeup by server, or by binderDied()
             case EWOULDBLOCK:  // benign race condition with server
@@ -269,6 +310,7 @@ status_t ClientProxy::obtainBuffer(Buffer* buffer, const struct timespec *reques
                 ALOGE("%s unexpected error %s", __func__, strerror(status));
                 goto end;
             }
+            #endif
         }
     }
 
@@ -321,6 +363,7 @@ void ClientProxy::binderDied()
 {
     audio_track_cblk_t* cblk = mCblk;
     if (!(android_atomic_or(CBLK_INVALID, &cblk->mFlags) & CBLK_INVALID)) {
+        ALOGV("front(%d), mIsOut %d, binderDied() FUTEX_WAKE", cblk->u.mStreaming.mFront, mIsOut);
         android_atomic_or(CBLK_FUTEX_WAKE, &cblk->mFutex);
         // it seems that a FUTEX_WAKE_PRIVATE will not wake a FUTEX_WAIT, even within same process
         (void) syscall(__NR_futex, &cblk->mFutex, mClientInServer ? FUTEX_WAKE_PRIVATE : FUTEX_WAKE,
@@ -332,6 +375,7 @@ void ClientProxy::interrupt()
 {
     audio_track_cblk_t* cblk = mCblk;
     if (!(android_atomic_or(CBLK_INTERRUPT, &cblk->mFlags) & CBLK_INTERRUPT)) {
+        ALOGV("front(%d), mIsOut %d, interrupt() FUTEX_WAKE", cblk->u.mStreaming.mFront, mIsOut);
         android_atomic_or(CBLK_FUTEX_WAKE, &cblk->mFutex);
         (void) syscall(__NR_futex, &cblk->mFutex, mClientInServer ? FUTEX_WAKE_PRIVATE : FUTEX_WAKE,
                 1);
@@ -473,6 +517,7 @@ status_t AudioTrackClientProxy::waitStreamEndDone(const struct timespec *request
         int32_t old = android_atomic_and(~CBLK_FUTEX_WAKE, &cblk->mFutex);
         if (!(old & CBLK_FUTEX_WAKE)) {
             errno = 0;
+            ALOGV("front(%d), mIsOut %d, waitStreamEndDone() FUTEX_WAKE", cblk->u.mStreaming.mFront, mIsOut);
             (void) syscall(__NR_futex, &cblk->mFutex,
                     mClientInServer ? FUTEX_WAIT_PRIVATE : FUTEX_WAIT, old & ~CBLK_FUTEX_WAKE, ts);
             switch (errno) {
@@ -642,6 +687,7 @@ status_t ServerProxy::obtainBuffer(Buffer* buffer, bool ackFlush)
             if (true /*front != newFront*/) {
                 int32_t old = android_atomic_or(CBLK_FUTEX_WAKE, &cblk->mFutex);
                 if (!(old & CBLK_FUTEX_WAKE)) {
+                    ALOGV("front(%d), mIsOut %d, obtainBuffer() FUTEX_WAKE", cblk->u.mStreaming.mFront, mIsOut);
                     (void) syscall(__NR_futex, &cblk->mFutex,
                             mClientInServer ? FUTEX_WAKE_PRIVATE : FUTEX_WAKE, 1);
                 }
@@ -729,7 +775,9 @@ void ServerProxy::releaseBuffer(Buffer* buffer)
     }
 
     cblk->mServer += stepCount;
-
+#ifdef MTK_AOSP_ENHANCEMENT
+    gAudioTrackCenter.updateServer((intptr_t)mCblk, mCblk->mServer);
+#endif
     size_t half = mFrameCount / 2;
     if (half == 0) {
         half = 1;
@@ -742,7 +790,8 @@ void ServerProxy::releaseBuffer(Buffer* buffer)
     }
     // FIXME AudioRecord wakeup needs to be optimized; it currently wakes up client every time
     if (!mIsOut || (mAvailToClient + stepCount >= minimum)) {
-        ALOGV("mAvailToClient=%zu stepCount=%zu minimum=%zu", mAvailToClient, stepCount, minimum);
+        ALOGD("front(%d), mIsOut(%d), mAvailToClient=%zu stepCount=%zu minimum=%zu, FUTEX_WAKE",
+            cblk->u.mStreaming.mFront, mIsOut, mAvailToClient, stepCount, minimum);
         int32_t old = android_atomic_or(CBLK_FUTEX_WAKE, &cblk->mFutex);
         if (!(old & CBLK_FUTEX_WAKE)) {
             (void) syscall(__NR_futex, &cblk->mFutex,
@@ -791,6 +840,7 @@ bool  AudioTrackServerProxy::setStreamEndDone() {
     bool old =
             (android_atomic_or(CBLK_STREAM_END_DONE, &cblk->mFlags) & CBLK_STREAM_END_DONE) != 0;
     if (!old) {
+        ALOGV("front(%d), mIsOut %d, setStreamEndDone() FUTEX_WAKE", cblk->u.mStreaming.mFront, mIsOut);
         (void) syscall(__NR_futex, &cblk->mFutex, mClientInServer ? FUTEX_WAKE_PRIVATE : FUTEX_WAKE,
                 1);
     }
@@ -932,7 +982,7 @@ ssize_t StaticAudioTrackServerProxy::pollPosition()
     return (ssize_t) mState.mPosition;
 }
 
-status_t StaticAudioTrackServerProxy::obtainBuffer(Buffer* buffer, bool ackFlush)
+status_t StaticAudioTrackServerProxy::obtainBuffer(Buffer* buffer, bool ackFlush __unused)
 {
     if (mIsShutdown) {
         buffer->mFrameCount = 0;
@@ -970,9 +1020,7 @@ status_t StaticAudioTrackServerProxy::obtainBuffer(Buffer* buffer, bool ackFlush
     // it is always larger or equal to avail.
     LOG_ALWAYS_FATAL_IF(mFramesReady < (int64_t) avail);
     buffer->mNonContig = mFramesReady == INT64_MAX ? SIZE_MAX : clampToSize(mFramesReady - avail);
-    if (!ackFlush) {
-        mUnreleased = avail;
-    }
+    mUnreleased = avail;
     return NO_ERROR;
 }
 

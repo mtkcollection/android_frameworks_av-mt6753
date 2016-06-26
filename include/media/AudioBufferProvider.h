@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2007 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -32,6 +37,7 @@ public:
         Buffer() : raw(NULL), frameCount(0) { }
         union {
             void*       raw;
+            int32_t*    i32;
             short*      i16;
             int8_t*     i8;
         };

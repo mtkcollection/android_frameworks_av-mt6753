@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -125,6 +130,14 @@ class Metadata {
 
     Parcel *mData;
     size_t mBegin;
+#ifdef MTK_AOSP_ENHANCEMENT
+  public:
+    // ms for RTSP server timeout
+    static const Type kServerTimeout = 8801;       // Interger
+
+    bool appendString(Type key, const char* val);
+    bool appendByteArray(int key, const char* val, size_t len);
+#endif
 };
 
 }  // namespace android::media

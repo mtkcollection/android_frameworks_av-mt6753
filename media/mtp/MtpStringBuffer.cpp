@@ -154,6 +154,26 @@ bool MtpStringBuffer::readFromPacket(MtpDataPacket* packet) {
 void MtpStringBuffer::writeToPacket(MtpDataPacket* packet) const {
     int count = mCharCount;
     const uint8_t* src = mBuffer;
+
+    /*
+     * MTPforUSB-IDv1.1.pdf
+     * 3.2.3 Strings
+     *  Strings in PTP (and MTP) consist of standard 2-byte Unicode characters as defined
+     *  by ISO 10646. Strings begin with a single, 8-bit unsigned integer that identifies
+     *  the number of characters to follow (NOT bytes). An empty string is represented by
+     *  a single 8-bit integer containing a value of 0x00. A non-empty string is represented
+     *  by the count byte, a sequence of Unicode characters, and a terminating Unicode L'\0'
+     *  character ("null"). Strings are limited to 255 characters, including the terminating
+     *  null character.
+     *
+     *  Examples:
+     *   The string L"" is represented as the single byte 0x00.
+     *   The string L"A" is represented as the five-byte sequence 0x02 0x41 0x00 0x00 0x00
+     */
+    if (count == 0xFF) {
+        count = 0xFF - 1;
+        ALOGI("For following MTP spec, only pack %d bytes + termination. mCharCount: %d", count, mCharCount);
+    }
     packet->putUInt8(count > 0 ? count + 1 : 0);
 
     // expand utf8 to 16 bit chars

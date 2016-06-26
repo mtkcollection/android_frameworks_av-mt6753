@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -36,12 +41,19 @@
 #include <media/stagefright/MediaErrors.h>
 
 #include <utils/misc.h>
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <utils/Trace.h>
+#include <sys/time.h>
+#endif
 
 static const OMX_U32 kPortIndexInput = 0;
 static const OMX_U32 kPortIndexOutput = 1;
 
-#define CLOGW(fmt, ...) ALOGW("[%x:%s] " fmt, mNodeID, mName, ##__VA_ARGS__)
+#ifdef MTK_AOSP_ENHANCEMENT
+#define MTK_BUF_ADDR_ALIGNMENT_VALUE 512
+#endif //MTK_AOSP_ENHANCEMENT
 
+#define CLOGW(fmt, ...) ALOGW("[%x:%s] " fmt, mNodeID, mName, ##__VA_ARGS__)
 #define CLOG_ERROR_IF(cond, fn, err, fmt, ...) \
     ALOGE_IF(cond, #fn "(%x:%s, " fmt ") ERROR: %s(%#x)", \
     mNodeID, mName, ##__VA_ARGS__, asString(err), err)
@@ -159,7 +171,12 @@ struct BufferMeta {
     void setGraphicBuffer(const sp<GraphicBuffer> &graphicBuffer) {
         mGraphicBuffer = graphicBuffer;
     }
-
+#ifdef MTK_AOSP_ENHANCEMENT
+    sp<IMemory> GetMem()
+    {
+        return mMem;
+    }
+#endif
 private:
     sp<GraphicBuffer> mGraphicBuffer;
     sp<IMemory> mMem;
@@ -169,6 +186,12 @@ private:
     BufferMeta(const BufferMeta &);
     BufferMeta &operator=(const BufferMeta &);
 };
+#ifdef MTK_AOSP_ENHANCEMENT
+sp<IMemory>  getIMemoryFromBufferMeta(OMX_PTR pAppPrivate) {
+    BufferMeta *buffer_meta = (BufferMeta *)pAppPrivate;
+    return buffer_meta->GetMem();
+}
+#endif
 
 // static
 OMX_CALLBACKTYPE OMXNodeInstance::kCallbacks = {
@@ -282,6 +305,9 @@ status_t OMXNodeInstance::freeNode(OMXMaster *master) {
         case OMX_StateExecuting:
         {
             ALOGV("forcing Executing->Idle");
+#ifdef MTK_AOSP_ENHANCEMENT
+            ALOGD("forcing Executing->Idle");
+#endif
             sendCommand(OMX_CommandStateSet, OMX_StateIdle);
             OMX_ERRORTYPE err;
             int32_t iteration = 0;
@@ -309,6 +335,9 @@ status_t OMXNodeInstance::freeNode(OMXMaster *master) {
         case OMX_StateIdle:
         {
             ALOGV("forcing Idle->Loaded");
+#ifdef MTK_AOSP_ENHANCEMENT
+            ALOGD("forcing Idle->Loaded");
+#endif
             sendCommand(OMX_CommandStateSet, OMX_StateLoaded);
 
             freeActiveBuffers();
@@ -519,7 +548,6 @@ status_t OMXNodeInstance::storeMetaDataInBuffers(
 status_t OMXNodeInstance::storeMetaDataInBuffers_l(
         OMX_U32 portIndex, OMX_BOOL enable, MetadataBufferType *type) {
     if (portIndex != kPortIndexInput && portIndex != kPortIndexOutput) {
-        android_errorWriteLog(0x534e4554, "26324358");
         return BAD_VALUE;
     }
 
@@ -756,6 +784,7 @@ status_t OMXNodeInstance::useGraphicBuffer(
 
     // See if the newer version of the extension is present.
     OMX_INDEXTYPE index;
+
     if (OMX_GetExtensionIndex(
             mHandle,
             const_cast<OMX_STRING>("OMX.google.android.index.useAndroidNativeBuffer2"),
@@ -1170,9 +1199,21 @@ void OMXNodeInstance::unbumpDebugLevel_l(size_t portIndex) {
     }
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+static int64_t getTickCountUs()
+{
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (int64_t)(tv.tv_sec * 1000000LL + tv.tv_usec);
+}
+#endif
+
 status_t OMXNodeInstance::storeFenceInMeta_l(
         OMX_BUFFERHEADERTYPE *header, int fenceFd, OMX_U32 portIndex) {
     // propagate fence if component supports it; wait for it otherwise
+#ifdef MTK_AOSP_ENHANCEMENT
+    ATRACE_NAME("StoreFenceInMeta");
+#endif
     OMX_U32 metaSize = portIndex == kPortIndexInput ? header->nFilledLen : header->nAllocLen;
     if (mMetadataType[portIndex] == kMetadataBufferTypeANWBuffer
             && metaSize >= sizeof(VideoNativeMetadata)) {
@@ -1188,7 +1229,18 @@ status_t OMXNodeInstance::storeFenceInMeta_l(
     } else if (fenceFd >= 0) {
         CLOG_BUFFER(storeFenceInMeta, "waiting for fence %d", fenceFd);
         sp<Fence> fence = new Fence(fenceFd);
+#ifdef MTK_AOSP_ENHANCEMENT
+        int64_t startTime = getTickCountUs();
+        status_t ret = fence->wait(IOMX::kFenceTimeoutMs);
+        int64_t duration = getTickCountUs() - startTime;
+        //Log waning on long duration. 10ms is an empirical value.
+        if (duration >= 10000){
+            ALOGW("wait fence took %lld us", (long long)duration);
+        }
+        return ret;
+#else
         return fence->wait(IOMX::kFenceTimeoutMs);
+#endif
     }
     return OK;
 }

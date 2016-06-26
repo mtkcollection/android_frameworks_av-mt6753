@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2014 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -23,7 +28,11 @@
 #include <cutils/misc.h>
 #include <media/AudioEffect.h>
 #include <system/audio.h>
+#ifdef MTK_AUDIO
+#include <hardware/audio_effect_mtk.h>
+#else
 #include <hardware/audio_effect.h>
+#endif
 #include <utils/Vector.h>
 #include <utils/SortedVector.h>
 

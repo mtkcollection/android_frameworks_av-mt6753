@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -68,6 +73,9 @@ struct MediaSource : public virtual RefBase {
             SEEK_NEXT_SYNC,
             SEEK_CLOSEST_SYNC,
             SEEK_CLOSEST,
+#ifdef MTK_AOSP_ENHANCEMENT
+            SEEK_TRY_READ = 100,
+#endif
         };
 
         ReadOptions();

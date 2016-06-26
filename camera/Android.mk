@@ -37,7 +37,8 @@ LOCAL_SRC_FILES:= \
 	camera2/OutputConfiguration.cpp \
 	CameraBase.cpp \
 	CameraUtils.cpp \
-	VendorTagDescriptor.cpp
+	VendorTagDescriptor.cpp \
+	IMetadataCallbacks.cpp
 
 LOCAL_SHARED_LIBRARIES := \
 	libcutils \
@@ -52,7 +53,9 @@ LOCAL_SHARED_LIBRARIES := \
 LOCAL_C_INCLUDES += \
 	system/media/camera/include \
 	system/media/private/camera/include \
-
+#//!++
+    LOCAL_SRC_FILES += mediatek/Camera.cpp
+#//!--
 LOCAL_MODULE:= libcamera_client
 
 include $(BUILD_SHARED_LIBRARY)

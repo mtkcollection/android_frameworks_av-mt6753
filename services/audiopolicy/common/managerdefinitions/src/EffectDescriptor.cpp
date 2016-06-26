@@ -16,6 +16,9 @@
 
 #define LOG_TAG "APM::EffectDescriptor"
 //#define LOG_NDEBUG 0
+#ifdef MTK_AUDIO
+#define LOG_NDEBUG 0
+#endif
 
 #include "EffectDescriptor.h"
 #include <utils/String8.h>
@@ -74,7 +77,9 @@ status_t EffectDescriptorCollection::registerEffect(const effect_descriptor_t *d
     effectDesc->mEnabled = false;
 
     add(id, effectDesc);
-
+#ifdef DOLBY_DAP_MOVE_EFFECT
+    //mDolbyAudioPolicy.effectRegistered(effectDesc);  Attention:Temp remove
+#endif // DOLBY_END
     return NO_ERROR;
 }
 
@@ -100,6 +105,9 @@ status_t EffectDescriptorCollection::unregisterEffect(int id)
             effectDesc->mDesc.name, id, effectDesc->mDesc.memoryUsage, mTotalEffectsMemory);
 
     removeItem(id);
+#ifdef DOLBY_DAP_MOVE_EFFECT
+    //mDolbyAudioPolicy.effectRemoved(effectDesc);  Attention:Temp remove
+#endif // DOLBY_END
 
     return NO_ERROR;
 }

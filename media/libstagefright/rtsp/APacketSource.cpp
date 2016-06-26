@@ -1,4 +1,10 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -38,10 +44,35 @@
 #include <media/stagefright/MediaErrors.h>
 #include <media/stagefright/MetaData.h>
 #include <utils/Vector.h>
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <media/stagefright/MediaBuffer.h>
+static int kMaxInputSizeAMR = 2000;
+static int kWholeBufSize = 40000000; //40Mbytes
+static int kTargetTime = 2000;  //ms
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
 
 namespace android {
 
-static bool GetAttribute(const char *s, const char *key, AString *value) {
+#ifdef MTK_AOSP_ENHANCEMENT
+static bool checkAACConfig(uint8_t *config) {
+    int aacObjectType = config[0] >> 3;
+    if ((aacObjectType != 2)    // AAC LC (Low Complexity)
+            && (aacObjectType != 4)      // AAC LTP (Long Term Prediction)
+            && (aacObjectType != 5)      // SBR (Spectral Band Replication)
+            && (aacObjectType != 29))   // PS (Parametric Stereo)
+    {
+        ALOGE ("[AAC capability error]Unsupported audio object type: (%d), , ignore audio track", aacObjectType);
+        return false;
+    }
+    ALOGI("aacObjectType %d", aacObjectType);
+    return true;
+}
+
+static bool GetAttribute(const char *s, const char *key, AString *value, bool checkExist = false)
+#else
+static bool GetAttribute(const char *s, const char *key, AString *value)
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
+{
     value->clear();
 
     size_t keyLen = strlen(key);
@@ -61,6 +92,12 @@ static bool GetAttribute(const char *s, const char *key, AString *value) {
             return true;
         }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (checkExist && len == keyLen && !strncmp(s, key, keyLen)) {
+            value->setTo("1");
+            return true;
+        }
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
         if (colonPos == NULL) {
             return false;
         }
@@ -115,6 +152,12 @@ static sp<ABuffer> MakeAVCCodecSpecificData(
         profileLevelID = decodeHex(val);
         CHECK_EQ(profileLevelID->size(), 3u);
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+    else {
+        ALOGW("no profile-level-id is found");
+        val.setTo("4DE01E");
+    }
+#endif
 
     Vector<sp<ABuffer> > paramSets;
 
@@ -225,6 +268,11 @@ sp<ABuffer> MakeAACCodecSpecificData(const char *params) {
     CHECK(GetAttribute(params, "config", &val));
 
     sp<ABuffer> config = decodeHex(val);
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (config == NULL) {
+        return NULL;
+    }
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
     CHECK(config != NULL);
     CHECK_GE(config->size(), 4u);
 
@@ -247,11 +295,37 @@ sp<ABuffer> MakeAACCodecSpecificData(const char *params) {
         // AudioSpecificInfo follows
     };
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    if ((((x >> 8) & 0xff) >> 3) == 5) {
+        CHECK_GE(config->size(), 6u);
+        x = data[2] << 24 | data[3] << 16 | data[4] << 8 | data[5];
+        x = (x >> 1);
+        ALOGI("sbr detected %x", x);
+
+        sp<ABuffer> csd = new ABuffer(sizeof(kStaticESDS) + 4);
+        memcpy(csd->data(), kStaticESDS, sizeof(kStaticESDS));
+        csd->data()[1] += 2;
+        csd->data()[6] += 2;
+        csd->data()[21] += 2;
+        csd->data()[sizeof(kStaticESDS)] = (x >> 24) & 0xff;
+        csd->data()[sizeof(kStaticESDS) + 1] = (x >> 16) & 0xff;
+        csd->data()[sizeof(kStaticESDS) + 2] = (x >> 8) & 0xff;
+        csd->data()[sizeof(kStaticESDS) + 3] = x & 0xff;
+
+        return csd;
+    }
+#endif
+
     sp<ABuffer> csd = new ABuffer(sizeof(kStaticESDS) + 2);
     memcpy(csd->data(), kStaticESDS, sizeof(kStaticESDS));
     csd->data()[sizeof(kStaticESDS)] = (x >> 8) & 0xff;
     csd->data()[sizeof(kStaticESDS) + 1] = x & 0xff;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (!checkAACConfig(csd->data() + sizeof(kStaticESDS))) {
+        return NULL;
+    }
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
     // hexdump(csd->data(), csd->size());
 
     return csd;
@@ -308,6 +382,12 @@ sp<ABuffer> MakeAACCodecSpecificData2(const char *params) {
     *dst++ = 0x05;
     *dst++ = config->size();
     memcpy(dst, config->data(), config->size());
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (!checkAACConfig(config->data())) {
+        return NULL;
+    }
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
 
     // hexdump(csd->data(), csd->size());
 
@@ -409,6 +489,10 @@ APacketSource::APacketSource(
         const sp<ASessionDescription> &sessionDesc, size_t index)
     : mInitCheck(NO_INIT),
       mFormat(new MetaData) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    init();
+    AString val;
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
     unsigned long PT;
     AString desc;
     AString params;
@@ -418,11 +502,19 @@ APacketSource::APacketSource(
     if (sessionDesc->getDurationUs(&durationUs)) {
         mFormat->setInt64(kKeyDuration, durationUs);
     } else {
+#ifdef MTK_AOSP_ENHANCEMENT
+        // set duration to 0 for live streaming
+        mFormat->setInt64(kKeyDuration, 0ll);
+#else
         mFormat->setInt64(kKeyDuration, 60 * 60 * 1000000ll);
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
     }
 
     mInitCheck = OK;
     if (!strncmp(desc.c_str(), "H264/", 5)) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        mIsAVC = true;
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
         mFormat->setCString(kKeyMIMEType, MEDIA_MIMETYPE_VIDEO_AVC);
 
         int32_t width, height;
@@ -436,7 +528,13 @@ APacketSource::APacketSource(
             MakeAVCCodecSpecificData(params.c_str(), &encWidth, &encHeight);
 
         if (codecSpecificData != NULL) {
-            if (width < 0) {
+#ifdef MTK_AOSP_ENHANCEMENT
+            // always use enc width/height if available
+            if (encWidth > 0 && encHeight > 0)
+#else
+            if (width < 0)
+#endif
+            {
                 // If no explicit width/height given in the sdp, use the dimensions
                 // extracted from the first sequence parameter set.
                 width = encWidth;
@@ -478,6 +576,12 @@ APacketSource::APacketSource(
         sp<ABuffer> codecSpecificData =
             MakeAACCodecSpecificData(params.c_str());
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (codecSpecificData == NULL) {
+            mInitCheck = ERROR_UNSUPPORTED;
+            return;
+        }
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
         mFormat->setData(
                 kKeyESDS, 0,
                 codecSpecificData->data(), codecSpecificData->size());
@@ -488,12 +592,22 @@ APacketSource::APacketSource(
         ASessionDescription::ParseFormatDesc(
                 desc.c_str(), &sampleRate, &numChannels);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (sampleRate != 8000) {
+            ALOGW("bad AMR clock rate %d", sampleRate);
+            sampleRate = 8000;
+        }
+#endif
         mFormat->setInt32(kKeySampleRate, sampleRate);
         mFormat->setInt32(kKeyChannelCount, numChannels);
 
         if (sampleRate != 8000 || numChannels != 1) {
             mInitCheck = ERROR_UNSUPPORTED;
         }
+#ifdef MTK_AOSP_ENHANCEMENT
+        initAMRCheck(params.c_str());
+        mFormat->setInt32(kKeyMaxInputSize, kMaxInputSizeAMR);
+#endif
     } else if (!strncmp(desc.c_str(), "AMR-WB/", 7)) {
         mFormat->setCString(kKeyMIMEType, MEDIA_MIMETYPE_AUDIO_AMR_WB);
 
@@ -501,13 +615,28 @@ APacketSource::APacketSource(
         ASessionDescription::ParseFormatDesc(
                 desc.c_str(), &sampleRate, &numChannels);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (sampleRate != 16000) {
+            ALOGW("bad AMR clock rate %d", sampleRate);
+            sampleRate = 16000;
+        }
+#endif
         mFormat->setInt32(kKeySampleRate, sampleRate);
         mFormat->setInt32(kKeyChannelCount, numChannels);
 
         if (sampleRate != 16000 || numChannels != 1) {
             mInitCheck = ERROR_UNSUPPORTED;
         }
-    } else if (!strncmp(desc.c_str(), "MP4V-ES/", 8)) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        initAMRCheck(params.c_str());
+        mFormat->setInt32(kKeyMaxInputSize, kMaxInputSizeAMR);
+     } else if (!strncmp(desc.c_str(), "MP4V-ES/", 8) ||
+            (!strncmp(desc.c_str(), "mpeg4-generic/", 14) && GetAttribute(params.c_str(), "streamType", &val)
+             && !strcmp(val.c_str(), "4")))
+#else
+    } else if (!strncmp(desc.c_str(), "MP4V-ES/", 8))
+#endif
+    {
         mFormat->setCString(kKeyMIMEType, MEDIA_MIMETYPE_VIDEO_MPEG4);
 
         int32_t width, height;
@@ -522,6 +651,10 @@ APacketSource::APacketSource(
                     params.c_str(), &encWidth, &encHeight);
 
         if (codecSpecificData != NULL) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        mFormat->setData(kKeyMPEG4VOS, 0,
+            codecSpecificData->data(), codecSpecificData->size());
+#endif
             mFormat->setData(
                     kKeyESDS, 0,
                     codecSpecificData->data(), codecSpecificData->size());
@@ -530,7 +663,12 @@ APacketSource::APacketSource(
                 width = encWidth;
                 height = encHeight;
             }
+#ifdef MTK_AOSP_ENHANCEMENT
+            // don't support bad config
+        } else {
+#else
         } else if (width < 0) {
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
             mInitCheck = ERROR_UNSUPPORTED;
             return;
         }
@@ -559,9 +697,37 @@ APacketSource::APacketSource(
         sp<ABuffer> codecSpecificData =
             MakeAACCodecSpecificData2(params.c_str());
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (codecSpecificData == NULL) {
+            mInitCheck = ERROR_UNSUPPORTED;
+            return;
+        }
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
         mFormat->setData(
                 kKeyESDS, 0,
                 codecSpecificData->data(), codecSpecificData->size());
+#ifdef MTK_AUDIO_DDPLUS_SUPPORT
+    } else if (!strncasecmp(desc.c_str(), "ac3/", 4)) {
+        mFormat->setCString(kKeyMIMEType, MEDIA_MIMETYPE_AUDIO_AC3);
+
+        int32_t sampleRate, numChannels;
+        // Set to 0 to avoid NULL refrences
+        sampleRate = 0;
+        numChannels = 0;
+
+        mFormat->setInt32(kKeySampleRate, sampleRate);
+        mFormat->setInt32(kKeyChannelCount, numChannels);
+    } else if (!strncasecmp(desc.c_str(), "eac3/", 5)) {
+        mFormat->setCString(kKeyMIMEType, MEDIA_MIMETYPE_AUDIO_EAC3);
+
+        int32_t sampleRate, numChannels;
+        // Set to 0 to avoid NULL refrences
+        sampleRate = 0;
+        numChannels = 0;
+
+        mFormat->setInt32(kKeySampleRate, sampleRate);
+        mFormat->setInt32(kKeyChannelCount, numChannels);
+#endif
     } else if (ARawAudioAssembler::Supports(desc.c_str())) {
         ARawAudioAssembler::MakeFormat(desc.c_str(), mFormat);
     } else if (!strncasecmp("MP2T/", desc.c_str(), 5)) {
@@ -581,5 +747,245 @@ status_t APacketSource::initCheck() const {
 sp<MetaData> APacketSource::getFormat() {
     return mFormat;
 }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+void APacketSource::init() {
+    mEOSResult = OK;
+    mWantsNALFragments = false;
+    mAccessUnitTimeUs = -1;
+    m_BufQueSize = kWholeBufSize; //40Mbytes
+    m_TargetTime = kTargetTime; //ms
+    m_uiNextAduSeqNum = -1;
+    mIsAVC = false;
+    mScanForIDR = true;
+}
+
+void APacketSource::initAMRCheck(const char *params) {
+    AString value;
+    bool valid =
+        (GetAttribute(params, "octet-align", &value, true) && value == "1")
+        && (!GetAttribute(params, "crc", &value, true) || value == "0")
+        && (!GetAttribute(params, "interleaving", &value, true));
+    if (!valid) {
+        ALOGE("[AMR capability error]Unsupported AMR audio, params %s", params);
+        mInitCheck = ERROR_UNSUPPORTED;
+    }
+}
+
+status_t APacketSource::start(MetaData *params) {
+    // support pv codec
+    Mutex::Autolock autoLock(mLock);
+
+    int32_t val;
+    if (params && params->findInt32(kKeyWantsNALFragments, &val)
+        && val != 0) {
+        mWantsNALFragments = true;
+    } else {
+        mWantsNALFragments = false;
+    }
+    return OK;
+}
+
+status_t APacketSource::stop() {
+    signalEOS(ERROR_END_OF_STREAM);
+    return OK;
+}
+
+status_t APacketSource::read(
+        MediaBuffer **out, const ReadOptions *) {
+    *out = NULL;
+
+    Mutex::Autolock autoLock(mLock);
+    while (mEOSResult == OK && mBuffers.empty()) {
+        mCondition.wait(mLock);
+    }
+
+    if (!mBuffers.empty()) {
+        const sp<ABuffer> buffer = *mBuffers.begin();
+
+        m_uiNextAduSeqNum = buffer->int32Data();
+        int64_t timeUs;
+        CHECK(buffer->meta()->findInt64("timeUs", &timeUs));
+
+        MediaBuffer *mediaBuffer = new MediaBuffer(buffer);
+        mediaBuffer->meta_data()->setInt64(kKeyTime, timeUs);
+
+        *out = mediaBuffer;
+
+        mBuffers.erase(mBuffers.begin());
+        return OK;
+    }
+
+    return mEOSResult;
+}
+
+void APacketSource::queueAccessUnit(const sp<ABuffer> &buffer) {
+    int32_t damaged;
+    if (buffer->meta()->findInt32("damaged", &damaged) && damaged) {
+        ALOGV("discarding damaged AU");
+        return;
+    }
+
+    {
+        Mutex::Autolock autoLock(mLock);
+        if (mEOSResult == ERROR_END_OF_STREAM) {
+            ALOGE("don't queue data after ERROR_END_OF_STREAM");
+            return;
+        }
+    }
+
+    if (mScanForIDR && mIsAVC) {
+        // This pretty piece of code ensures that the first access unit
+        // fed to the decoder after stream-start or seek is guaranteed to
+        // be an IDR frame. This is to workaround limitations of a certain
+        // hardware h.264 decoder that requires this to be the case.
+
+        // only check the first byte of nal fragment
+        // AAVCAssembler only send nal fragment now
+        if ((buffer->data()[0] & 0x1f) != 5) {
+            ALOGV("skipping AU while scanning for next IDR frame.");
+            return;
+        }
+        if (!mWantsNALFragments)
+            CHECK(buffer->meta()->findInt64("timeUs", &mAccessUnitTimeUs));
+
+        mScanForIDR = false;
+    }
+
+    // combine access units here for AVC
+    if (mIsAVC && !mWantsNALFragments) {
+        int64_t timeUs;
+        CHECK(buffer->meta()->findInt64("timeUs", &timeUs));
+        if (timeUs != mAccessUnitTimeUs) {
+            size_t totalSize = 0;
+            for (List<sp<ABuffer> >::iterator it = mNALUnits.begin();
+                    it != mNALUnits.end(); ++it) {
+                totalSize += 4 + (*it)->size();
+            }
+
+            sp<ABuffer> accessUnit = new ABuffer(totalSize);
+            size_t offset = 0;
+            for (List<sp<ABuffer> >::iterator it = mNALUnits.begin();
+                    it != mNALUnits.end(); ++it) {
+                memcpy(accessUnit->data() + offset, "\x00\x00\x00\x01", 4);
+                offset += 4;
+
+                sp<ABuffer> nal = *it;
+                memcpy(accessUnit->data() + offset, nal->data(), nal->size());
+                offset += nal->size();
+            }
+
+            accessUnit->setInt32Data((*mNALUnits.begin())->int32Data());
+            accessUnit->meta()->setInt64("timeUs", mAccessUnitTimeUs);
+
+            Mutex::Autolock autoLock(mLock);
+            mBuffers.push_back(accessUnit);
+            mCondition.signal();
+            mNALUnits.clear();
+        }
+        mNALUnits.push_back(buffer);
+        mAccessUnitTimeUs = timeUs;
+        return;
+    }
+
+    Mutex::Autolock autoLock(mLock);
+    int64_t timeUs;
+    CHECK(buffer->meta()->findInt64("timeUs", &timeUs));
+    if (mAccessUnitTimeUs != -1 && mAccessUnitTimeUs > timeUs) {
+        ALOGW("discard late access unit %lld < %lld", (long long)timeUs, (long long)mAccessUnitTimeUs);
+        return;
+    }
+    mAccessUnitTimeUs = timeUs;
+    mBuffers.push_back(buffer);
+    mCondition.signal();
+}
+
+void APacketSource::signalEOS(status_t result) {
+    CHECK(result != OK);
+    ALOGI("APacketSource::signalEOS,mBuffers.size=%zu",mBuffers.size());
+    Mutex::Autolock autoLock(mLock);
+    mEOSResult = result;
+    mCondition.signal();
+}
+
+void APacketSource::flushQueue() {
+    Mutex::Autolock autoLock(mLock);
+    ALOGI("APacketSource::flushQueue");
+    mBuffers.clear();
+
+    mScanForIDR = true;
+    // reset eos
+    mEOSResult = OK;
+    mAccessUnitTimeUs = -1;
+}
+
+bool APacketSource::isAtEOS() {
+    Mutex::Autolock autoLock(mLock);
+    return mEOSResult == ERROR_END_OF_STREAM;
+}
+
+int64_t APacketSource::getQueueDurationUs(bool *eos) {
+    Mutex::Autolock autoLock(mLock);
+
+    *eos = (mEOSResult != OK);
+
+    if (mBuffers.size() < 2) {
+        return 0;
+    }
+
+    const sp<ABuffer> first = *mBuffers.begin();
+    const sp<ABuffer> last = *--mBuffers.end();
+
+    int64_t firstTimeUs;
+    CHECK(first->meta()->findInt64("timeUs", &firstTimeUs));
+
+    int64_t lastTimeUs;
+    CHECK(last->meta()->findInt64("timeUs", &lastTimeUs));
+
+    if (lastTimeUs < firstTimeUs) {
+        ALOGE("Huh? Time moving backwards? %lld > %lld",
+             (long long)firstTimeUs, (long long)lastTimeUs);
+
+        return 0;
+    }
+
+    return lastTimeUs - firstTimeUs;
+}
+
+bool APacketSource::getNSN(int32_t* uiNextSeqNum){
+
+    Mutex::Autolock autoLock(mLock);
+    if(!mBuffers.empty()){
+        if(m_uiNextAduSeqNum!= -1){
+            *uiNextSeqNum = m_uiNextAduSeqNum;
+            return true;
+        }
+        *uiNextSeqNum = (*mBuffers.begin())->int32Data();
+        return true;
+    }
+    return false;
+}
+
+size_t APacketSource::getFreeBufSpace(){
+
+    Mutex::Autolock autoLock(mLock); //add lock ,in case of memorycorruption
+
+    //size_t freeBufSpace = m_BufQueSize;
+    size_t bufSizeUsed = 0;
+    if(mBuffers.empty()){
+        return m_BufQueSize;
+    }
+
+    List<sp<ABuffer> >::iterator it = mBuffers.begin();
+    while (it != mBuffers.end()) {
+        bufSizeUsed += (*it)->size();
+        it++;
+    }
+    if(bufSizeUsed >= m_BufQueSize)
+        return 0;
+
+    return     m_BufQueSize - bufSizeUsed;
+}
+#endif
 
 }  // namespace android

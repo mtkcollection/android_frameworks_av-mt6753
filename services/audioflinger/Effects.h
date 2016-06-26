@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
 **
 ** Copyright 2012, The Android Open Source Project
 **
@@ -122,6 +127,19 @@ public:
     void             addEffectToHal_l();
 
     void             dump(int fd, const Vector<String16>& args);
+//<MTK_AUDIO_ADD
+#ifdef MTK_HIFI_AUDIO
+    //add this function for Reset Effect Sampling rate
+    void resetandConfigure();
+#endif
+
+        status_t clearbuf_l();
+#ifdef DOLBY_DAP_BYPASS_SOUND_TYPES
+        status_t         setBypass(bool bypass, bool crossFade);
+        bool             bypassed() const;
+#endif // DOLBY_DAP_BYPASS_SOUND_TYPES
+    void setFirstVolume( bool firstVolume );
+//MTK_AUDIO_ADD>
 
 protected:
     friend class AudioFlinger;      // for mHandles
@@ -155,6 +173,9 @@ mutable Mutex               mLock;      // mutex for process, commands and handl
     bool     mSuspended;            // effect is suspended: temporarily disabled by framework
     bool     mOffloaded;            // effect is currently offloaded to the audio DSP
     wp<AudioFlinger>    mAudioFlinger;
+//<MTK_AUDIO_ADD
+    bool mFirstVolume;
+//MTK_AUDIO_ADD>
 };
 
 // The EffectHandle class implements the IEffect interface. It provides resources
@@ -330,6 +351,9 @@ public:
 
     void dump(int fd, const Vector<String16>& args);
 
+//<MTK_AUDIO_ADD
+    void clearBuf();
+//MTK_AUDIO_ADD>
 protected:
     friend class AudioFlinger;  // for mThread, mEffects
     EffectChain(const EffectChain&);

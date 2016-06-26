@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2007 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -92,6 +97,13 @@ private:
     const Constants *mConstants;    // points to appropriate set of coefficient parameters
 
     static void init_routine();
+//<MTK_ADDED
+public:
+    AudioResamplerSinc(int bitDepth, int inChannelCount, int32_t sampleRate,
+    src_quality quality = HIGH_QUALITY);
+private:
+    void init(int32_t SrcSampleRate);
+//MTk_ADDED>
 };
 
 // ----------------------------------------------------------------------------

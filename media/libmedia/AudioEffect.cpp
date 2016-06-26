@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
 **
 ** Copyright 2010, The Android Open Source Project
 **
@@ -376,7 +381,9 @@ void AudioEffect::controlStatusChanged(bool controlGranted)
         }
     }
     if (mCbf != NULL) {
+        ALOGD("controlStatusChanged mCbf+");
         mCbf(EVENT_CONTROL_STATUS_CHANGED, mUserData, &controlGranted);
+        ALOGD("controlStatusChanged mCbf-");
     }
 }
 

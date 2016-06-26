@@ -1,4 +1,9 @@
 #
+# Copyright (C) 2014 MediaTek Inc.
+# Modification based on code covered by the mentioned copyright
+# and/or permission notice(s).
+#
+#
 # Copyright (C) 2010 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -29,12 +34,39 @@ LOCAL_SHARED_LIBRARIES := \
     libdl \
     libselinux
 
+ifeq ($(strip $(MTK_DRM_APP)),yes)
+  ifeq ($(strip $(MTK_OMADRM_SUPPORT)),yes)
+    LOCAL_CFLAGS += -DMTK_OMA_DRM_SUPPORT
+    LOCAL_SHARED_LIBRARIES += \
+        libdrmmtkutil \
+        libdrmmtkwhitelist
+  else ifeq ($(strip $(MTK_CTA_SET)),yes)
+    LOCAL_CFLAGS += -DMTK_CTA_DRM_SUPPORT
+    LOCAL_SHARED_LIBRARIES += \
+        libdrmmtkutil \
+        libdrmmtkwhitelist
+  endif
+else ifeq ($(strip $(MTK_WVDRM_SUPPORT)),yes)
+  LOCAL_CFLAGS += -DMTK_WV_DRM_SUPPORT
+  LOCAL_SHARED_LIBRARIES += \
+      libdrmmtkutil \
+      libdrmmtkwhitelist
+endif
+
 LOCAL_STATIC_LIBRARIES := libdrmframeworkcommon
 
 LOCAL_C_INCLUDES := \
     $(TOP)/frameworks/av/include \
     $(TOP)/frameworks/av/drm/libdrmframework/include \
     $(TOP)/frameworks/av/drm/libdrmframework/plugins/common/include
+
+ifeq ($(strip $(MTK_DRM_APP)),yes)
+  LOCAL_C_INCLUDES += \
+      $(MTK_PATH_SOURCE)/frameworks/av/include
+else ifeq ($(strip $(MTK_WVDRM_SUPPORT)),yes)
+  LOCAL_C_INCLUDES += \
+      $(MTK_PATH_SOURCE)/frameworks/av/include
+endif
 
 LOCAL_MODULE:= drmserver
 

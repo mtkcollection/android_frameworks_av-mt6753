@@ -18,6 +18,12 @@ LOCAL_C_INCLUDES += \
 
 LOCAL_C_INCLUDES += $(call include-path-for, speex)
 
+ifeq ($(MTK_AUDIO),yes)
+LOCAL_C_INCLUDES+= \
+   $(TOP)/$(MTK_PATH_SOURCE)/hardware/audio/common/include
+endif
+
+
 LOCAL_SHARED_LIBRARIES := \
     libwebrtc_audio_preprocessing \
     libspeexresampler \

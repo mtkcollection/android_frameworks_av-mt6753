@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -35,6 +40,7 @@
 #include <OMX_AsString.h>
 #include <OMX_Component.h>
 #include <OMX_VideoExt.h>
+#include <OMX_Core.h>
 
 namespace android {
 
@@ -265,6 +271,12 @@ status_t OMX::allocateNode(
 
 status_t OMX::freeNode(node_id node) {
     OMXNodeInstance *instance = findInstance(node);
+#ifdef MTK_AOSP_ENHANCEMENT
+    //error handling for instance is NULL case
+    if (instance == NULL) {
+        return OK;
+    }
+#endif
 
     {
         Mutex::Autolock autoLock(mLock);
@@ -468,6 +480,13 @@ OMX_ERRORTYPE OMX::OnEvent(
     findInstance(node)->onEvent(eEvent, nData1, nData2);
 
     sp<OMX::CallbackDispatcher> dispatcher = findDispatcher(node);
+#ifdef MTK_AOSP_ENHANCEMENT
+     //error handling for dispatcher is NULL case
+    if (dispatcher == NULL) {
+        ALOGE("dispatcher is NULL for node %u in OnEvent()", node);
+        return OMX_ErrorNone;
+    }
+#endif
 
     // output rendered events are not processed as regular events until they hit the observer
     if (eEvent == OMX_EventOutputRendered) {
@@ -513,7 +532,18 @@ OMX_ERRORTYPE OMX::OnEmptyBufferDone(
     msg.fenceFd = fenceFd;
     msg.u.buffer_data.buffer = buffer;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+     sp<OMX::CallbackDispatcher> dispatcher = findDispatcher(node);
+    //error handling for dispatcher is NULL case
+    if (dispatcher == NULL) {
+        ALOGE("dispatcher is NULL for node %u in OnEmptyBufferDone()",node);
+        return OMX_ErrorNone;
+    }
+    dispatcher->post(msg);
+#else
     findDispatcher(node)->post(msg);
+#endif
+
 
     return OMX_ErrorNone;
 }
@@ -531,8 +561,23 @@ OMX_ERRORTYPE OMX::OnFillBufferDone(
     msg.u.extended_buffer_data.range_length = pBuffer->nFilledLen;
     msg.u.extended_buffer_data.flags = pBuffer->nFlags;
     msg.u.extended_buffer_data.timestamp = pBuffer->nTimeStamp;
+#ifdef MTK_AOSP_ENHANCEMENT
+    //for transmitting proprietary data
+    msg.u.extended_buffer_data.token_tick = pBuffer->nTickCount;
+#endif//MTK_AOSP_ENHANCEMENT
 
+#ifdef MTK_AOSP_ENHANCEMENT
+     sp<OMX::CallbackDispatcher> dispatcher = findDispatcher(node);
+    //error handling for dispatcher is NULL case
+    if (dispatcher == NULL) {
+        ALOGE("dispatcher is NULL for node %u in OnFillBufferDone()",node);
+        return OMX_ErrorNone;
+    }
+    dispatcher->post(msg);
+#else
     findDispatcher(node)->post(msg);
+#endif
+
 
     return OMX_ErrorNone;
 }

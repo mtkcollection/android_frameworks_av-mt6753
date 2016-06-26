@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2004-2010 NXP Software
  * Copyright (C) 2010 The Android Open Source Project
  *
@@ -42,9 +47,14 @@ void DC_2I_D16_TRC_WRA_01( Biquad_Instance_t       *pInstance,
             *(pDataOut++)=(LVM_INT16)Diff;
             if (Diff < 0) {
                 LeftDC -= DC_D16_STEP; }
+// Fix CR: ALPS00052650
+#ifdef MTK_AOSP_ENHANCEMENT
+            else if (Diff > 0) {
+                LeftDC += DC_D16_STEP; }
+#else
             else {
                 LeftDC += DC_D16_STEP; }
-
+#endif
 
             /* Subtract DC an saturate */
             Diff=*(pDataIn++)-(RightDC>>16);
@@ -55,8 +65,14 @@ void DC_2I_D16_TRC_WRA_01( Biquad_Instance_t       *pInstance,
             *(pDataOut++)=(LVM_INT16)Diff;
             if (Diff < 0) {
                 RightDC -= DC_D16_STEP; }
+// Fix CR: ALPS00052650
+#ifdef MTK_AOSP_ENHANCEMENT
+            else if (Diff > 0) {
+                RightDC += DC_D16_STEP; }
+#else
             else {
                 RightDC += DC_D16_STEP; }
+#endif
 
         }
         pBiquadState->LeftDC    =   LeftDC;

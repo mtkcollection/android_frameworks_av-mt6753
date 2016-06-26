@@ -447,6 +447,19 @@ status_t AudioPort::checkCompatibleChannelMask(audio_channel_mask_t channelMask,
     int bestMatch = 0;
     for (size_t i = 0; i < mChannelMasks.size(); i ++) {
         audio_channel_mask_t supported = mChannelMasks[i];
+#ifdef MTK_AUDIO
+        // No ChannelMask for (AUDIO_CHANNEL_IN_VOICE_UPLINK|AUDIO_CHANNEL_IN_VOICE_DNLINK)
+        // Check it indivually
+        if (((supported == AUDIO_CHANNEL_IN_VOICE_UPLINK)
+            || (supported == AUDIO_CHANNEL_IN_VOICE_DNLINK))
+            && (channelMask & supported))
+        {
+            if (channelMask != supported)
+            {
+                channelMask = channelMask & ~supported;
+            }
+        }
+#endif
         if (supported == channelMask) {
             // Exact matches always taken.
             if (updatedChannelMask != NULL) {
@@ -605,6 +618,12 @@ uint32_t AudioPort::pickSamplingRate() const
     for (size_t i = 0; i < mSamplingRates.size(); i ++) {
         if ((mSamplingRates[i] > samplingRate) && (mSamplingRates[i] <= maxRate)) {
             samplingRate = mSamplingRates[i];
+#ifdef MTK_AUDIO
+            if(samplingRate !=0)
+            {
+                break;
+            }
+#endif
         }
     }
     return samplingRate;

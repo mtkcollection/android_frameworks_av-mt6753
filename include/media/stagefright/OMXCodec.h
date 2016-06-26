@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -25,6 +30,13 @@
 #include <utils/threads.h>
 
 #include <OMX_Audio.h>
+
+
+#ifdef MTK_AOSP_ENHANCEMENT
+// adb shell property flags
+#define OMXCODEC_ENABLE_VIDEO_INPUT_ERROR_PATTERNS  (1 << 0)
+#define OMXCODEC_THUMBNAIL_MODE                     (1 << 1)
+#endif
 
 namespace android {
 
@@ -60,6 +72,14 @@ struct OMXCodec : public MediaSource,
 
         // Secure decoding mode
         kUseSecureInputBuffers = 256,
+#ifdef MTK_AOSP_ENHANCEMENT
+        kAudUseOMXForVE = 512,
+        kMtkAudDecForVE = 1024,
+        kUseMaxOutputBuffers = 2048,
+        kUseClearMotion = 4096,
+        kVideoUseOMXMVAForVE = 8192,
+        kEnableThumbnailOptimzation = 32768,
+#endif
     };
     static sp<MediaSource> Create(
             const sp<IOMX> &omx,
@@ -100,6 +120,10 @@ struct OMXCodec : public MediaSource,
         kSupportsMultipleFramesPerInputBuffer = 1024,
         kRequiresLargerEncoderOutputBuffer    = 2048,
         kOutputBuffersAreUnreadable           = 4096,
+#ifdef MTK_AOSP_ENHANCEMENT
+        kAvoidMemcopyInputRecordingFrames     = 8192,
+        kDecoderNeedPrebuffer                 = 16384,
+#endif
     };
 
     struct CodecNameAndQuirks {
@@ -118,6 +142,24 @@ struct OMXCodec : public MediaSource,
             const sp<MediaCodecInfo> &list);
 
     static bool findCodecQuirks(const char *componentName, uint32_t *quirks);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    size_t buffersOwn();
+    void resume();
+    //for videoeditor MVA mode
+    void *findInputBufferByDataNumber(OMX_U32 portIndex, uint32_t number);
+    // Added for video editor to query the number of empty input buffers.
+    uint32_t getEmptyInputBufferCount();
+
+    // Morris Yang for Camera recording
+    virtual sp<MetaData> getCameraMeta();
+    status_t vEncSetForceIframe(bool enable);
+    status_t vDecSwitchBwTVout(bool enable);
+    status_t vEncSetFrameRate(unsigned int u4FrameRate);
+    status_t vEncSetBitRate(unsigned int u4BitRate);
+    sp<MediaSource> getSource() { return mSource; }
+#endif
+
 
 protected:
     virtual ~OMXCodec();
@@ -216,6 +258,37 @@ private:
 
     bool mPaused;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    bool mIsVideoDecoder;
+    bool mIsVideoEncoder;
+    unsigned char* mInputBufferPoolMemBase;
+    unsigned char* mOutputBufferPoolMemBase;
+    uint32_t mPropFlags;
+    float mVideoInputErrorRate;
+    Condition mBufferSent;
+    // set this by calling start with kKeyMaxQueueBuffer in meta
+    size_t mMaxQueueBufferNum;
+    bool mQueueWaiting;
+    bool mSupportsPartialFrames;
+    MediaBufferSimpleObserver mOMXPartialBufferOwner;
+    int32_t mVideoAspectRatioWidth;
+    int32_t mVideoAspectRatioHeight;
+    bool mIsVENCTimelapseMode;
+    int64_t mRTSPOutputTimeoutUS;
+    int64_t mHTTPOutputTimeoutUS;
+
+    // Morris Yang for Camera recording
+    sp<MetaData> mCameraMeta;
+#ifdef MTK_CMMB_ENABLE
+    //IsCMMB
+    bool IsCMMBFlag;
+#endif
+    bool mIsHttpStreaming;
+    bool mDolbyProcessedAudio;
+    bool mDolbyProcessedAudioStateChanged;
+    bool mIsSlowMotion;
+#endif
+
     sp<ANativeWindow> mNativeWindow;
 
     // The index in each of the mPortBuffers arrays of the buffer that will be
@@ -242,7 +315,12 @@ private:
 
     void setComponentRole();
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    int32_t getAACProfile();
+    status_t setAMRFormat(bool isWAMR, int32_t bitRate);
+#else
     void setAMRFormat(bool isWAMR, int32_t bitRate);
+#endif
 
     status_t setAACFormat(
             int32_t numChannels, int32_t sampleRate, int32_t bitRate,
@@ -265,6 +343,9 @@ private:
     status_t setupH263EncoderParameters(const sp<MetaData>& meta);
     status_t setupMPEG4EncoderParameters(const sp<MetaData>& meta);
     status_t setupAVCEncoderParameters(const sp<MetaData>& meta);
+#ifdef MTK_AOSP_ENHANCEMENT
+    status_t setupVP8EncoderParameters(const sp<MetaData>& meta);
+#endif
     status_t findTargetColorFormat(
             const sp<MetaData>& meta, OMX_COLOR_FORMATTYPE *colorFormat);
 
@@ -306,13 +387,21 @@ private:
 
     bool drainInputBuffer(IOMX::buffer_id buffer);
     void fillOutputBuffer(IOMX::buffer_id buffer);
+#ifdef MTK_AOSP_ENHANCEMENT
+    bool drainInputBuffer(BufferInfo *info, bool init = false);
+#else
     bool drainInputBuffer(BufferInfo *info);
+#endif
     void fillOutputBuffer(BufferInfo *info);
 
     void drainInputBuffers();
     void fillOutputBuffers();
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    bool drainAnyInputBuffer(bool init = false);
+#else
     bool drainAnyInputBuffer();
+#endif
     BufferInfo *findInputBufferByDataPointer(void *ptr);
     BufferInfo *findEmptyInputBuffer();
 
@@ -337,7 +426,11 @@ private:
     void setState(State newState);
 
     status_t init();
+#ifdef MTK_AOSP_ENHANCEMENT
+    status_t initOutputFormat(const sp<MetaData> &inputFormat);
+#else
     void initOutputFormat(const sp<MetaData> &inputFormat);
+#endif
     status_t initNativeWindow();
 
     void initNativeWindowCrop();
@@ -361,6 +454,31 @@ private:
 
     OMXCodec(const OMXCodec &);
     OMXCodec &operator=(const OMXCodec &);
+#ifdef MTK_AOSP_ENHANCEMENT
+    void restorePatchedDataPointer(BufferInfo *info);
+    void dumpBufferOwner(const Vector<BufferInfo> &buffers);
+    void waitClientBuffers(const Vector<BufferInfo> &buffers);
+    void PutErrorPatterns(uint8_t *pBuffer, uint32_t length);
+    status_t allocateBuffersOnInputPort();
+    status_t allocateBuffersOnOutputPort();
+
+public:
+    void setVORBISFormat(const sp<MetaData> &meta);
+    status_t vorbisSizeValid(int size);
+    status_t setupAACFormat(int numChannels,int sampleRate,int bitRate,int aacProfile,int isADTS,const sp<MetaData> &meta);
+    status_t setupG711Format(int numChannels,const sp<MetaData> &meta);
+    status_t setupADPCMFormat(const sp<MetaData> &meta);
+    status_t setupRawFormat(int numChannels,int sampleRate,const sp<MetaData> &meta);
+    status_t setupMp3Format(const sp<MetaData> &meta);
+    status_t setupFLACFormat(const sp<MetaData> &meta);
+    status_t setupAPEFormat(const sp<MetaData> &meta);
+    void setupALACFormat(const sp<MetaData> &meta);
+    status_t apeSeekFunc(MediaBuffer *srcBuffer);
+
+private:
+    //int32_t mPreRollTimes;
+    int64_t mPreRollStartTime;
+#endif
 };
 
 struct CodecCapabilities {
@@ -404,6 +522,32 @@ status_t QueryCodec(
         CodecCapabilities *caps);
 
 status_t getOMXChannelMapping(size_t numChannels, OMX_AUDIO_CHANNELTYPE map[]);
+
+#ifdef MTK_AOSP_ENHANCEMENT    // Morris Yang for Camera recording
+#define VDOBUFCOUNT_MAX 16
+typedef struct
+{
+    uint32_t u4VdoBufCount;
+    uint32_t u4VdoBufSize;
+    unsigned long u4VdoBufVA[VDOBUFCOUNT_MAX];
+} CamMemInfo_t;
+
+typedef struct
+{
+    uint32_t u4VdoBufCount;
+    uint32_t u4VdoBufSize;
+    int          IonFd[VDOBUFCOUNT_MAX];
+    unsigned long u4VdoBufVA[VDOBUFCOUNT_MAX];
+} CamMemIonInfo_t;
+
+typedef struct
+{
+    uint32_t u4Security;
+    uint32_t u4Coherent;
+} CamMCIMemInfo_t;
+
+#endif
+
 
 }  // namespace android
 

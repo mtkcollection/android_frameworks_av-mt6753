@@ -1,3 +1,8 @@
+/*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
  /*
  * Copyright (C) 2012 The Android Open Source Project
  *
@@ -29,7 +34,9 @@
 
 #include "TimedTextSRTSource.h"
 #include "TextDescriptions.h"
-
+#ifndef UNUSED
+#define UNUSED(a) (void)&a
+#endif
 namespace android {
 
 TimedTextSRTSource::TimedTextSRTSource(const sp<DataSource>& dataSource)
@@ -250,6 +257,20 @@ status_t TimedTextSRTSource::getText(
     if (mIndex >= mTextVector.size()) {
         return ERROR_END_OF_STREAM;
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+#if 0
+    {
+        int index = 0;
+    while (index < mTextVector.size()) {
+        int64_t endTimeUs = mTextVector.valueAt(index).endTimeUs;
+        int64_t startTimeUs = (index > 0) ?
+        mTextVector.valueAt(index - 1).endTimeUs : 0;
+        ALOGI("zxy dump %d: stat:%lld, end:%lld, timeUs:%lld", index, startTimeUs, endTimeUs, seekTimeUs);
+            index++;
+    }
+    }
+#endif
+#endif
 
     const TextInfo &info = mTextVector.valueAt(mIndex);
     *startTimeUs = mTextVector.keyAt(mIndex);
@@ -286,6 +307,10 @@ int TimedTextSRTSource::compareExtendedRangeAndTime(size_t index, int64_t timeUs
     int64_t startTimeUs = (index > 0) ?
             mTextVector.valueAt(index - 1).endTimeUs : 0;
     if (timeUs >= startTimeUs && timeUs < endTimeUs) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    // last endtime is start time
+    ALOGI("seek done, start:%lld, end:%lld, timeUs:%lld", (long long)startTimeUs, (long long)endTimeUs, (long long)timeUs);
+#endif
         return 0;
     } else if (endTimeUs <= timeUs) {
         return -1;
@@ -293,5 +318,23 @@ int TimedTextSRTSource::compareExtendedRangeAndTime(size_t index, int64_t timeUs
         return 1;
     }
 }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+status_t TimedTextSRTSource::parse(
+              uint8_t* text,
+              size_t size,
+              int64_t startTimeUs,
+              int64_t endTimeUs,
+              Parcel *parcel)
+{
+    UNUSED(text);
+    UNUSED(size);
+    UNUSED(startTimeUs);
+    UNUSED(endTimeUs);
+    UNUSED(parcel);
+    /*do not supoprt internal srt subtitle */
+    return OK;
+}
+#endif
 
 }  // namespace android

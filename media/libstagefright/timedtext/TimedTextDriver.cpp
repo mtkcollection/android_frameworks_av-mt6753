@@ -1,3 +1,8 @@
+/*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
  /*
  * Copyright (C) 2012 The Android Open Source Project
  *
@@ -75,6 +80,9 @@ status_t TimedTextDriver::selectTrack_l(size_t index) {
 }
 
 status_t TimedTextDriver::start() {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("%s() is called", __FUNCTION__);
+#endif
     Mutex::Autolock autoLock(mLock);
     switch (mState) {
         case UNINITIALIZED:
@@ -96,6 +104,9 @@ status_t TimedTextDriver::start() {
 }
 
 status_t TimedTextDriver::pause() {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGV("%s() is called", __FUNCTION__);
+#endif
     Mutex::Autolock autoLock(mLock);
     ALOGV("%s() is called", __FUNCTION__);
     switch (mState) {
@@ -116,6 +127,9 @@ status_t TimedTextDriver::pause() {
 }
 
 status_t TimedTextDriver::selectTrack(size_t index) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("%s() index:%zu", __FUNCTION__, index);
+#endif
     status_t ret = OK;
     Mutex::Autolock autoLock(mLock);
     ALOGV("%s() is called", __FUNCTION__);
@@ -140,6 +154,9 @@ status_t TimedTextDriver::selectTrack(size_t index) {
 }
 
 status_t TimedTextDriver::unselectTrack(size_t index) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("%s() index:%zu", __FUNCTION__, index);
+#endif
     Mutex::Autolock autoLock(mLock);
     ALOGV("%s() is called", __FUNCTION__);
     if (mCurrentTrackIndex != index) {
@@ -164,6 +181,9 @@ status_t TimedTextDriver::unselectTrack(size_t index) {
 }
 
 status_t TimedTextDriver::seekToAsync(int64_t timeUs) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("%s() is called", __FUNCTION__);
+#endif
     Mutex::Autolock autoLock(mLock);
     ALOGV("%s() is called", __FUNCTION__);
     switch (mState) {
@@ -189,6 +209,9 @@ status_t TimedTextDriver::seekToAsync(int64_t timeUs) {
 
 status_t TimedTextDriver::addInBandTextSource(
         size_t trackIndex, const sp<MediaSource>& mediaSource) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("%s() trackIndex:%zu", __FUNCTION__, trackIndex);
+#endif
     sp<TimedTextSource> source =
             TimedTextSource::CreateTimedTextSource(mediaSource);
     if (source == NULL) {
@@ -202,6 +225,9 @@ status_t TimedTextDriver::addInBandTextSource(
 
 status_t TimedTextDriver::addOutOfBandTextSource(
         size_t trackIndex, const char *uri, const char *mimeType) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("%s() trackIndex:%zu, uri:%s", __FUNCTION__, trackIndex, uri);
+#endif
 
     // To support local subtitle file only for now
     if (strncasecmp("file://", uri, 7)) {
@@ -217,6 +243,9 @@ status_t TimedTextDriver::addOutOfBandTextSource(
 status_t TimedTextDriver::addOutOfBandTextSource(
         size_t trackIndex, int fd, off64_t offset, off64_t length, const char *mimeType) {
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("%s() trackIndex:%zu, fd=%d, offset=%lld, length=%lld", __FUNCTION__,trackIndex, fd, (long long)offset, (long long)length);
+#endif
     if (fd < 0) {
         ALOGE("Invalid file descriptor: %d", fd);
         return ERROR_UNSUPPORTED;

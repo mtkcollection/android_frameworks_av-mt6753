@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright 2012, The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -37,8 +42,16 @@
 #include <media/stagefright/MetaData.h>
 #include <media/stagefright/Utils.h>
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#include "include/avc_utils.h"
+#include <cutils/log.h>
+#endif
 namespace android {
 
+#ifdef MTK_AOSP_ENHANCEMENT
+static void modifyMeta(const sp<MetaData> &fileMetaData, sp<MetaData> meta,
+            const sp<MediaExtractor> &impl, size_t index);
+#endif
 NuMediaExtractor::NuMediaExtractor()
     : mIsWidevineExtractor(false),
       mTotalBitrate(-1ll),
@@ -120,6 +133,14 @@ status_t NuMediaExtractor::setDataSource(
         return ERROR_UNSUPPORTED;
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (fileMeta != NULL && httpService == NULL
+        && !strcasecmp(containerMime, MEDIA_MIMETYPE_CONTAINER_AVI)) {
+        ALOGI("avi seek table");
+        mImpl->finishParsing();  // for avi create seektable.
+    }
+#endif
+
     mDataSource = dataSource;
 
     updateDurationAndBitrate();
@@ -147,6 +168,7 @@ status_t NuMediaExtractor::setDataSource(int fd, off64_t offset, off64_t size) {
     if (mImpl == NULL) {
         return ERROR_UNSUPPORTED;
     }
+
 
     mDataSource = fileSource;
 
@@ -227,6 +249,10 @@ status_t NuMediaExtractor::getTrackFormat(
     }
 
     sp<MetaData> meta = mImpl->getTrackMetaData(index);
+#ifdef MTK_AOSP_ENHANCEMENT
+    sp<MetaData> fileMetaData = mImpl->getMetaData();
+    modifyMeta(fileMetaData, meta, mImpl, index);
+#endif
     return convertMetaDataToMessage(meta, format);
 }
 
@@ -393,6 +419,9 @@ ssize_t NuMediaExtractor::fetchTrackSamples(
                           info->mTrackIndex, err);
                 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+                ALOGW("read on track %zu err %d", info->mTrackIndex, err);
+#endif
                 info->mSampleTimeUs = -1ll;
                 continue;
             } else {
@@ -414,7 +443,14 @@ ssize_t NuMediaExtractor::fetchTrackSamples(
 status_t NuMediaExtractor::seekTo(
         int64_t timeUs, MediaSource::ReadOptions::SeekMode mode) {
     Mutex::Autolock autoLock(mLock);
-
+#ifdef MTK_AOSP_ENHANCEMENT
+    sp<MetaData> fileMetaData = mImpl->getMetaData();
+    const char *mime;
+    if (fileMetaData->findCString(kKeyMIMEType, &mime)
+        && !strcasecmp(mime, MEDIA_MIMETYPE_CONTAINER_AVI)) {
+        mImpl->finishParsing();  // for avi create seektable.
+    }
+#endif
     ssize_t minIndex = fetchTrackSamples(timeUs, mode);
 
     if (minIndex < 0) {
@@ -462,6 +498,9 @@ status_t NuMediaExtractor::readSampleData(const sp<ABuffer> &buffer) {
     }
 
     if (buffer->capacity() < sampleSize) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGW("buffer size:%zu < sampleSize:%zu", buffer->capacity(), sampleSize);
+#endif
         return -ENOMEM;
     }
 
@@ -483,6 +522,9 @@ status_t NuMediaExtractor::readSampleData(const sp<ABuffer> &buffer) {
                sizeof(numPageSamples));
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGV("track:%zu, ts:%lld, size:%zu", info->mTrackIndex, (long long )info->mSampleTimeUs, sampleSize);
+#endif
     buffer->setRange(0, sampleSize);
 
     return OK;
@@ -581,4 +623,87 @@ bool NuMediaExtractor::getCachedDuration(
     return false;
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+static void EncodeSize14(uint8_t **_ptr, size_t size) {
+    CHECK_LE(size, 0x3fff);
+
+    uint8_t *ptr = *_ptr;
+
+    *ptr++ = 0x80 | (size >> 7);
+    *ptr++ = size & 0x7f;
+
+    *_ptr = ptr;
+}
+static sp<ABuffer> MakeMPEGVideoESDS(const sp<ABuffer> &csd) {
+    sp<ABuffer> esds = new ABuffer(csd->size() + 25);
+
+    uint8_t *ptr = esds->data();
+    *ptr++ = 0x03;
+    EncodeSize14(&ptr, 22 + csd->size());
+
+    *ptr++ = 0x00;  // ES_ID
+    *ptr++ = 0x00;
+
+    *ptr++ = 0x00;  // streamDependenceFlag, URL_Flag, OCRstreamFlag
+
+    *ptr++ = 0x04;
+    EncodeSize14(&ptr, 16 + csd->size());
+
+    *ptr++ = 0x40;  // Audio ISO/IEC 14496-3
+
+    for (size_t i = 0; i < 12; ++i) {
+        *ptr++ = 0x00;
+    }
+
+    *ptr++ = 0x05;
+    EncodeSize14(&ptr, csd->size());
+
+    memcpy(ptr, csd->data(), csd->size());
+
+    return esds;
+}
+
+static void modifyMeta(const sp<MetaData> &fileMetaData, sp<MetaData> meta,
+        const sp<MediaExtractor> &impl, size_t index) {
+    uint32_t type;
+    const void *data;
+    size_t size;
+
+    // only for mkv to get VOS
+    const char *mime;
+    int32_t isinfristframe = false;
+    if (fileMetaData->findCString(kKeyMIMEType, &mime) && !strcasecmp(mime, MEDIA_MIMETYPE_CONTAINER_MATROSKA)) {
+        if (meta->findInt32(kKeyCodecInfoIsInFirstFrame, &isinfristframe) && isinfristframe) {
+            ALOGI("mkv should getTrack before,get kKeyMPEG4VOS");
+            sp<MediaSource> source = impl->getTrack(index);
+        }
+    }
+
+    // convert vos
+    if (meta->findData(kKeyMPEG4VOS, &type, &data, &size)) {
+        sp<ABuffer> csd = new ABuffer(size);
+        memcpy(csd->data(), data, size);
+        sp<ABuffer> esds = MakeMPEGVideoESDS(csd);
+        meta->setData(
+                kKeyESDS, kTypeESDS, esds->data(), esds->size());
+        ALOGI("convert vos to esds, size:%zu, VOS size:%zu", esds->size(), size);
+    } else if (meta->findData(kKeyCodecConfigInfo, &type, &data, &size)) {
+        uint8_t *codecData = (uint8_t *)data;
+        uint8_t profile = (codecData[0] >> 3) - 1;
+        uint8_t sampling_freq_index = ((codecData[0] & 0x07) << 1) | (codecData[1] >> 7);
+        uint8_t channel_configuration = (codecData[1] & 0x7F) >> 3;
+
+        sp<MetaData> esdsMeta = MakeAACCodecSpecificData(
+                profile, sampling_freq_index, channel_configuration);
+        uint32_t type;
+        const void *data;
+        size_t size;
+        if (esdsMeta->findData(kKeyESDS, &type, &data, &size)) {
+            ALOGI("convert CodecConfigInfo to ESDS size:%zu, profile:%d, sample index:%d, channel:%d",
+                    size, profile, sampling_freq_index, channel_configuration);
+            meta->setData(kKeyESDS, type, data, size);
+        }
+    }
+}
+#endif
 }  // namespace android

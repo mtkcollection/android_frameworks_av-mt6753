@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -65,10 +70,25 @@ private:
 
     AMRSource(const AMRSource &);
     AMRSource &operator=(const AMRSource &);
+public:
+
+#ifdef MTK_AOSP_ENHANCEMENT //gap reduction
+    virtual status_t findValidFrame(off64_t *mOffset, uint8_t header);
+#endif
+
 };
 
 ////////////////////////////////////////////////////////////////////////////////
+#ifdef MTK_AOSP_ENHANCEMENT
+static const unsigned int Buffer_Count_Readed = 1024;
+static size_t getFrameSize(bool isWide, unsigned FT);
+static status_t getFrameSizeByOffset_MMIO(uint8_t *buf, ssize_t &data_length, size_t &data_offset,
+        off64_t &offset, bool isWide, size_t *frameSize);
+static status_t getFrameSizeByOffset(const sp<DataSource> &source,
+        off64_t &offset, bool isWide, size_t *frameSize);
+#endif
 
+#ifndef MTK_AOSP_ENHANCEMENT
 static size_t getFrameSize(bool isWide, unsigned FT) {
     static const size_t kFrameSizeNB[16] = {
         95, 103, 118, 134, 148, 159, 204, 244,
@@ -96,7 +116,9 @@ static size_t getFrameSize(bool isWide, unsigned FT) {
 
     return frameSize;
 }
+#endif
 
+#ifndef MTK_AOSP_ENHANCEMENT
 static status_t getFrameSizeByOffset(const sp<DataSource> &source,
         off64_t offset, bool isWide, size_t *frameSize) {
     uint8_t header;
@@ -112,7 +134,7 @@ static status_t getFrameSizeByOffset(const sp<DataSource> &source,
     }
     return OK;
 }
-
+#endif
 AMRExtractor::AMRExtractor(const sp<DataSource> &source)
     : mDataSource(source),
       mInitCheck(NO_INIT),
@@ -137,19 +159,62 @@ AMRExtractor::AMRExtractor(const sp<DataSource> &source)
     off64_t streamSize;
     size_t frameSize, numFrames = 0;
     int64_t duration = 0;
+#ifdef MTK_AOSP_ENHANCEMENT
+
+    status_t ret = 0;
+    bool streamingFlag = mDataSource->flags() & DataSource::kIsCachingDataSource;
+    char *pData = new char [Buffer_Count_Readed];
+    ssize_t dataLen = 0;
+    size_t dataOffset = 0;
+    ALOGD("AMRExtractor--is streaming flag=%d, pData:%p", streamingFlag, pData);
+#endif
 
     if (mDataSource->getSize(&streamSize) == OK) {
          while (offset < streamSize) {
+#ifdef MTK_AOSP_ENHANCEMENT
+
+            if (pData) {
+                if (dataLen==0) {
+                    dataLen = mDataSource->readAt(offset, (void *)pData, Buffer_Count_Readed);
+            if (dataLen < 0) {
+                         return;
+            }
+                    dataOffset = 0;
+                }
+                ret = getFrameSizeByOffset_MMIO((uint8_t *)pData, dataLen, dataOffset, offset, mIsWide, &frameSize);
+                if (ret==NO_MEMORY) {
+                    dataLen = 0;
+                    continue;
+                }
+            }else {
+                ret = getFrameSizeByOffset(source, offset, mIsWide, &frameSize);
+            }
+            if (ret==ERROR_END_OF_STREAM) {
+                break;
+            }else if(ret!=OK) {
+                if (pData) delete [] pData;
+                pData = 0;
+                ALOGD("AMRExtractor--getFrameSizeByOffset is not ok!");
+                return;
+            }
+#else
             if (getFrameSizeByOffset(source, offset, mIsWide, &frameSize) != OK) {
                 return;
             }
-
+#endif
             if ((numFrames % 50 == 0) && (numFrames / 50 < OFFSET_TABLE_LEN)) {
                 CHECK_EQ(mOffsetTableLength, numFrames / 50);
                 mOffsetTable[mOffsetTableLength] = offset - (mIsWide ? 9: 6);
                 mOffsetTableLength ++;
             }
+#ifdef MTK_AOSP_ENHANCEMENT
 
+            else if(streamingFlag&&(numFrames>=50*OFFSET_TABLE_LEN)) {
+                duration += 20000*(streamSize - offset)/((offset - (mIsWide ? 9: 6))/(off64_t)numFrames);
+                ALOGV("AMRExtractor--end duration=%lld, frame size = %lld", (long long)duration, (long long)((offset - (mIsWide ? 9: 6))/(off64_t)numFrames));
+                break;
+            }
+#endif
             offset += frameSize;
             duration += 20000;  // Each frame is 20ms
             numFrames ++;
@@ -157,7 +222,12 @@ AMRExtractor::AMRExtractor(const sp<DataSource> &source)
 
         mMeta->setInt64(kKeyDuration, duration);
     }
+#ifdef MTK_AOSP_ENHANCEMENT
 
+    if (pData) delete [] pData;
+    pData = 0;
+    ALOGD("AMRExtractor--constructor out -");
+#endif
     mInitCheck = OK;
 }
 
@@ -254,6 +324,15 @@ status_t AMRSource::read(
     int64_t seekTimeUs;
     ReadOptions::SeekMode mode;
     if (options && options->getSeekTo(&seekTimeUs, &mode)) {
+#ifdef MTK_AOSP_ENHANCEMENT
+
+        // Maybe risk (int)index >= (uint)mOffsetTableLength warning: comparison between signed and unsigned integer expressions
+        // should check seekTimeUs < 0 case
+    if (seekTimeUs < 0) {
+        ALOGW("seekTimeUs:%lld < 0", (long long)seekTimeUs);
+        seekTimeUs = 0;
+    }
+#endif
         size_t size;
         int64_t seekFrame = seekTimeUs / 20000ll;  // 20ms per frame.
         mCurrentTimeUs = seekFrame * 20000ll;
@@ -281,7 +360,17 @@ status_t AMRSource::read(
     if (n < 1) {
         return ERROR_END_OF_STREAM;
     }
+#ifdef MTK_AOSP_ENHANCEMENT
 
+    status_t ret  = OK;
+    if(header & 0x83) {
+       ret = findValidFrame(&mOffset,header);
+    }
+    if (ret != OK) {
+        return ret;
+    }
+
+#else
     if (header & 0x83) {
         // Padding bits must be 0.
 
@@ -289,6 +378,7 @@ status_t AMRSource::read(
 
         return ERROR_MALFORMED;
     }
+#endif
 
     unsigned FT = (header >> 3) & 0x0f;
 
@@ -349,5 +439,127 @@ bool SniffAMR(
 
     return false;
 }
+
+
+#ifdef MTK_AOSP_ENHANCEMENT
+static size_t getFrameSize(bool isWide, unsigned FT) {
+
+    static const size_t kFrameSizeNB[16] = {
+        13, 14, 16, 18, 20, 21, 27, 32, 6, 7, 6, 6, 1, 1, 1, 1
+    };
+    static const size_t kFrameSizeWB[16] = {
+        18, 24, 33, 37, 41, 47, 51, 59, 61, 6, 1, 1, 1, 1, 1, 1
+    };
+
+    if (FT > 15 || (isWide && FT > 9 && FT < 14) || (!isWide && FT > 11 && FT < 15)) {
+        ALOGE("illegal AMR frame type %d", FT);
+        return 0;
+    }
+
+    return  isWide ? kFrameSizeWB[FT] : kFrameSizeNB[FT];
+}
+
+static status_t getFrameSizeByOffset(const sp<DataSource> &source,
+        off64_t &offset, bool isWide, size_t *frameSize) {
+    uint8_t header;
+    int count = 0;
+    if (source->readAt(offset, &header, 1) < 1) {
+        return ERROR_END_OF_STREAM;
+    }
+
+    while(header & 0x83)
+    {
+        //SXLOGV("getFrameSizeByOffset--Frame head error,skip until to find an valid one");
+        offset++;
+        count++;
+        if (count>320) {
+            ALOGW("getFrameSizeByOffset--can not find the correct frame header in 64 byte");
+            return ERROR_END_OF_STREAM;
+        }
+        ssize_t n = source->readAt(offset, &header, 1);
+        if (n < 1) {
+            return ERROR_END_OF_STREAM;
+        }
+    }
+    unsigned FT = (header >> 3) & 0x0f;
+
+    *frameSize = getFrameSize(isWide, FT);
+    if (*frameSize == 0) {
+        return ERROR_MALFORMED;
+    }
+    return OK;
+}
+
+static status_t getFrameSizeByOffset_MMIO(uint8_t *buf, ssize_t &data_length, size_t &data_offset,
+        off64_t &offset, bool isWide, size_t *frameSize) {
+    uint8_t header = 0;
+    int count = 0;
+    if (data_length < 1) {
+        return ERROR_END_OF_STREAM;
+    }
+
+    if (buf && data_offset<Buffer_Count_Readed) {
+        header = *(buf+data_offset);
+    }else {
+        return NO_MEMORY;
+    }
+
+    while(header & 0x83)
+    {
+        offset++;
+        count++;
+        data_offset++;
+        data_length--;
+        if (count>320) {
+            ALOGW("getFrameSizeByOffset--can not find the correct frame header in 64 byte");
+            return ERROR_END_OF_STREAM;
+        }
+        if (data_length>1 && data_offset<Buffer_Count_Readed) {
+            header = *(buf+data_offset);
+        }else {
+            return NO_MEMORY;
+        }
+    }
+    unsigned FT = (header >> 3) & 0x0f;
+
+    *frameSize = getFrameSize(isWide, FT);
+    if (*frameSize == 0) {
+        return ERROR_MALFORMED;
+    }else if(*frameSize < (size_t)data_length){
+        data_length -= *frameSize;
+        data_offset += *frameSize;
+    }else {
+        data_length = 0;
+    }
+    return OK;
+}
+
+status_t AMRSource::findValidFrame(off64_t *mOffset, uint8_t header){
+    ALOGE("AMRSource::findValidFrame padding bits must be 0, header is 0x%02x", header);
+    int count = 0;
+    uint8_t header_t = header;
+    while(header_t & 0x83)
+    {
+        if ((count % 10) == 0)
+            ALOGW("AMRSource::read--Frame head error,skip until to find an valid one count %d",count);
+        (*mOffset)++;
+        count++;
+        if (count>320)
+        {
+            ALOGW("getFrameSizeByOffset--can not find the correct frame header in 64 byte");
+            return ERROR_END_OF_STREAM;
+        }
+
+        ssize_t n = mDataSource->readAt(*mOffset, &header_t, 1);
+
+        if (n < 1)
+        {
+            return ERROR_END_OF_STREAM;
+        }
+    }
+    return OK;
+}
+
+#endif
 
 }  // namespace android

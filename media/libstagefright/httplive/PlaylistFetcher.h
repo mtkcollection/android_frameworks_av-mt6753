@@ -184,6 +184,9 @@ private:
 
     bool mHasMetadata;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    FILE *mLogFile;
+#endif
     // Set first to true if decrypting the first segment of a playlist segment. When
     // first is true, reset the initialization vector based on the available
     // information in the manifest; otherwise, use the initialization vector as

@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
 **
 ** Copyright 2007, The Android Open Source Project
 **
@@ -34,6 +39,19 @@
 #define WAIT_PERIOD_MS                  10
 #define WAIT_STREAM_END_TIMEOUT_SEC     120
 static const int kMaxLoopCountNotifications = 32;
+
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <cutils/log.h>
+#include <linux/rtpm_prio.h>
+#include <media/AudioTrackCenter.h>
+#include <cutils/properties.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <audio_utils/pulse.h>
+
+static const char *g_track_pcm = "/sdcard/mtklog/audio_dump/af_track_pcm";
+static const char *g_track_propty = "af.track.pcm";
+#endif
 
 namespace android {
 // ---------------------------------------------------------------------------
@@ -103,6 +121,10 @@ static size_t calculateMinFrameCount(
     return minBufCount * sourceFramesNeededWithTimestretch(
             sampleRate, afFrameCount, afSampleRate, speed);
 }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+AudioTrackCenter gAudioTrackCenter;
+#endif
 
 // static
 status_t AudioTrack::getMinFrameCount(
@@ -237,6 +259,10 @@ AudioTrack::AudioTrack(
 
 AudioTrack::~AudioTrack()
 {
+    SLOGD("~audioTrack %p", this);
+#ifdef MTK_AOSP_ENHANCEMENT
+    gAudioTrackCenter.removeTrack((void*)this);
+#endif
     if (mStatus == NO_ERROR) {
         // Make sure that callback function exits in the case where
         // it is looping on buffer full condition in obtainBuffer().
@@ -283,10 +309,17 @@ status_t AudioTrack::set(
         const audio_attributes_t* pAttributes,
         bool doNotReconnect)
 {
-    ALOGV("set(): streamType %d, sampleRate %u, format %#x, channelMask %#x, frameCount %zu, "
+    ALOGD("set(): streamType %d, sampleRate %u, format %#x, channelMask %#x, frameCount %zu, "
           "flags #%x, notificationFrames %u, sessionId %d, transferType %d, uid %d, pid %d",
           streamType, sampleRate, format, channelMask, frameCount, flags, notificationFrames,
           sessionId, transferType, uid, pid);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    if(AUDIO_STREAM_ENFORCED_AUDIBLE == streamType) {
+        flags = (audio_output_flags_t) (flags & ~AUDIO_OUTPUT_FLAG_FAST);
+        ALOGD("Camera not support fast !!");
+    }
+#endif
 
     switch (transferType) {
     case TRANSFER_DEFAULT:
@@ -328,7 +361,12 @@ status_t AudioTrack::set(
     ALOGV_IF(sharedBuffer != 0, "sharedBuffer: %p, size: %zu", sharedBuffer->pointer(),
             sharedBuffer->size());
 
-    ALOGV("set() streamType %d frameCount %zu flags %04x", streamType, frameCount, flags);
+    ALOGD("set() streamType %d frameCount %zu flags %04x", streamType, frameCount, flags);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    SLOGD("audiotrack %p set Type %d, rate %d, fmt %d, chn %d, fcnt %zu, flags %04x",
+            this, streamType, sampleRate, format, channelMask, frameCount, flags);
+#endif
 
     // invariant that mAudioTrack != 0 is true only after set() returns successfully
     if (mAudioTrack != 0) {
@@ -401,6 +439,31 @@ status_t AudioTrack::set(
         } else {
             mFrameSize = sizeof(uint8_t);
         }
+#ifdef MTK_AOSP_ENHANCEMENT
+        // AudioSystem Get HDMI capability
+        // if Channel count is multi-channel
+        if(channelMask != AUDIO_CHANNEL_OUT_STEREO && channelMask != AUDIO_CHANNEL_OUT_MONO) {
+            // Check if HDMI is connected
+            if(AudioSystem::getDeviceConnectionState(AUDIO_DEVICE_OUT_AUX_DIGITAL,"") == AUDIO_POLICY_DEVICE_STATE_AVAILABLE) {
+                int hdim_channelCount, hdmi_maxSampleRate, hdmi_bitwidth;
+                hdim_channelCount = channelCount;
+
+                // need to get AF HDMI capability.
+                if (AudioSystem::getHDMICapability(&hdim_channelCount, &hdmi_bitwidth, &hdmi_maxSampleRate ) != NO_ERROR) {
+                    return BAD_VALUE;
+                }
+                ALOGD("GetHDMICapability hdim_channelCount %d, maxSampleRate%d, bitwidth %d", hdim_channelCount, hdmi_maxSampleRate, hdmi_bitwidth);
+                // if AF channel count > 2
+                if (hdim_channelCount > 2) {
+                    // track is Multi-channel and HDMI support Multi-channel.
+                    // raise for direct output.
+                    flags = (audio_output_flags_t)(flags | AUDIO_OUTPUT_FLAG_DIRECT) ;
+                    ALOGD("flags %d", flags);
+                }
+            } else {
+                ALOGD("receive multi-channel content and not detecting aux digital");
+            }
+        }
     } else {
         ALOG_ASSERT(audio_is_linear_pcm(format));
         mFrameSize = channelCount * audio_bytes_per_sample(format);
@@ -412,6 +475,7 @@ status_t AudioTrack::set(
     if (sampleRate == 0 && (flags & AUDIO_OUTPUT_FLAG_DIRECT) != 0) {
         return BAD_VALUE;
     }
+#endif
     mSampleRate = sampleRate;
     mOriginalSampleRate = sampleRate;
     mPlaybackRate = AUDIO_PLAYBACK_RATE_DEFAULT;
@@ -455,6 +519,7 @@ status_t AudioTrack::set(
     mCbf = cbf;
 
     if (cbf != NULL) {
+        ALOGD("set: Create AudioTrackThread");
         mAudioTrackThread = new AudioTrackThread(*this, threadCanCallJava);
         mAudioTrackThread->run("AudioTrack", ANDROID_PRIORITY_AUDIO, 0 /*stack*/);
         // thread begins in paused state, and will not reference us until start()
@@ -501,6 +566,8 @@ status_t AudioTrack::set(
 
 status_t AudioTrack::start()
 {
+    ALOGD("start(): %p", this);
+
     AutoMutex lock(mLock);
 
     if (mState == STATE_ACTIVE) {
@@ -522,15 +589,6 @@ status_t AudioTrack::start()
         mPreviousTimestampValid = false;
         mTimestampStartupGlitchReported = false;
         mRetrogradeMotionReported = false;
-
-        // If previousState == STATE_STOPPED, we reactivate markers (mMarkerPosition != 0)
-        // as the position is reset to 0. This is legacy behavior. This is not done
-        // in stop() to avoid a race condition where the last marker event is issued twice.
-        // Note: the if is technically unnecessary because previousState == STATE_FLUSHED
-        // is only for streaming tracks, and mMarkerReached is already set to false.
-        if (previousState == STATE_STOPPED) {
-            mMarkerReached = false;
-        }
 
         // For offloaded tracks, we don't know if the hardware counters are really zero here,
         // since the flush is asynchronous and stop may not fully drain.
@@ -571,6 +629,12 @@ status_t AudioTrack::start()
 
     if (status != NO_ERROR) {
         ALOGE("start() status %d", status);
+#ifdef MTK_AOSP_ENHANCEMENT // Fix issue of nuplayer resume when offload device connect ALPS01860081
+        if(isOffloaded_l()) {
+            ALOGD("EVENT_NEW_IAUDIOTRACK callback for offload");
+            mCbf(EVENT_NEW_IAUDIOTRACK, mUserData, NULL);
+        }
+#endif
         mState = previousState;
         if (t != 0) {
             if (previousState != STATE_STOPPING) {
@@ -581,12 +645,16 @@ status_t AudioTrack::start()
             set_sched_policy(0, mPreviousSchedulingGroup);
         }
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+    gAudioTrackCenter.setTrackActive((intptr_t)mCblk, true);
+#endif
 
     return status;
 }
 
 void AudioTrack::stop()
 {
+    ALOGD("stop(): %p", this);
     AutoMutex lock(mLock);
     if (mState != STATE_ACTIVE && mState != STATE_PAUSED) {
         return;
@@ -601,10 +669,11 @@ void AudioTrack::stop()
 
     mProxy->interrupt();
     mAudioTrack->stop();
-
-    // Note: legacy handling - stop does not clear playback marker
-    // and periodic update counter, but flush does for streaming tracks.
-
+    #ifndef MTK_AOSP_ENHANCEMENT
+    // the playback head position will reset to 0, so if a marker is set, we need
+    // to activate it again
+    mMarkerReached = false;
+    #endif
     if (mSharedBuffer != 0) {
         // clear buffer position and loop count.
         mStaticProxy->setBufferPositionAndLoop(0 /* position */,
@@ -620,6 +689,18 @@ void AudioTrack::stop()
         setpriority(PRIO_PROCESS, 0, mPreviousPriority);
         set_sched_policy(0, mPreviousSchedulingGroup);
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+    gAudioTrackCenter.setTrackActive((intptr_t)mCblk, false);
+#endif
+#ifdef MTK_AOSP_ENHANCEMENT
+    // the playback head position will reset to 0, so if a marker is set, we need
+    // to activate it again
+    // move here to prevent mMarkerReached to trigger another call back before track stop
+    mMarkerReached = false;
+    ALOGD("mMarkerReached = false");
+#endif
+
+    SLOGD("audiotrack %p stop done", this);
 }
 
 bool AudioTrack::stopped() const
@@ -630,6 +711,10 @@ bool AudioTrack::stopped() const
 
 void AudioTrack::flush()
 {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("%s", __FUNCTION__);
+#endif
+
     if (mSharedBuffer != 0) {
         return;
     }
@@ -649,7 +734,9 @@ void AudioTrack::flush_l()
     mMarkerReached = false;
     mUpdatePeriod = 0;
     mRefreshRemaining = true;
-
+#ifdef MTK_AOSP_ENHANCEMENT
+    gAudioTrackCenter.reset_flush((intptr_t)mCblk);
+#endif
     mState = STATE_FLUSHED;
     mReleased = 0;
     if (isOffloaded_l()) {
@@ -661,6 +748,9 @@ void AudioTrack::flush_l()
 
 void AudioTrack::pause()
 {
+#ifdef MTK_AOSP_ENHANCEMENT
+    SLOGD("pause %p", this);
+#endif
     AutoMutex lock(mLock);
     if (mState == STATE_ACTIVE) {
         mState = STATE_PAUSED;
@@ -669,6 +759,9 @@ void AudioTrack::pause()
     } else {
         return;
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+    gAudioTrackCenter.setTrackActive((intptr_t)mCblk, false);
+#endif
     mProxy->interrupt();
     mAudioTrack->pause();
 
@@ -744,7 +837,14 @@ status_t AudioTrack::setSampleRate(uint32_t rate)
     if (rate == mSampleRate) {
         return NO_ERROR;
     }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    // let HDMI set samplerate even use direct output
+    if (mIsTimed || (mFlags & AUDIO_OUTPUT_FLAG_COMPRESS_OFFLOAD) != 0) {
+#else
     if (mIsTimed || isOffloadedOrDirect_l() || (mFlags & AUDIO_OUTPUT_FLAG_FAST)) {
+#endif
+        ALOGD("[DEBUG] L[%d] return %d", __LINE__, INVALID_OPERATION);
         return INVALID_OPERATION;
     }
     if (mOutput == AUDIO_IO_HANDLE_NONE) {
@@ -754,13 +854,25 @@ status_t AudioTrack::setSampleRate(uint32_t rate)
     // could mean a previously allowed sampling rate is no longer allowed.
     uint32_t afSamplingRate;
     if (AudioSystem::getSamplingRate(mOutput, &afSamplingRate) != NO_ERROR) {
+        ALOGD("[DEBUG] L[%d] return %d", __LINE__, NO_INIT);
         return NO_INIT;
     }
     // pitch is emulated by adjusting speed and sampleRate
     const uint32_t effectiveSampleRate = adjustSampleRate(rate, mPlaybackRate.mPitch);
+
+    // Resampler implementation limits input sampling rate to 2 x output sampling rate.
+#if 0  // ndef ANDROID_DEFAULT_CODE
+    if (rate <= 0 || rate > 44100*25) {
+        ALOGE("setSampleRate %p parameter(%d) is not right", this, rate);
+        return BAD_VALUE;
+    } else if (rate > afSamplingRate*2) {
+        ALOGW("setSampleRate %p parameter(%d) has risk", this, rate);
+    }
+#else
     if (rate == 0 || effectiveSampleRate > afSamplingRate * AUDIO_RESAMPLER_DOWN_RATIO_MAX) {
         return BAD_VALUE;
     }
+#endif
     // TODO: Should we also check if the buffer size is compatible?
 
     mSampleRate = rate;
@@ -846,6 +958,7 @@ status_t AudioTrack::setPlaybackRate(const AudioPlaybackRate &playbackRate)
     //set effective rates
     mProxy->setPlaybackRate(playbackRateTemp);
     mProxy->setSampleRate(effectiveRate); // FIXME: not quite "atomic" with setPlaybackRate
+   gAudioTrackCenter.setTimeStretch(float(1.0/effectiveSpeed));
     return NO_ERROR;
 }
 
@@ -883,6 +996,7 @@ void AudioTrack::setLoop_l(uint32_t loopStart, uint32_t loopEnd, int loopCount)
 {
     // We do not update the periodic notification point.
     // mNewPosition = updateAndGetPosition_l() + mUpdatePeriod;
+    ALOGV("setLoop_l %d %d %d",loopStart, loopEnd,  loopCount);
     mLoopCount = loopCount;
     mLoopEnd = loopEnd;
     mLoopStart = loopStart;
@@ -898,7 +1012,7 @@ status_t AudioTrack::setMarkerPosition(uint32_t marker)
     if (mCbf == NULL || isOffloadedOrDirect()) {
         return INVALID_OPERATION;
     }
-
+    ALOGV("+setMarkerPosition, marker %d", marker);
     AutoMutex lock(mLock);
     mMarkerPosition = marker;
     mMarkerReached = false;
@@ -907,6 +1021,7 @@ status_t AudioTrack::setMarkerPosition(uint32_t marker)
     if (t != 0) {
         t->wake();
     }
+    ALOGV("-setMarkerPosition, marker %d", marker);
     return NO_ERROR;
 }
 
@@ -921,6 +1036,7 @@ status_t AudioTrack::getMarkerPosition(uint32_t *marker) const
 
     AutoMutex lock(mLock);
     *marker = mMarkerPosition;
+    ALOGV("getMarkerPosition, marker %d", *marker);
 
     return NO_ERROR;
 }
@@ -931,7 +1047,7 @@ status_t AudioTrack::setPositionUpdatePeriod(uint32_t updatePeriod)
     if (mCbf == NULL || isOffloadedOrDirect()) {
         return INVALID_OPERATION;
     }
-
+    ALOGV("setPositionUpdatePeriod updatePeriod %d",  updatePeriod);
     AutoMutex lock(mLock);
     mNewPosition = updateAndGetPosition_l() + updatePeriod;
     mUpdatePeriod = updatePeriod;
@@ -954,12 +1070,13 @@ status_t AudioTrack::getPositionUpdatePeriod(uint32_t *updatePeriod) const
 
     AutoMutex lock(mLock);
     *updatePeriod = mUpdatePeriod;
-
+    ALOGV("setPositionUpdatePeriod updatePeriod %d",  *updatePeriod);
     return NO_ERROR;
 }
 
 status_t AudioTrack::setPosition(uint32_t position)
 {
+    ALOGD("setPosition: %d", position);
     if (mSharedBuffer == 0 || mIsTimed || isOffloadedOrDirect()) {
         return INVALID_OPERATION;
     }
@@ -1020,6 +1137,7 @@ status_t AudioTrack::getPosition(uint32_t *position)
         *position = (mState == STATE_STOPPED || mState == STATE_FLUSHED) ?
                 0 : updateAndGetPosition_l();
     }
+    ALOGV("getPosition: %d", *position);
     return NO_ERROR;
 }
 
@@ -1100,6 +1218,7 @@ status_t AudioTrack::attachAuxEffect(int effectId)
     if (status == NO_ERROR) {
         mAuxEffectId = effectId;
     }
+    ALOGD("[DEBUG] L[%d] return %d", __LINE__, INVALID_OPERATION);
     return status;
 }
 
@@ -1121,6 +1240,42 @@ status_t AudioTrack::createTrack_l()
         ALOGE("Could not get audioflinger");
         return NO_INIT;
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+   // forbit fast track for voice feature
+    String8 ret  = AudioSystem::getParameters(String8("VoiceFeatureOn"));
+    if (String8("VoiceFeatureOn=1") == ret)
+    {
+        mFlags = (audio_output_flags_t)(mFlags & ~AUDIO_OUTPUT_FLAG_FAST);
+        ALOGD("remove direct flag flags for voice feature %d", mFlags);
+    }
+    // AudioSystem Get HDMI capability
+    // if Channel count is multi-channel
+    ALOGD("mChannelMask 0x%x", mChannelMask);
+    if (mChannelMask != AUDIO_CHANNEL_OUT_STEREO && mChannelMask != AUDIO_CHANNEL_OUT_MONO) {
+        // Check if HDMI is connected
+        if( AudioSystem::getDeviceConnectionState(AUDIO_DEVICE_OUT_AUX_DIGITAL, "") == AUDIO_POLICY_DEVICE_STATE_AVAILABLE) {
+            int hdim_channelCount, hdmi_maxSampleRate, hdmi_bitwidth;
+            hdim_channelCount = mChannelCount;
+            // need to get AF HDMI capability.
+            if (AudioSystem::getHDMICapability(&hdim_channelCount, &hdmi_bitwidth, &hdmi_maxSampleRate) != NO_ERROR) {
+                return BAD_VALUE;
+            }
+            ALOGD("GetHDMICapability hdim_channelCount %d, maxSampleRate%d, bitwidth %d", hdim_channelCount, hdmi_maxSampleRate, hdmi_bitwidth);
+            // if AF channel count > 2
+            if (hdim_channelCount > 2) {
+                // track is Multi-channel and HDMI support Multi-channel.
+                // raise for direct output.
+                mFlags = (audio_output_flags_t)(mFlags | AUDIO_OUTPUT_FLAG_DIRECT);
+                ALOGD("flags %d", mFlags);
+            } else {
+                mFlags = (audio_output_flags_t)(mFlags & ~AUDIO_OUTPUT_FLAG_DIRECT);
+                ALOGD("remove direct flag flags %d", mFlags);
+            }
+        } else {
+            ALOGD("receive multi-channel content and not detecting aux digital");
+        }
+    }
+#endif
 
     if (mDeviceCallback != 0 && mOutput != AUDIO_IO_HANDLE_NONE) {
         AudioSystem::removeAudioDeviceCallback(mDeviceCallback, mOutput);
@@ -1168,8 +1323,15 @@ status_t AudioTrack::createTrack_l()
         mSampleRate = mAfSampleRate;
         mOriginalSampleRate = mAfSampleRate;
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+    if((mAfFrameCount <= 0) || (mAfSampleRate <= 0)) {
+        ALOGE("Get audioflinger parameter error afFrameCount-%zu, afSampleRate-%u", mAfFrameCount, mAfSampleRate);
+        return NO_INIT;
+    }
+#endif
     // Client decides whether the track is TIMED (see below), but can only express a preference
     // for FAST.  Server will perform additional tests.
+#ifndef MTK_AUDIO
     if ((mFlags & AUDIO_OUTPUT_FLAG_FAST) && !((
             // either of these use cases:
             // use case 1: shared buffer
@@ -1179,7 +1341,18 @@ status_t AudioTrack::createTrack_l()
             // use case 3: obtain/release mode
             (mTransfer == TRANSFER_OBTAIN)) &&
             // matching sample rate
-            (mSampleRate == mAfSampleRate))) {
+            (mSampleRate == mAfSampleRate)))
+#else
+    if ((mFlags & AUDIO_OUTPUT_FLAG_FAST) && !((
+            // either of these use cases:
+            // use case 1: shared buffer
+            (mSharedBuffer != 0) ||
+            // use case 2: callback transfer mode
+            (mTransfer == TRANSFER_CALLBACK) ||
+            // use case 3: obtain/release mode
+            (mTransfer == TRANSFER_OBTAIN))))
+#endif
+    {
         ALOGW("AUDIO_OUTPUT_FLAG_FAST denied by client; transfer %d, track %u Hz, output %u Hz",
                 mTransfer, mSampleRate, mAfSampleRate);
         // once denied, do not request again if IAudioTrack is re-created
@@ -1266,6 +1439,11 @@ status_t AudioTrack::createTrack_l()
     if (mFlags & AUDIO_OUTPUT_FLAG_DIRECT) {
         trackFlags |= IAudioFlinger::TRACK_DIRECT;
     }
+#ifdef MTK_CROSSMOUNT_SUPPORT
+    if (mFlags & AUDIO_OUTPUT_FLAG_TO_REMOTE_SUBMIX) {
+        trackFlags |= IAudioFlinger::TRACK_REMOTE;
+    }
+#endif
 
     size_t temp = frameCount;   // temp may be replaced by a revised value of frameCount,
                                 // but we will still need the original value also
@@ -1431,7 +1609,9 @@ status_t AudioTrack::createTrack_l()
     if (mDeviceCallback != 0) {
         AudioSystem::addAudioDeviceCallback(mDeviceCallback, mOutput);
     }
-
+#ifdef MTK_AOSP_ENHANCEMENT
+    gAudioTrackCenter.addTrack((intptr_t)mCblk, frameCount, mSampleRate, (void*)this, mAfFrameCount, mAfSampleRate, mReleased);
+#endif
     return NO_ERROR;
     }
 
@@ -1570,6 +1750,17 @@ void AudioTrack::releaseBuffer(const Buffer* audioBuffer)
     AutoMutex lock(mLock);
     mReleased += stepCount;
     mInUnderrun = false;
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (buffer.mRaw != NULL && buffer.mFrameCount) {
+        const int SIZE = 256;
+        char fileName[SIZE];
+        sprintf(fileName, "%s_%p_preTrack.pcm", g_track_pcm, this);
+        AudioTrackDump::dump(fileName, buffer.mRaw, buffer.mFrameCount *mFrameSize, g_track_propty);
+    }
+#ifdef MTK_LATENCY_DETECT_PULSE
+    detectPulse(3, 800, 0, (void *)buffer.mRaw, buffer.mFrameCount, mFormat, mChannelCount, mSampleRate);
+#endif
+#endif
     mProxy->releaseBuffer(&buffer);
 
     // restart track if it was disabled by audioflinger due to previous underrun
@@ -1587,19 +1778,24 @@ void AudioTrack::releaseBuffer(const Buffer* audioBuffer)
 
 ssize_t AudioTrack::write(const void* buffer, size_t userSize, bool blocking)
 {
+    ALOGD("%s %zu", __FUNCTION__, userSize);
     if (mTransfer != TRANSFER_SYNC || mIsTimed) {
         return INVALID_OPERATION;
     }
-
+#ifndef MTK_AOSP_ENHANCEMENT
+    // remove this cause HDMI output use direct output thread, and may switch device during track writng.
     if (isDirect()) {
+        ALOGD("Audio trackite Direct output");
         AutoMutex lock(mLock);
         int32_t flags = android_atomic_and(
-                            ~(CBLK_UNDERRUN | CBLK_LOOP_CYCLE | CBLK_LOOP_FINAL | CBLK_BUFFER_END),
-                            &mCblk->mFlags);
+                ~(CBLK_UNDERRUN | CBLK_LOOP_CYCLE | CBLK_LOOP_FINAL | CBLK_BUFFER_END),
+                &mCblk->mFlags);
         if (flags & CBLK_INVALID) {
+            ALOGD("direct track invalid");
             return DEAD_OBJECT;
         }
     }
+#endif
 
     if (ssize_t(userSize) < 0 || (buffer == NULL && userSize != 0)) {
         // Sanity-check: user is most-likely passing an error code, and it would
@@ -1782,6 +1978,7 @@ nsecs_t AudioTrack::processAudioBuffer()
     // FIXME fails for wraparound, need 64 bits
     if (!mMarkerReached && (markerPosition > 0) && (position >= markerPosition)) {
         mMarkerReached = markerReached = true;
+        ALOGV("markerReached = true, markerPosition %zu", markerPosition);
     }
 
     // Determine number of new position callback(s) that will be needed, while locked
@@ -1852,11 +2049,7 @@ nsecs_t AudioTrack::processAudioBuffer()
         case NO_ERROR:
         case DEAD_OBJECT:
         case TIMED_OUT:
-            if (status != DEAD_OBJECT) {
-                // for DEAD_OBJECT, we do not send a EVENT_STREAM_END after stop();
-                // instead, the application should handle the EVENT_NEW_IAUDIOTRACK.
-                mCbf(EVENT_STREAM_END, mUserData, NULL);
-            }
+            mCbf(EVENT_STREAM_END, mUserData, NULL);
             {
                 AutoMutex lock(mLock);
                 // The previously assigned value of waitStreamEnd is no longer valid,
@@ -1888,10 +2081,12 @@ nsecs_t AudioTrack::processAudioBuffer()
         mCbf(EVENT_BUFFER_END, mUserData, NULL);
     }
     if (markerReached) {
+        ALOGV("EVENT_MARKER,markerPosition %zu, &markerPosition 0x%p",markerPosition, (void*)&markerPosition);
         mCbf(EVENT_MARKER, mUserData, &markerPosition);
     }
     while (newPosCount > 0) {
         size_t temp = newPosition;
+        ALOGV("EVENT_NEW_POS,newPosition %zu, &temp 0x%p", newPosition,  (void*)&temp);
         mCbf(EVENT_NEW_POS, mUserData, &temp);
         newPosition += updatePeriod;
         newPosCount--;
@@ -1899,7 +2094,18 @@ nsecs_t AudioTrack::processAudioBuffer()
 
     if (mObservedSequence != sequence) {
         mObservedSequence = sequence;
+        ALOGD("mObservedSequence %d, sequence %d", mObservedSequence, sequence);
+#ifdef MTK_AOSP_ENHANCEMENT
+        /// M: ALPS02028720: Music player will restart when receiving EVENT_NEW_IAUDIOTRACK
+        if (isOffloaded_l()) {
+            ALOGD("Callback EVENT_NEW_IAUDIOTRACK");
+            mCbf(EVENT_NEW_IAUDIOTRACK, mUserData, NULL);
+        } else {
+            ALOGD("No EVENT_NEW_IAUDIOTRACK callback");
+        }
+#else
         mCbf(EVENT_NEW_IAUDIOTRACK, mUserData, NULL);
+#endif
         // for offloaded tracks, just wait for the upper layers to recreate the track
         if (isOffloadedOrDirect()) {
             return NS_INACTIVE;
@@ -1980,8 +2186,7 @@ nsecs_t AudioTrack::processAudioBuffer()
         if (err != NO_ERROR) {
             if (err == TIMED_OUT || err == WOULD_BLOCK || err == -EINTR ||
                     (isOffloaded() && (err == DEAD_OBJECT))) {
-                // FIXME bug 25195759
-                return 1000000;
+                return 0;
             }
             ALOGE("Error %d obtaining an audio buffer, giving up.", err);
             return NS_NEVER;
@@ -2106,7 +2311,12 @@ status_t AudioTrack::restoreTrack_l(const char *from)
     // output parameters and new IAudioFlinger in createTrack_l()
     AudioSystem::clearAudioConfigCache();
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    // let HDMI set samplerate even use direct output
+    if ((mFlags & AUDIO_OUTPUT_FLAG_COMPRESS_OFFLOAD) != 0) {
+#else
     if (isOffloadedOrDirect_l() || mDoNotReconnect) {
+#endif
         // FIXME re-creation of offloaded and direct tracks is not yet implemented;
         // reconsider enabling for linear PCM encodings when position can be preserved.
         return DEAD_OBJECT;
@@ -2161,6 +2371,9 @@ uint32_t AudioTrack::updateAndGetPosition_l()
 {
     // This is the sole place to read server consumed frames
     uint32_t newServer = mProxy->getPosition();
+
+    uint32_t oldServer = mServer;
+
     int32_t delta = newServer - mServer;
     mServer = newServer;
     // TODO There is controversy about whether there can be "negative jitter" in server position.
@@ -2175,6 +2388,10 @@ uint32_t AudioTrack::updateAndGetPosition_l()
         ALOGE("detected illegal retrograde motion by the server: mServer advanced by %d", delta);
         delta = 0;
     }
+
+    ALOGV("updateAndGetPosition_l: New mPosition, Old mPosition, New mServer, Old mServer = %d, %d, %d, %d"
+            , mPosition + (uint32_t) delta, mPosition, newServer, oldServer);
+
     return mPosition += (uint32_t) delta;
 }
 
@@ -2209,6 +2426,8 @@ status_t AudioTrack::getTimestamp(AudioTimestamp& timestamp)
     if (mFlags & AUDIO_OUTPUT_FLAG_FAST) {
         return INVALID_OPERATION;
     }
+
+    ALOGV("getTimestamp: mState = %d", mState);
 
     switch (mState) {
     case STATE_ACTIVE:
@@ -2365,7 +2584,8 @@ status_t AudioTrack::getTimestamp(AudioTimestamp& timestamp)
         mPreviousTimestamp = timestamp;
         mPreviousTimestampValid = true;
     }
-
+    ALOGD("getTimestamp: status, timestamp: mPosition, mTime, %d, %u, %ld.%03d",
+            status, timestamp.mPosition, timestamp.mTime.tv_sec, (int) timestamp.mTime.tv_nsec / 1000000);
     return status;
 }
 
@@ -2565,6 +2785,7 @@ void AudioTrack::AudioTrackThread::resume()
 void AudioTrack::AudioTrackThread::wake()
 {
     AutoMutex _l(mMyLock);
+    ALOGV("AudioTrackThread::wake ");
     if (!mPaused) {
         // wake() might be called while servicing a callback - ignore the next
         // pause time and call processAudioBuffer.
@@ -2573,6 +2794,7 @@ void AudioTrack::AudioTrackThread::wake()
             // audio track is active and internally paused with timeout.
             mPausedInt = false;
             mMyCond.signal();
+            ALOGV("wake::signal");
         }
     }
 }
@@ -2584,4 +2806,56 @@ void AudioTrack::AudioTrackThread::pauseInternal(nsecs_t ns)
     mPausedNs = ns;
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+void AudioTrackDump::dump(const char *filepath, void *buffer, int count, const char *property)
+{
+    int ret;
+
+#if defined(CONFIG_MT_ENG_BUILD)   // Performance issue for GTS RemoteSubmixHostTest
+    char value[PROPERTY_VALUE_MAX];
+    property_get(property, value, "0");
+    int bflag = atoi(value);
+#else
+    int bflag = 0;
+#endif
+    if (bflag) {
+        ret = checkPath(filepath);
+        if (ret < 0) {
+            ALOGE("dump fail!!!");
+        } else {
+            FILE *fp = fopen(filepath, "ab+");
+            if (fp != NULL) {
+                fwrite(buffer, 1, count, fp);
+                fclose(fp);
+            } else {
+                ALOGE("dump %s fail", property);
+            }
+        }
+    }
+}
+
+int AudioTrackDump::checkPath(const char *path)
+{
+    char tmp[PATH_MAX];
+    int i = 0;
+
+    while (*path) {
+        tmp[i] = *path;
+
+        if (*path == '/' && i) {
+            tmp[i] = '\0';
+            if (access(tmp, F_OK) != 0) {
+                if (mkdir(tmp, 0770) == -1) {
+                    ALOGE("mkdir error! %s",(char*)strerror(errno));
+                    return -1;
+                }
+            }
+            tmp[i] = '/';
+        }
+        i++;
+        path++;
+    }
+    return 0;
+}
+#endif
 } // namespace android

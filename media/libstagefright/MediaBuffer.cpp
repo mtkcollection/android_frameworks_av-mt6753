@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -199,4 +204,24 @@ MediaBuffer *MediaBuffer::clone() {
     return buffer;
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+MediaBuffer::MediaBuffer(size_t size, sp<MetaData> metaData)
+    : mObserver(NULL),
+      mNextBuffer(NULL),
+      mRefCount(0),
+      mData(malloc(size)),
+      mSize(size),
+      mRangeOffset(0),
+      mRangeLength(size),
+      mOwnsData(true),
+      mMetaData(new MetaData(*(metaData.get()))),
+      mOriginal(NULL) {
+}
+// just do a release on refcount == 0
+void MediaBufferSimpleObserver::signalBufferReturned(MediaBuffer *buffer) {
+    CHECK_EQ(buffer->refcount(), 0);
+    buffer->setObserver(NULL);
+    buffer->release();
+}
+#endif  // #ifdef MTK_AOSP_ENHANCEMENT
 }  // namespace android

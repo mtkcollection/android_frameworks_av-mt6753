@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -25,6 +30,9 @@
 
 #include <OMX_Video.h>
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <ui/PixelFormat.h>
+#endif
 namespace android {
 
 struct ColorConverter {
@@ -81,6 +89,18 @@ private:
 
     ColorConverter(const ColorConverter &);
     ColorConverter &operator=(const ColorConverter &);
+#ifdef MTK_AOSP_ENHANCEMENT
+    status_t convertYUVToRGBHW(const BitmapParams &src, const BitmapParams &dst);
+    status_t convertYUV420PlanarToABGR8888(const BitmapParams &src, const BitmapParams &dst);
+#ifndef MTK_USEDPFRMWK
+    bool HWYUVToRGBConversion(const BitmapParams &src, const BitmapParams &dst);
+#endif
+#ifdef MTK_USEDPFRMWK
+    void dumpColorConverterData(const char * filepath, const void * buffer, size_t size,const char * propty);
+#endif
+    bool SWYUVToRGBConversion(const BitmapParams &src, const BitmapParams &dst);
+    PixelFormat mPixelFormat;
+#endif
 };
 
 }  // namespace android

@@ -38,6 +38,10 @@
 // hw modules descriptions
 #define AUDIO_HW_MODULE_TAG "audio_hw_modules"
 
+//MTK_AUDIO
+#define MODULE_A2DP_TAG "a2dp"
+#define COMPRESS_OFFLOAD_TAG "compress_offload"
+
 #define OUTPUTS_TAG "outputs"
 #define INPUTS_TAG "inputs"
 

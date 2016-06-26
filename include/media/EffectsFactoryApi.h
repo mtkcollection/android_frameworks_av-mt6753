@@ -20,7 +20,11 @@
 #include <errno.h>
 #include <stdint.h>
 #include <sys/types.h>
+#ifdef MTK_AUDIO
+#include <hardware/audio_effect_mtk.h>
+#else
 #include <hardware/audio_effect.h>
+#endif
 
 #if __cplusplus
 extern "C" {

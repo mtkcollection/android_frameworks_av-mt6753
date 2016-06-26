@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -197,6 +202,13 @@ status_t NuPlayer::HTTPLiveSource::selectTrack(size_t trackIndex, bool select, i
 }
 
 status_t NuPlayer::HTTPLiveSource::seekTo(int64_t seekTimeUs) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    // HLS does not support seek
+    // ignore this and return OK
+    if (!mLiveSession->isSeekable()) {
+        return OK;
+    }
+#endif
     return mLiveSession->seekTo(seekTimeUs);
 }
 
@@ -299,8 +311,15 @@ void NuPlayer::HTTPLiveSource::onSessionNotify(const sp<AMessage> &msg) {
                 notifyVideoSizeChanged();
             }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+            uint32_t flags = 0;
+#else
             uint32_t flags = FLAG_CAN_PAUSE;
+#endif
             if (mLiveSession->isSeekable()) {
+#ifdef MTK_AOSP_ENHANCEMENT
+                flags |= FLAG_CAN_PAUSE;
+#endif
                 flags |= FLAG_CAN_SEEK;
                 flags |= FLAG_CAN_SEEK_BACKWARD;
                 flags |= FLAG_CAN_SEEK_FORWARD;
@@ -333,7 +352,10 @@ void NuPlayer::HTTPLiveSource::onSessionNotify(const sp<AMessage> &msg) {
 
             bool audio = changedMask & LiveSession::STREAMTYPE_AUDIO;
             bool video = changedMask & LiveSession::STREAMTYPE_VIDEO;
-
+#ifdef MTK_AOSP_ENHANCEMENT
+            ALOGI("receive LiveSession::kWhatStreamsChanged,queue Decoder Shutdown for %s,%s",\
+                audio?"audio":"",video?"video":"");
+#endif
             sp<AMessage> reply;
             CHECK(msg->findMessage("reply", &reply));
 
@@ -377,6 +399,26 @@ void NuPlayer::HTTPLiveSource::onSessionNotify(const sp<AMessage> &msg) {
         case LiveSession::kWhatMetadataDetected:
         {
             if (!mHasMetadata) {
+#ifdef MTK_AOSP_ENHANCEMENT
+                sp<ABuffer> metaBuffer;
+                CHECK(msg->findBuffer("buffer", &metaBuffer));
+
+                AString mimeType;
+                sp<ABuffer> buffer;
+
+                CHECK(metaBuffer->meta()->findString("mime", &mimeType));
+                ALOGD("mime %s", mimeType.c_str());
+
+                if(!strncasecmp(mimeType.c_str(), "image/jpeg", 10)){
+                    ALOGD("image/jpeg, size %zu", metaBuffer->size());
+                    if(mMetaData == NULL){
+                        mMetaData = new MetaData;
+                    }
+                    mMetaData->setCString(kKeyAlbumArtMIME, mimeType.c_str());
+                    mMetaData->setData(kKeyAlbumArt, MetaData::TYPE_NONE, metaBuffer->data(), metaBuffer->size());
+
+                }
+#endif
                 mHasMetadata = true;
 
                 sp<AMessage> notify = dupNotify();
@@ -391,11 +433,16 @@ void NuPlayer::HTTPLiveSource::onSessionNotify(const sp<AMessage> &msg) {
         {
             break;
         }
-
         default:
             TRESPASS();
     }
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+NuPlayer::Source::DataSourceType NuPlayer::HTTPLiveSource::getDataSourceType() {
+    ALOGD("rock, getDataSourceType");
+    return NuPlayer::Source::SOURCE_HttpLive;
+}
+#endif
 }  // namespace android
 

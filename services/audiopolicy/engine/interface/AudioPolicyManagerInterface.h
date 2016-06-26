@@ -65,7 +65,7 @@ public:
      *
      * @return selected ouput device for the given strategy, may be none if error.
      */
-    virtual audio_devices_t getDeviceForStrategy(routing_strategy stategy) const = 0;
+    virtual audio_devices_t getDeviceForStrategy(routing_strategy stategy, audio_output_flags_t flags = AUDIO_OUTPUT_FLAG_NONE) const = 0;
 
     /**
      * Get the strategy selected for a given stream type.

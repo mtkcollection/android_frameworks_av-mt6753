@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,7 +26,6 @@
 namespace android {
 
 extern const char *MEDIA_MIMETYPE_IMAGE_JPEG;
-
 extern const char *MEDIA_MIMETYPE_VIDEO_VP8;
 extern const char *MEDIA_MIMETYPE_VIDEO_VP9;
 extern const char *MEDIA_MIMETYPE_VIDEO_AVC;
@@ -66,6 +70,44 @@ extern const char *MEDIA_MIMETYPE_TEXT_VTT;
 extern const char *MEDIA_MIMETYPE_TEXT_CEA_608;
 extern const char *MEDIA_MIMETYPE_DATA_TIMED_ID3;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+extern const char *MEDIA_MIMETYPE_VIDEO_VPX;
+extern const char *MEDIA_MIMETYPE_VIDEO_DIVX;
+extern const char *MEDIA_MIMETYPE_VIDEO_DIVX3;
+extern const char *MEDIA_MIMETYPE_VIDEO_XVID;
+extern const char *MEDIA_MIMETYPE_VIDEO_MSMPEG4V3;
+extern const char *MEDIA_MIMETYPE_APPLICATION_SDP;
+extern const char *MEDIA_MIMETYPE_CONTAINER_ASF;
+extern const char *MEDIA_MIMETYPE_ELEMENT_STREAM;
+extern const char *MEDIA_MIMETYPE_VIDEO_MJPEG;
+extern const char *MEDIA_MIMETYPE_VIDEO_WMV;
+extern const char *MEDIA_MIMETYPE_AUDIO_WMA;
+extern const char *MEDIA_MIMETYPE_AUDIO_WMAPRO;
+extern const char *MEDIA_MIMETYPE_VIDEO_SORENSON_SPARK;
+extern const char *MEDIA_MIMETYPE_CONTAINER_FLV;
+extern const char *MEDIA_MIMETYPE_VIDEO_FLV;
+extern const char *MEDIA_MIMETYPE_CONTAINER_OGM;
+
+extern const char *MEDIA_MIMETYPE_AUDIO_APE;
+extern const char *MEDIA_MIMETYPE_AUDIO_ALAC;
+extern const char *MEDIA_MIMETYPE_AUDIO_FLV;
+extern const char *MEDIA_MIMETYPE_AUDIO_MS_ADPCM;
+extern const char *MEDIA_MIMETYPE_AUDIO_DVI_IMA_ADPCM;
+extern const char *MEDIA_MIMETYPE_AUDIO_EAC3_JOC;
+
+extern const char *MEDIA_MIMETYPE_TEXT_ASS;
+extern const char *MEDIA_MIMETYPE_TEXT_SSA;
+extern const char *MEDIA_MIMETYPE_TEXT_TXT;
+extern const char *MEDIA_MIMETYPE_TEXT_VOBSUB;
+extern const char *MEDIA_MIMETYPE_TEXT_DVB;
+extern const char *MEDIA_MIMETYPE_TEXT_SUBASS;
+extern const char *MEDIA_MIMETYPE_TEXT_SUBSSA;
+extern const char *MEDIA_MIMETYPE_TEXT_SUBTXT;
+extern const char *MEDIA_MIMETYPE_TEXT_SUBMPL;
+extern const char *MEDIA_MIMETYPE_TEXT_SUBSMI;
+extern const char *MEDIA_MIMETYPE_TEXT_SUB;
+extern const char *MEDIA_MIMETYPE_TEXT_SUBIDX;
+#endif
 }  // namespace android
 
 #endif  // MEDIA_DEFS_H_

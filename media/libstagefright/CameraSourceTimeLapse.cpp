@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -97,6 +102,9 @@ CameraSourceTimeLapse::CameraSourceTimeLapse(
     mForceRead = false;
     mLastReadBufferCopy = NULL;
     mStopWaitingForIdleCamera = false;
+#ifdef MTK_AOSP_ENHANCEMENT
+    mForcePick = false;
+#endif
 }
 
 CameraSourceTimeLapse::~CameraSourceTimeLapse() {
@@ -138,6 +146,7 @@ bool CameraSourceTimeLapse::trySettingVideoSize(
 
     bool videoSizeSupported = false;
     for (size_t i = 0; i < supportedSizes.size(); ++i) {
+
         int32_t pictureWidth = supportedSizes[i].width;
         int32_t pictureHeight = supportedSizes[i].height;
 
@@ -145,7 +154,6 @@ bool CameraSourceTimeLapse::trySettingVideoSize(
             videoSizeSupported = true;
         }
     }
-
     bool isSuccessful = false;
     if (videoSizeSupported) {
         ALOGV("Video size (%d, %d) is supported", width, height);
@@ -246,6 +254,13 @@ bool CameraSourceTimeLapse::skipCurrentFrame(int64_t /* timestampUs */) {
 
 bool CameraSourceTimeLapse::skipFrameAndModifyTimeStamp(int64_t *timestampUs) {
     ALOGV("skipFrameAndModifyTimeStamp");
+#ifdef MTK_AOSP_ENHANCEMENT//Drop frame before CameraSource and keep time lapse initial status
+    if (mNumFramesReceived < 1) {
+        mLastTimeLapseFrameRealTimestampUs = *timestampUs;
+        return false;
+    }
+#endif
+
     if (mLastTimeLapseFrameRealTimestampUs == 0) {
         // First time lapse frame. Initialize mLastTimeLapseFrameRealTimestampUs
         // to current time (timestampUs) and save frame data.
@@ -278,8 +293,15 @@ bool CameraSourceTimeLapse::skipFrameAndModifyTimeStamp(int64_t *timestampUs) {
     // Workaround to bypass the first 2 input frames for skipping.
     // The first 2 output frames from the encoder are: decoder specific info and
     // the compressed video frame data for the first input video frame.
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (mNumFramesReceived >= 1 && *timestampUs <//We can not expect when encoder return the buffer, which leads to mNumFramesEncoded++. So we use mNumFramesReceived.
+        (mLastTimeLapseFrameRealTimestampUs + mTimeBetweenFrameCaptureUs)) {
+        if (mForcePick)
+            return forcePick(timestampUs);
+#else
     if (mNumFramesEncoded >= 1 && *timestampUs <
         (mLastTimeLapseFrameRealTimestampUs + mTimeBetweenFrameCaptureUs)) {
+#endif
         // Skip all frames from last encoded frame until
         // sufficient time (mTimeBetweenFrameCaptureUs) has passed.
         // Tell the camera to release its recording frame and return.
@@ -305,5 +327,19 @@ void CameraSourceTimeLapse::dataCallbackTimestamp(int64_t timestampUs, int32_t m
     mSkipCurrentFrame = skipFrameAndModifyTimeStamp(&timestampUs);
     CameraSource::dataCallbackTimestamp(timestampUs, msgType, data);
 }
+
+#ifdef MTK_AOSP_ENHANCEMENT//force pick frame for some quick return case and set time stamp to the previous ts
+bool CameraSourceTimeLapse::forcePick(int64_t *timestampUs) {
+    if (1 == mForcePickMode) {
+        *timestampUs = mLastFrameTimestampUs;
+        ALOGD("Force pick ts %lld, mode 1", (long long)*timestampUs);
+    } else if (2 == mForcePickMode){
+        *timestampUs = mLastFrameTimestampUs + mTimeBetweenTimeLapseVideoFramesUs;
+        ALOGD("Force pick ts %lld, mode 2", (long long)*timestampUs);
+    }
+
+    return false;
+}
+#endif
 
 }  // namespace android

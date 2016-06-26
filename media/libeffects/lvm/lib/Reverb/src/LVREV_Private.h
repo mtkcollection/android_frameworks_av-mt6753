@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2004-2010 NXP Software
  * Copyright (C) 2010 The Android Open Source Project
  *
@@ -73,7 +78,13 @@ extern "C" {
 #define LVREV_ALLPASS_TC                 1000           /* All-pass filter time constant */
 #define LVREV_ALLPASS_TAP_TC             10000           /* All-pass filter dely tap change */
 #define LVREV_FEEDBACKMIXER_TC            100           /* Feedback mixer time constant*/
+
+//Fix CR: ALPS00067937
+#ifdef MTK_AOSP_ENHANCEMENT
+#define LVREV_OUTPUTGAIN_SHIFT              7           /* PC Chen: Bits shift for output gain correction */
+#else
 #define LVREV_OUTPUTGAIN_SHIFT              5           /* Bits shift for output gain correction */
+#endif
 
 /* Parameter limits */
 #define LVREV_NUM_FS                        9           /* Number of supported sample rates */

@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2011 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -59,6 +64,9 @@ SoftVorbis::SoftVorbis(
       mOutputPortSettingsChange(NONE) {
     initPorts();
     CHECK_EQ(initDecoder(), (status_t)OK);
+#ifdef MTK_AOSP_ENHANCEMENT
+      mLastTimeStamp = 0;
+#endif
 }
 
 SoftVorbis::~SoftVorbis() {
@@ -291,7 +299,10 @@ void SoftVorbis::onQueueFilled(OMX_U32 portIndex) {
 
         return;
     }
-
+#ifdef MTK_AOSP_ENHANCEMENT
+    // reset the flags for seek
+    mSignalledOutputEos = false;
+#endif
     while ((!inQueue.empty() || (mSawInputEos && !mSignalledOutputEos)) && !outQueue.empty()) {
         BufferInfo *inInfo = NULL;
         OMX_BUFFERHEADERTYPE *inHeader = NULL;
@@ -299,6 +310,21 @@ void SoftVorbis::onQueueFilled(OMX_U32 portIndex) {
             inInfo = *inQueue.begin();
             inHeader = inInfo->mHeader;
         }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+        //for resubmit csd frame when seek
+        if(inHeader && (inHeader->nFlags & OMX_BUFFERFLAG_CODECCONFIG))
+        {
+            inInfo->mOwnedByUs = false;
+            inQueue.erase(inQueue.begin());
+            inInfo = NULL;
+            notifyEmptyBufferDone(inHeader);
+            inHeader = NULL;
+            // error handling for csd frame
+            mSawInputEos = false;
+            return;
+        }
+#endif
 
         BufferInfo *outInfo = *outQueue.begin();
         OMX_BUFFERHEADERTYPE *outHeader = outInfo->mHeader;
@@ -319,11 +345,20 @@ void SoftVorbis::onQueueFilled(OMX_U32 portIndex) {
 
                 if (inHeader->nOffset == 0) {
                     mAnchorTimeUs = inHeader->nTimeStamp;
+#ifndef MTK_AOSP_ENHANCEMENT
                     mNumFramesOutput = 0;
+#else
+                    if (mLastTimeStamp != inHeader->nTimeStamp) {
+                        mNumFramesOutput = 0;
+                    }
+#endif
                 }
 
                 inHeader->nFilledLen -= sizeof(numPageSamples);;
             }
+#ifdef MTK_AOSP_ENHANCEMENT
+            mLastTimeStamp = inHeader->nTimeStamp;
+#endif
         }
 
         if (numPageSamples >= 0) {
@@ -380,6 +415,12 @@ void SoftVorbis::onQueueFilled(OMX_U32 portIndex) {
                 if (mSawInputEos) {
                     outHeader->nFlags = OMX_BUFFERFLAG_EOS;
                     mSignalledOutputEos = true;
+#ifdef MTK_AOSP_ENHANCEMENT
+                    // reset the flag for seek(0)
+                    mNumFramesLeftOnPage = -1;
+                    //reset the flag for special video seek(audio short & video long)
+                    mSawInputEos = false;
+#endif
                 }
             }
             mNumFramesLeftOnPage -= numFrames;
@@ -388,6 +429,11 @@ void SoftVorbis::onQueueFilled(OMX_U32 portIndex) {
         outHeader->nFilledLen = numFrames * sizeof(int16_t) * mVi->channels;
         outHeader->nOffset = 0;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (mSawInputEos) {
+             mAnchorTimeUs = 0;
+        }
+#endif
         outHeader->nTimeStamp =
             mAnchorTimeUs
                 + (mNumFramesOutput * 1000000ll) / mVi->rate;

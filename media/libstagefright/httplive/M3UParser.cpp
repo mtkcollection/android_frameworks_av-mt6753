@@ -645,6 +645,7 @@ status_t M3UParser::parse(const void *_data, size_t size) {
                 size_t seq;
                 err = parseDiscontinuitySequence(line, &seq);
                 if (err == OK) {
+                    ALOGD("find dis seq %zu",seq);
                     mDiscontinuitySeq = seq;
                 }
             }
@@ -663,6 +664,7 @@ status_t M3UParser::parse(const void *_data, size_t size) {
                 }
                 itemMeta->setInt32("discontinuity-sequence",
                         mDiscontinuitySeq + mDiscontinuityCount);
+                ALOGD("dis seq num %zu", mDiscontinuitySeq + mDiscontinuityCount);
             }
 
             mItems.push();

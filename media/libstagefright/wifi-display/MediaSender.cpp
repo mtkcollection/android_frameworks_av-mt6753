@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright 2013, The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -33,7 +38,39 @@
 #include <media/stagefright/foundation/ANetworkSession.h>
 #include <ui/GraphicBuffer.h>
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <media/stagefright/MediaCodec.h>
+#include <cutils/properties.h>
+#include "DataPathTrace.h"
+
+#define ATRACE_TAG ATRACE_TAG_VIDEO
+#include <utils/Trace.h>
+#endif
 namespace android {
+
+#ifdef MTK_AOSP_ENHANCEMENT
+bool MediaSender::allTracksHaveAccessUnit() {
+
+    if (mAllTracksHaveAccessUnit) {
+        return true;
+    }
+
+    for (size_t i = 0; i < mTrackInfos.size(); ++i) {
+        const TrackInfo &info = mTrackInfos.itemAt(i);
+
+        if(!info.mFirstAccessUnitIsValid){
+            return false;
+        }
+    }
+
+    mAllTracksHaveAccessUnit = true;
+
+    return true;
+}
+#endif
+
+
+
 
 MediaSender::MediaSender(
         const sp<ANetworkSession> &netSession,
@@ -45,6 +82,37 @@ MediaSender::MediaSender(
       mPrevTimeUs(-1ll),
       mInitDoneCount(0),
       mLogFile(NULL) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    mAllTracksHaveAccessUnit = false;
+    recordAudioOnly = false;
+    char value[PROPERTY_VALUE_MAX];
+    if (property_get("wfd.dumpts", value, NULL)
+        && (!strcmp(value, "1") || !strcasecmp(value, "true"))) {
+           ALOGI("open logts");
+        mLogFile = fopen("/sdcard/log.ts", "wb");
+    }else if(property_get("wfd.audio.dumpts", value, NULL)
+        && (!strcmp(value, "1") || !strcasecmp(value, "true"))) {
+           ALOGI("open audio only logts");
+            mLogFile = fopen("/sdcard/logaudio.ts", "wb");
+        recordAudioOnly = true;
+    }
+
+    avsync_enable = false;
+
+    char avsync_en[PROPERTY_VALUE_MAX];
+    if (property_get("media.wfd.av.sync", avsync_en, NULL)){
+        if(!strcmp(avsync_en, "1")){
+            avsync_enable = true;
+        }
+        else if(!strcmp(avsync_en, "0")){
+            avsync_enable = false;
+        }
+    } else {
+        property_set("media.wfd.av.sync", "1");
+    }
+
+    ALOGI("WFD_property avsync_enable=%d", avsync_enable);
+#endif
     // mLogFile = fopen("/data/misc/log.ts", "wb");
 }
 
@@ -74,6 +142,9 @@ ssize_t MediaSender::addTrack(const sp<AMessage> &format, uint32_t flags) {
     info.mFormat = format;
     info.mFlags = flags;
     info.mPacketizerTrackIndex = -1;
+#ifdef MTK_AOSP_ENHANCEMENT
+    info.mFirstAccessUnitIsValid = false;
+#endif
 
     AString mime;
     CHECK(format->findString("mime", &mime));
@@ -135,7 +206,7 @@ status_t MediaSender::initAsync(
                     localRTPPort);
 
             if (err != OK) {
-                looper()->unregisterHandler(mTSSender->id());
+        looper()->unregisterHandler(mTSSender->id());
                 mTSSender.clear();
             }
         }
@@ -152,7 +223,6 @@ status_t MediaSender::initAsync(
 
         mMode = MODE_TRANSPORT_STREAM;
         mInitDoneCount = 1;
-
         return OK;
     }
 
@@ -215,6 +285,29 @@ status_t MediaSender::queueAccessUnit(
         TrackInfo *info = &mTrackInfos.editItemAt(trackIndex);
         info->mAccessUnits.push_back(accessUnit);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        info->mFirstAccessUnitIsValid = true;
+        if(info->mIsAudio && !allTracksHaveAccessUnit()){
+                info->mAccessUnits.erase(info->mAccessUnits.begin());
+                ALOGD("***audio is waiting for video data to come drop audio *****" );
+        }
+
+        int32_t dummy=0;
+    int64_t latencyB = -1;
+    int64_t LatencyToken = -1;
+        if(!accessUnit->meta()->findInt32("dummy-nal", &dummy)){
+              int64_t timeUsIn  = ALooper::GetNowUs();
+              int64_t timeStamp;
+                  CHECK(accessUnit->meta()->findInt64("timeUs", &timeStamp));
+              sp<WfdDebugInfo> debugInfo= defaultWfdDebugInfo();
+              debugInfo->addTimeInfoByKey(!info->mIsAudio , timeStamp, "MsIn", timeUsIn /1000);
+        }else{
+            accessUnit->meta()->findInt64("latencyB", &latencyB);
+        accessUnit->meta()->findInt64("LatencyToken", &LatencyToken);
+    }
+
+#endif
+
         mTSPacketizer->extractCSDIfNecessary(info->mPacketizerTrackIndex);
 
         for (;;) {
@@ -224,7 +317,14 @@ status_t MediaSender::queueAccessUnit(
             for (size_t i = 0; i < mTrackInfos.size(); ++i) {
                 const TrackInfo &info = mTrackInfos.itemAt(i);
 
+
                 if (info.mAccessUnits.empty()) {
+#ifdef MTK_AOSP_ENHANCEMENT
+                   //send any data ready, avoid one track wait for another track , which will cause data blcok here
+                    if(avsync_enable == false)
+                         continue;
+#endif
+                                        ALOGD("%s AU is empty, wait", info.mIsAudio?"audio":"video");
                     minTrackIndex = -1;
                     minTimeUs = -1ll;
                     break;
@@ -254,13 +354,34 @@ status_t MediaSender::queueAccessUnit(
 
             if (err == OK) {
                 if (mLogFile != NULL) {
+#ifdef MTK_AOSP_ENHANCEMENT
+                                    if(!recordAudioOnly || info->mIsAudio)
+#endif
                     fwrite(tsPackets->data(), 1, tsPackets->size(), mLogFile);
                 }
 
                 int64_t timeUs;
                 CHECK(accessUnit->meta()->findInt64("timeUs", &timeUs));
                 tsPackets->meta()->setInt64("timeUs", timeUs);
+#ifdef MTK_AOSP_ENHANCEMENT
 
+                TrackInfo *tempinfo = &mTrackInfos.editItemAt(minTrackIndex);
+                if(!(tempinfo->mIsAudio)){
+                        tsPackets->meta()->setInt32("isVideo",  1);
+                }
+/*
+                ALOGI("after send the[%s] TrackIndex=%d, timestamp=%lld ms,left %d AU",
+                            (tempinfo->mIsAudio)?"audio":"video",
+                            minTrackIndex,timeUs /1000,
+                            tempinfo->mAccessUnits.size());
+                            //Rock, remove log in L
+*/
+                  if(dummy == 1){
+                     tsPackets->meta()->setInt32("dummy-nal", 1)    ;
+             tsPackets->meta()->setInt64("latencyB", latencyB)  ;
+             tsPackets->meta()->setInt64("LatencyToken", LatencyToken);
+                  }
+#endif
                 err = mTSSender->queueBuffer(
                         tsPackets,
                         33 /* packetType */,
@@ -403,14 +524,23 @@ status_t MediaSender::packetizeAccessUnit(
         && IsIDR(accessUnit);
 
     if (mHDCP != NULL && !info.mIsAudio) {
+
         isHDCPEncrypted = true;
 
+#ifndef MTK_AOSP_ENHANCEMENT    //should do it when "handle" mode
         if (manuallyPrependSPSPPS) {
             accessUnit = mTSPacketizer->prependCSD(
                     info.mPacketizerTrackIndex, accessUnit);
         }
+#endif
 
-        status_t err;
+#ifdef MTK_AOSP_ENHANCEMENT
+      int64_t startUs  = ALooper::GetNowUs();
+      ATRACE_BEGIN("WFD_HDCP,begin");
+#endif
+
+
+        status_t err= OK;
         native_handle_t* handle;
         if (accessUnit->meta()->findPointer("handle", (void**)&handle)
                 && handle != NULL) {
@@ -434,6 +564,14 @@ status_t MediaSender::packetizeAccessUnit(
                     accessUnit->data());
             notify->post();
         } else {
+
+#ifdef MTK_AOSP_ENHANCEMENT //should do it when "handle" mode
+        if (manuallyPrependSPSPPS) {
+            accessUnit = mTSPacketizer->prependCSD(
+                    info.mPacketizerTrackIndex, accessUnit);
+        }
+#endif
+
             err = mHDCP->encrypt(
                     accessUnit->data(), accessUnit->size(),
                     trackIndex  /* streamCTR */,
@@ -489,6 +627,22 @@ status_t MediaSender::packetizeAccessUnit(
             ((inputCTR & 0x7f) << 1) | 1;
 
         flags |= TSPacketizer::IS_ENCRYPTED;
+
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    int32_t  dummy;
+    int64_t  costTimeUs =0;
+    if(!accessUnit->meta()->findInt32("dummy-nal", &dummy)){
+        int64_t endUs  = ALooper::GetNowUs();
+        int64_t timeStamp;
+        CHECK(accessUnit->meta()->findInt64("timeUs", &timeStamp));
+        sp<WfdDebugInfo> debugInfo= defaultWfdDebugInfo();
+        costTimeUs = (endUs-startUs) ;
+        debugInfo->addTimeInfoByKey(!info.mIsAudio , timeStamp, "HdCpMs", costTimeUs/1000);
+    }
+    ATRACE_END();
+#endif
+
     } else if (manuallyPrependSPSPPS) {
         flags |= TSPacketizer::PREPEND_SPS_PPS_TO_IDR_FRAMES;
     }

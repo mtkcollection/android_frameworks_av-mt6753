@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2011 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -30,6 +35,10 @@ struct AMessage;
 struct Track;
 class String8;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+struct AnotherPacketSource;
+#endif
+
 struct MPEG2PSExtractor : public MediaExtractor {
     MPEG2PSExtractor(const sp<DataSource> &source);
 
@@ -40,9 +49,13 @@ struct MPEG2PSExtractor : public MediaExtractor {
     virtual sp<MetaData> getMetaData();
 
     virtual uint32_t flags() const;
-
+#ifdef MTK_AOSP_ENHANCEMENT
+    bool bisPlayable;
+    virtual ~MPEG2PSExtractor();
+#else
 protected:
     virtual ~MPEG2PSExtractor();
+#endif
 
 private:
     struct Track;
@@ -56,6 +69,51 @@ private:
     sp<ABuffer> mBuffer;
     KeyedVector<unsigned, sp<Track> > mTracks;
     bool mScanning;
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    int64_t mDurationUs;
+    int64_t mSeekTimeUs;
+    bool mSeeking;
+    off64_t mSeekingOffset;
+    off64_t mFileSize;
+    off64_t mMinOffset;
+    off64_t mMaxOffset;
+    uint64_t mMaxcount;
+    unsigned mSeekStreamID;
+    off64_t mlastValidPESSCOffset;
+    bool mIsCrossChunk;
+    bool mMPEG1Flag;
+    bool mhasVTrack;
+    bool mhasATrack;
+    bool mValidESFrame;
+    int64_t mSearchPTS;
+    off64_t mSearchPTSOffset;
+    off64_t mAverageByteRate;
+    bool mSystemHeaderValid;
+    bool mParseMaxTime;
+    bool mNeedDequeuePES;
+    void setDequeueState(bool needDequeuePES);
+    bool getDequeueState();
+    int64_t getMaxPTS();
+    int64_t getMaxVideoPTS();
+    void seekTo(int64_t seekTimeUs, unsigned StreamID);
+    void parseMaxPTS();
+    uint64_t getDurationUs();
+    void init();
+    bool getSeeking();
+    void signalDiscontinuity(const bool bKeepFormat = false);
+    int findNextPES(const void* data,int length);
+    int64_t getLastPESWithIFrame(off64_t end);
+    int64_t getNextPESWithIFrame(off64_t begin);
+    int64_t SearchPES(const void* data, int size);
+    int64_t SearchValidOffset(off64_t currentoffset);
+    bool IsSeeminglyValidADTSHeader(const uint8_t *ptr, size_t size);
+    bool IsSeeminglyValidMPEGAudioHeader(const uint8_t *ptr, size_t size);
+    unsigned findSubStreamId(const uint8_t *data, const size_t size);
+    void updateSeekOffset(int64_t pts);
+    bool consumeData(sp<AnotherPacketSource> pSource, int64_t timeUS);
+    bool needRemoveData(sp<AnotherPacketSource> pSource, int64_t timeUs);
+#endif //MTK_AOSP_ENHANCEMENT
 
     bool mProgramStreamMapValid;
     KeyedVector<unsigned, unsigned> mStreamTypeByESID;
@@ -73,6 +131,12 @@ private:
 bool SniffMPEG2PS(
         const sp<DataSource> &source, String8 *mimeType, float *confidence,
         sp<AMessage> *);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+bool fastSniffPS(
+        const sp<DataSource> &source, String8 *mimeType, float *confidence,
+        sp<AMessage> *);
+#endif
 
 }  // namespace android
 

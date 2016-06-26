@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  **
  ** Copyright (c) 2008 The Android Open Source Project
  **
@@ -482,7 +487,12 @@ status_t MediaRecorder::start()
         ALOGE("media recorder is not initialized yet");
         return INVALID_OPERATION;
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (!(mCurrentState & MEDIA_RECORDER_PREPARED)
+        && !(mCurrentState & MEDIA_RECORDER_RECORDING)) {
+#else
     if (!(mCurrentState & MEDIA_RECORDER_PREPARED)) {
+#endif
         ALOGE("start called in an invalid state: %d", mCurrentState);
         return INVALID_OPERATION;
     }
@@ -698,5 +708,31 @@ void MediaRecorder::died()
     ALOGV("died");
     notify(MEDIA_RECORDER_EVENT_ERROR, MEDIA_ERROR_SERVER_DIED, 0);
 }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+status_t MediaRecorder::setParametersExtra(const String8& params){
+    ALOGV("setParametersExtra(%s)", params.string());
+    if(mMediaRecorder == NULL) {
+        ALOGE("media recorder is not initialized yet");
+        return INVALID_OPERATION;
+    }
+
+    bool isInvalidState = (mCurrentState & MEDIA_RECORDER_ERROR);
+    if (isInvalidState) {
+        ALOGE("setParametersextra is called in an invalid state: %d", mCurrentState);
+        return INVALID_OPERATION;
+    }
+
+    status_t ret = mMediaRecorder->setParameters(params);
+    if (OK != ret) {
+        ALOGE("setParameters(%s) failed: %d", params.string(), ret);
+        // Do not change our current state to MEDIA_RECORDER_ERROR, failures
+        // of the only currently supported parameters, "max-duration" and
+        // "max-filesize" are _not_ fatal.
+    }
+
+    return ret;
+}
+#endif  //#ifdef MTK_AOSP_ENHANCEMENT
 
 } // namespace android

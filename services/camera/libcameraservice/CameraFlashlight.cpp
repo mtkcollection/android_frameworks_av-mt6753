@@ -99,8 +99,7 @@ status_t CameraFlashlight::createFlashlightControl(const String8& cameraId) {
 
 status_t CameraFlashlight::setTorchMode(const String8& cameraId, bool enabled) {
     if (!mFlashlightMapInitialized) {
-        ALOGE("%s: findFlashUnits() must be called before this method.",
-               __FUNCTION__);
+        ALOGE("%s: findFlashUnits() must be called before this method.");
         return NO_INIT;
     }
 
@@ -201,8 +200,7 @@ bool CameraFlashlight::hasFlashUnit(const String8& cameraId) {
 
 bool CameraFlashlight::hasFlashUnitLocked(const String8& cameraId) {
     if (!mFlashlightMapInitialized) {
-        ALOGE("%s: findFlashUnits() must be called before this method.",
-               __FUNCTION__);
+        ALOGE("%s: findFlashUnits() must be called before this method.");
         return false;
     }
 
@@ -221,8 +219,7 @@ status_t CameraFlashlight::prepareDeviceOpen(const String8& cameraId) {
 
     Mutex::Autolock l(mLock);
     if (!mFlashlightMapInitialized) {
-        ALOGE("%s: findFlashUnits() must be called before this method.",
-               __FUNCTION__);
+        ALOGE("%s: findFlashUnits() must be called before this method.");
         return NO_INIT;
     }
 
@@ -259,8 +256,7 @@ status_t CameraFlashlight::deviceClosed(const String8& cameraId) {
 
     Mutex::Autolock l(mLock);
     if (!mFlashlightMapInitialized) {
-        ALOGE("%s: findFlashUnits() must be called before this method.",
-               __FUNCTION__);
+        ALOGE("%s: findFlashUnits() must be called before this method.");
         return NO_INIT;
     }
 
@@ -882,7 +878,6 @@ status_t CameraHardwareInterfaceFlashControl::disconnectCameraDevice() {
     }
     mDevice->setPreviewWindow(NULL);
     mDevice->release();
-    mDevice = NULL;
 
     return OK;
 }

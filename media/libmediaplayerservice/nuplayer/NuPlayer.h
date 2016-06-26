@@ -134,6 +134,9 @@ private:
         kWhatGetTrackInfo               = 'gTrI',
         kWhatGetSelectedTrack           = 'gSel',
         kWhatSelectTrack                = 'selT',
+#ifdef MTK_AOSP_ENHANCEMENT
+        kWhatStop                       = 'stop',
+#endif
     };
 
     wp<NuPlayerDriver> mDriver;
@@ -274,9 +277,101 @@ private:
     void sendTimedTextData(const sp<ABuffer> &buffer);
 
     void writeTrackInfo(Parcel* reply, const sp<AMessage> format) const;
+#ifdef MTK_AOSP_ENHANCEMENT
+public:
+    void stop();
+    sp<MetaData> getMetaData() const;
+    void enableClearMotion(int32_t enable);
 
+    void getDRMClientProc(const Parcel *request);
+    sp<MetaData> getFormatMeta (bool audio) const;
+    status_t setsmspeed(int32_t speed);
+    status_t setslowmotionsection(int64_t slowmotion_start,int64_t slowmotion_end);
+    void setIsMtkPlayback(bool setting);
+private:
+    enum PrepareState {
+        UNPREPARED,
+        PREPARING,
+        PREPARED,
+        PREPARE_CANCELED
+    };
+    enum DataSourceType {
+        SOURCE_Default,
+        SOURCE_HttpLive,
+        SOURCE_Local,
+        SOURCE_Rtsp,
+        SOURCE_Http,
+    };
+    enum PlayState {
+        STOPPED,
+        PLAYSENDING,
+        PLAYING,
+        PAUSING,
+        PAUSED
+    };
+
+    bool IsHttpURL(const char *url);
+
+    bool IsRtspURL(const char *url) ;
+
+    bool IsRtspSDP(const char *url) ;
+    void init_ext();
+    void updataVideoSize_ext(const sp<AMessage> &outputFormat,int32_t *displayWidth,int32_t *displayHeight);
+    DataSourceType getDataSourceType();
+    void setDataSourceType(const DataSourceType dataSourceType);
+    bool isRTSPSource();
+    bool isHttpLiveSource();
+    void finishFlushIfPossible_l();
+
+    status_t setDataSourceAsync_proCheck(sp<AMessage> &msg, sp<AMessage> &notify);
+    bool tyrToChangeDataSourceForLocalSdp();
+    bool onScanSources();
+    void onStop();
+    bool isPausing();
+    bool onResume_l();
+    void handleForACodecError(bool audio,const sp<AMessage> &msg);
+    void handleForRenderError1(int32_t finalResult,int32_t audio);
+    bool handleForRenderError2(int32_t finalResult,int32_t audio);
+    void scanSource_l(const sp<AMessage> &msg);
+    void finishPrepare(int err = OK);
+    void finishSeek();
+    bool isSeeking();
+    void setVideoProperties(sp<AMessage> &format);
+    void reviseNotifyErrorCode(int msg,int *ext1,int *ext2);
+    void performSeek_l(int64_t seekTimeUs);
+    void onSourcePrepard(int32_t err);
+    void onSourceNotify_l(const sp<AMessage> &msg);
+    bool onSourceNotify_ext(const sp<AMessage> &msg);
+    static bool IsFlushingState(FlushStatus state);
+    uint32_t mFlags;
+    PrepareState mPrepare;
+    DataSourceType mDataSourceType;
+    PlayState mPlayState;
+    bool mAudioOnly;
+    bool mVideoOnly;
+    int64_t mSeekTimeUs;
+    mutable Mutex mLock;
+    volatile int32_t mEnClearMotion;
+    int mDebugDisableTrackId;       // only debug
+    int64_t mslowmotion_start;
+    int64_t mslowmotion_end;
+    int32_t mslowmotion_speed;
+    bool mIsStreamSource;
+    bool mVideoinfoNotify;
+    bool mAudioinfoNotify;
+    static int32_t mPlayerCnt;
+    int32_t mDeferTriggerSeekTimes;
+    int32_t m_i4ContainerWidth;
+    int32_t m_i4ContainerHeight;
+    bool mIsMtkPlayback;            // for control some mtk notify
+    bool mNotifyListenerVideodecoderIsNull;//for notiflistener
+    bool mSourceSeekDone;
+    bool mHaveSanSources; // for ALPS02318704; when audio decoder config error, suspend/resume video can not play.
+#endif
     DISALLOW_EVIL_CONSTRUCTORS(NuPlayer);
 };
+
+
 
 }  // namespace android
 

@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright 2012, The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -25,7 +30,12 @@
 
 #include <netinet/in.h>
 
+
 #include <utils/String16.h>
+
+
+#include "uibc/UibcServerHandler.h"
+#include <gui/SurfaceComposerClient.h>
 
 namespace android {
 
@@ -45,11 +55,38 @@ struct WifiDisplaySource : public AHandler {
             const sp<IRemoteDisplayClient> &client,
             const char *path = NULL);
 
+    WifiDisplaySource(
+            const String16 &opPackageName,
+            const sp<ANetworkSession> &netSession,
+            const sp<IRemoteDisplayClient> &client,
+            const uint32_t  wfdFlags,
+            const char *path = NULL);
     status_t start(const char *iface);
     status_t stop();
 
     status_t pause();
     status_t resume();
+
+
+   ///M: add for rtsp generic message@{
+   status_t sendGenericMsg(int cmd);
+   status_t setWfdLevel(int level);
+   int      getWfdParam(int paramType);
+   ///@}
+
+   ///M:
+    static const int32_t kFastSetupFlag     = 0x01;
+    static const int32_t kTestModeFlag      = 0x02;
+    static const int32_t kUibcEnableFlag    = 0x04;
+    static const int32_t kFastRtpFlag       = 0x08;
+    static const int32_t kSigmaTest         = 0x10;
+
+    static const int32_t kExpectedBitRate   = 0;
+    static const int32_t kCuurentBitRate   = 1;
+    static const int32_t kSkipRate   = 2;
+/// @}
+
+
 
 protected:
     virtual ~WifiDisplaySource();
@@ -86,6 +123,12 @@ private:
         kWhatHDCPNotify,
         kWhatFinishStop2,
         kWhatTeardownTriggerTimedOut,
+        ///M: Add by MTK
+        kWhatTestNotify,
+        kWhatUibcNotify,
+        kWhatSendGenericMsg,
+        kWhatRtpNotify
+        ///@}
     };
 
     struct ResponseID {
@@ -108,9 +151,9 @@ private:
     // perform an orderly shutdown. We're willing to wait up to 2 secs
     // for this message to arrive, after that we'll force a disconnect
     // instead.
-    static const int64_t kTeardownTriggerTimeouSecs = 2;
+    static const int64_t kTeardownTriggerTimeouSecs = 1;
 
-    static const int64_t kPlaybackSessionTimeoutSecs = 30;
+    static const int64_t kPlaybackSessionTimeoutSecs = 60;
 
     static const int64_t kPlaybackSessionTimeoutUs =
         kPlaybackSessionTimeoutSecs * 1000000ll;
@@ -145,14 +188,45 @@ private:
     bool mUsingPCMAudio;
     int32_t mClientSessionID;
 
+    //M: To avoid playbacksessoin init() is interrupted by destroyAsync()
+    bool mPlaybackSessionIniting;
+    bool mPlaybackSessionDestroyDeferred;
+
+    bool mPlayRequestReceived;
+
+    ///M: Support Mircast Testing @{
+    int32_t mTestSessionID;
+    int32_t mTestClientSessionID;
+
+    int32_t mUibcSessionID;
+    int32_t mUibcClientSessionID;
+    sp<UibcServerHandler> mUibcServerHandler;
+
+    uint32_t    mWfdFlags;
+    bool mTestSessionStopped;
+
+    uint32_t mBitrateControl;
+
+    //Support for test mode for Surface Media Source
+    sp<SurfaceComposerClient> mComposerClient;
+    sp<IGraphicBufferProducer> mBufferProducer;
+    sp<IBinder> mDisplayBinder;
+    /// @}
+
+
     struct ClientInfo {
         AString mRemoteIP;
         AString mLocalIP;
         int32_t mLocalPort;
         int32_t mPlaybackSessionID;
+        int32_t mRemoteRtpPort;
+        bool    mUibcSupported;
         sp<PlaybackSession> mPlaybackSession;
     };
     ClientInfo mClientInfo;
+
+    //sp<UibcServerHandler> mUibcServerHandler;
+    bool mUibcGenSrcDisabled;
 
     bool mReaperPending;
 
@@ -172,13 +246,14 @@ private:
 
     bool mPlaybackSessionEstablished;
 
+    bool mPromoted;
+
     status_t makeHDCP();
     // <<<< HDCP specific section
 
     status_t sendM1(int32_t sessionID);
     status_t sendM3(int32_t sessionID);
     status_t sendM4(int32_t sessionID);
-
     enum TriggerType {
         TRIGGER_SETUP,
         TRIGGER_TEARDOWN,
@@ -188,7 +263,6 @@ private:
 
     // M5
     status_t sendTrigger(int32_t sessionID, TriggerType triggerType);
-
     status_t sendM16(int32_t sessionID);
 
     status_t onReceiveM1Response(
@@ -271,6 +345,21 @@ private:
     void finishPlay();
 
     DISALLOW_EVIL_CONSTRUCTORS(WifiDisplaySource);
+    ///M: Add by MTK @{
+    status_t sendGenericMsgByMethod(int32_t methodID);
+    status_t onReceiveGenericResponse(int32_t sessionID, const sp<ParsedMessage> &msg);
+    bool     isTestMode();
+    void     onReceiveTestData(const sp<AMessage> &msg);
+    void     onReceiveUIBCData(const sp<AMessage> &msg);
+    status_t onReceiveM14Response(int32_t sessionID, const sp<ParsedMessage> &msg);
+    status_t sendM14(int32_t sessionID);
+    void     resetRtspClient();
+    void     startRtpClient(const char* remoteIP, int32_t clientRtp);
+    void     setAudioPath(bool on);
+    void     stopTestSession();
+    void     notifyThermal(bool start);
+    void     notifyGPUDriver(bool start);
+    /// @}
 };
 
 }  // namespace android

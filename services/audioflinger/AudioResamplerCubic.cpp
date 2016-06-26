@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2007 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -26,7 +31,13 @@
 
 namespace android {
 // ----------------------------------------------------------------------------
+//<MTK_ADDED
+void AudioResamplerCubic::init(int32_t SrcSampleRate) {
+        memset(&left, 0, sizeof(state));
+        memset(&right, 0, sizeof(state));
+    }
 
+//MTK_ADDED>
 void AudioResamplerCubic::init() {
     memset(&left, 0, sizeof(state));
     memset(&right, 0, sizeof(state));

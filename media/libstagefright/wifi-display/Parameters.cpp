@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright 2012, The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -40,6 +45,18 @@ status_t Parameters::parse(const char *data, size_t size) {
     size_t i = 0;
     while (i < size) {
         size_t nameStart = i;
+
+#ifdef MTK_AOSP_ENHANCEMENT
+         while (i  < size && (data[i] == '\r' || data[i] == '\n')) {
+            ++i;
+        }
+
+        if(i == size){
+           ALOGD("Skip CRLF in the end");
+           return OK;
+        }
+#endif
+
         while (i < size && data[i] != ':') {
             ++i;
         }

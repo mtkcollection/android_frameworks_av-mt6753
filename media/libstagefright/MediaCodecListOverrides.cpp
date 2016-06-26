@@ -30,10 +30,60 @@
 #include <media/stagefright/foundation/AMessage.h>
 #include <media/stagefright/MediaCodec.h>
 #include <media/stagefright/MediaCodecList.h>
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <media/stagefright/foundation/ADebug.h>
+#include <media/stagefright/OMXClient.h>
+#include <media/stagefright/OMXCodec.h>
+#include <OMX_Video.h>
+#endif
 
 namespace android {
 
 const char *kProfilingResults = "/data/misc/media/media_codecs_profiling_results.xml";
+
+#ifdef MTK_AOSP_ENHANCEMENT
+struct OMXCodecObserver : public BnOMXObserver {
+    OMXCodecObserver() {
+    }
+
+    void setCodec(const sp<OMXCodec> &target) {
+        mTarget = target;
+    }
+
+    // from IOMXObserver
+    virtual void onMessages(const std::list<omx_message> &messages) {
+        sp<OMXCodec> codec = mTarget.promote();
+
+        if (codec.get() != NULL) {
+            Mutex::Autolock autoLock(codec->mLock);
+            for (std::list<omx_message>::const_iterator it = messages.cbegin();
+                  it != messages.cend(); ++it) {
+                codec->on_message(*it);
+            }
+            codec.clear();
+        }
+    }
+
+protected:
+    virtual ~OMXCodecObserver() {}
+
+private:
+    wp<OMXCodec> mTarget;
+
+    OMXCodecObserver(const OMXCodecObserver &);
+    OMXCodecObserver &operator=(const OMXCodecObserver &);
+};
+
+
+template<class T>
+static void InitOMXParams(T *params) {
+    params->nSize = sizeof(T);
+    params->nVersion.s.nVersionMajor = 1;
+    params->nVersion.s.nVersionMinor = 0;
+    params->nVersion.s.nRevision = 0;
+    params->nVersion.s.nStep = 0;
+}
+#endif
 
 AString getProfilingVersionString() {
     char val[PROPERTY_VALUE_MAX];
@@ -260,6 +310,67 @@ bool splitString(
     return true;
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+static status_t QueryCodecSize(
+        const sp<IOMX> &omx,  const IOMX::node_id node,
+        const char *mime, bool isEncoder,
+        size_t *maxWidth, size_t *maxHeight) {
+    bool isVideo = !strncasecmp(mime, "video/", 6);
+    status_t err = OK;
+
+    if (isVideo) {
+        OMX_VIDEO_PARAM_SPEC_QUERY param;
+        InitOMXParams(&param);
+        OMX_INDEXTYPE index = OMX_IndexComponentStartUnused;
+
+        if (isEncoder) {
+            index = OMX_IndexVendorMtkOmxVencQueryCodecsSizes;
+        } else {
+            index = OMX_IndexVendorMtkOmxVdecQueryCodecsSizes;
+        }
+
+        err = omx->getParameter(
+                node, index,
+                &param, sizeof(param));
+        if (err != OK) {
+            return err;
+        }
+        *maxWidth = param.nFrameWidth;
+        *maxHeight = param.nFrameHeight;
+    }
+    return OK;
+}
+
+static void doProfileCodecsMore(
+        const sp<IOMX> &omx,
+        const IOMX::node_id &node,
+        AString mime, bool isEncoder,
+        const sp<MediaCodecInfo::Capabilities> caps,
+        CodecSettings *size) {
+    char maxStr[32];
+    size_t maxWidth = 0, maxHeight = 0;
+    CodecSettings settings;
+    // add min-size info for encoder/decoder
+    int32_t width = 0;
+    int32_t height = 0;
+    if (!getMeasureSize(caps, &width, &height)) {
+        ALOGE("something wrong in getMeasureSize()");
+        return;
+    }
+    sprintf(maxStr, "%dx%d", width, height);
+    size->add("min", maxStr);
+
+    // add max-size info for encoder/decoder
+    if (OK != QueryCodecSize(omx, node, mime.c_str(), isEncoder, &maxWidth, &maxHeight)) {
+        ALOGE("something wrong in QueryCodecSize()");
+        return;
+    }
+    sprintf(maxStr, "%zux%zu", maxWidth, maxHeight);
+    size->add("max", maxStr);
+
+}
+#endif
+
 void profileCodecs(const Vector<sp<MediaCodecInfo>> &infos) {
     CodecSettings global_results;
     KeyedVector<AString, CodecSettings> encoder_results;
@@ -277,6 +388,18 @@ void profileCodecs(
     KeyedVector<AString, sp<MediaCodecInfo::Capabilities>> codecsNeedMeasure;
     AString supportMultipleSecureCodecs = "true";
     size_t maxEncoderInputBuffers = 0;
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    OMXClient client;
+    status_t initCheck = client.connect();
+    if (initCheck != OK) {
+        return;
+    }
+    sp<IOMX> omx = client.interface();
+    sp<OMXCodecObserver> observer = new OMXCodecObserver;
+    IOMX::node_id node;
+#endif
+
     for (size_t i = 0; i < infos.size(); ++i) {
         const sp<MediaCodecInfo> info = infos[i];
         AString name = info->getCodecName();
@@ -285,6 +408,14 @@ void profileCodecs(
                 name == "OMX.Intel.VideoDecoder.VP9.hybrid") {
             continue;
         }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+        status_t err = omx->allocateNode(name.c_str(), observer, &node);
+        if (err != OK) {
+            ALOGE("allocateNode failed when profileCodecs()");
+            return;
+        }
+#endif
 
         Vector<AString> mimes;
         info->getSupportedMimes(&mimes);
@@ -298,6 +429,57 @@ void profileCodecs(
             }
 
             size_t max = doProfileCodecs(info->isEncoder(), name, mimes[i], caps);
+#ifdef MTK_AOSP_ENHANCEMENT
+            CodecSettings settings;
+            AString key = name;
+            key.append(" ");
+            key.append(mimes[i]);
+            key.append(" ");
+            key.append(info->isEncoder() ? "encoder" : "decoder");
+            if (max > 0) {
+                char maxStr[32];
+                sprintf(maxStr, "%zu", max);
+                settings.add("max-supported-instances", maxStr);
+                if (info->isEncoder()) {
+                    encoder_results->add(key, settings);
+                } else {
+                    decoder_results->add(key, settings);
+                }
+
+                if (name.endsWith(".secure")) {
+                    if (max <= 1) {
+                        supportMultipleSecureCodecs = "false";
+                    }
+                }
+                if (info->isEncoder() && mimes[i].startsWith("video/")) {
+                    size_t encoderInputBuffers =
+                        doProfileEncoderInputBuffers(name, mimes[i], caps);
+                    if (encoderInputBuffers > maxEncoderInputBuffers) {
+                        maxEncoderInputBuffers = encoderInputBuffers;
+                    }
+                }
+            }
+
+            // add more video codec size info to "result"
+            if (mimes[i].startsWith("video/")) {
+                CodecSettings minSize, maxSize;
+                doProfileCodecsMore(omx, node, mimes[i], info->isEncoder(), caps, &settings);
+                if (info->isEncoder()) {
+                    encoder_results->add(key, settings);
+                } else {
+                    decoder_results->add(key, settings);
+                }
+            }
+        }
+        // free node
+        err = omx->freeNode(node);
+        if (err != OK) {
+            ALOGE("free Node failed when profileCodecs()");
+            return;
+        }
+    }
+    omx.clear();
+#else
             if (max > 0) {
                 CodecSettings settings;
                 char maxStr[32];
@@ -327,8 +509,9 @@ void profileCodecs(
                     }
                 }
             }
-        }
-    }
+        } // end for(size_t i=0; i < mimes.size(), ++i)
+    }// end for(size_t i=0; i < infos.size(), ++i)
+#endif
     if (maxEncoderInputBuffers > 0) {
         char tmp[32];
         sprintf(tmp, "%zu", maxEncoderInputBuffers);
@@ -363,15 +546,42 @@ static AString codecResultsToXml(const KeyedVector<AString, CodecSettings>& resu
                               mime.c_str());
         ret.append(codec);
         CodecSettings settings = results.valueAt(i);
+#ifdef MTK_AOSP_ENHANCEMENT
+        AString minWidth, minHeight, maxWidth, maxHeight;
+        bool multipleType = false;
+#endif
         for (size_t i = 0; i < settings.size(); ++i) {
             // WARNING: we assume all the settings are "Limit". Currently we have only one type
             // of setting in this case, which is "max-supported-instances".
+#ifdef MTK_AOSP_ENHANCEMENT
+            if (!settings.keyAt(i).compare("max-supported-instances")) {
+                AString strInsert = AStringPrintf(
+                        "            <Limit name=\"%s\" value=\"%s\" />\n",
+                        settings.keyAt(i).c_str(),
+                        settings.valueAt(i).c_str());
+                ret.append(strInsert);
+                multipleType = true;
+            } else if (!settings.keyAt(i).compare("min")) {
+                splitString(settings.valueAt(i).c_str(), "x", &minWidth, &minHeight);
+            } else if (!settings.keyAt(i).compare("max")) {
+                splitString(settings.valueAt(i).c_str(), "x", &maxWidth, &maxHeight);
+            }
+        }
+        AString strInsert1 = AStringPrintf(
+                "            <Limit name=\"size\" min=\"%sx%s\" max=\"%sx%s\" />\n",
+                minWidth.c_str(),
+                minHeight.c_str(),
+                maxWidth.c_str(),
+                maxHeight.c_str());
+        ret.append(strInsert1);
+#else
             AString setting = AStringPrintf(
                     "            <Limit name=\"%s\" value=\"%s\" />\n",
                     settings.keyAt(i).c_str(),
                     settings.valueAt(i).c_str());
             ret.append(setting);
         }
+#endif
         ret.append("        </MediaCodec>\n");
     }
     return ret;

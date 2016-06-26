@@ -11,6 +11,18 @@ LOCAL_C_INCLUDES:= \
 LOCAL_CFLAGS += -Wno-multichar -Werror -Wall
 LOCAL_CLANG := true
 
+######################## MTK_USE_ANDROID_MM_DEFAULT_CODE ######################
+ifeq ($(strip $(MTK_USE_ANDROID_MM_DEFAULT_CODE)),yes)
+LOCAL_CFLAGS += -DANDROID_DEFAULT_CODE
+else
+
+LOCAL_C_INCLUDES += \
+$(TOP)/$(MTK_ROOT)/frameworks/av/media/libstagefright/include/omx_core
+
+endif  # MTK_USE_ANDROID_MM_DEFAULT_CODE
+######################## MTK_USE_ANDROID_MM_DEFAULT_CODE ######################
+
+
 LOCAL_MODULE:= libstagefright_matroska
 
 include $(BUILD_STATIC_LIBRARY)

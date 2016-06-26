@@ -67,6 +67,7 @@ private:
 
     bool mSignalledError;
 
+
     enum {
         NONE,
         AWAITING_DISABLED,

@@ -16,6 +16,9 @@
 
 #define LOG_TAG "APM::ConfigParsingUtils"
 //#define LOG_NDEBUG 0
+#ifdef MTK_AUDIO
+#define LOG_NDEBUG 0
+#endif
 
 #include "ConfigParsingUtils.h"
 #include "AudioGain.h"
@@ -149,6 +152,19 @@ void ConfigParsingUtils::loadHwModule(cnode *root, HwModuleCollection &hwModules
     if (node != NULL) {
         node = node->first_child;
         while (node) {
+#ifdef MTK_AUDIO
+            if (strcmp(node->name, COMPRESS_OFFLOAD_TAG) == 0) {
+#ifdef MTK_LOSSLESS_BT_SUPPORT
+                ALOGV("loadHwModule() loading offload output %s", node->name);
+#else
+                if (strcmp(root->name, MODULE_A2DP_TAG) == 0) {
+                    ALOGV("loadHwModule() skip loading a2dp offload  output %s", root->name);
+                    node = node->next;
+                    continue;
+                }
+#endif
+            }
+#endif
             ALOGV("loadHwModule() loading output %s", node->name);
             status_t tmpStatus = module->loadOutput(node);
             if (status == NAME_NOT_FOUND || status == NO_ERROR) {
@@ -222,11 +238,24 @@ void ConfigParsingUtils::loadGlobalConfig(cnode *root, const sp<HwModule>& modul
                                                         declaredDevices);
             ALOGV("loadGlobalConfig() Attached Output Devices %08x",
                   availableOutputDevices.types());
+#if defined(MTK_AUDIO)&&defined(FM_DIGITAL_OUT_SUPPORT)
+            sp<DeviceDescriptor> dev = new DeviceDescriptor(AUDIO_DEVICE_OUT_FM);
+            availableOutputDevices.add(dev);
+            ALOGD("Auto attatch AUDIO_DEVICE_OUT_FM,Attached Output Devices %08x",availableOutputDevices.types());
+#endif
+
         } else if (strcmp(DEFAULT_OUTPUT_DEVICE_TAG, node->name) == 0) {
             audio_devices_t device = (audio_devices_t)stringToEnum(
                     sDeviceTypeToEnumTable,
                     ARRAY_SIZE(sDeviceTypeToEnumTable),
                     (char *)node->value);
+#if defined(MTK_AUDIO)&&defined(DISABLE_EARPIECE)
+            if (device == AUDIO_DEVICE_OUT_EARPIECE) {
+                ALOGW("loadGlobalConfig() default device not support AUDIO_DEVICE_OUT_EARPIECE");
+                node = node->next;
+                continue;
+            }
+#endif
             if (device != AUDIO_DEVICE_NONE) {
                 defaultOutputDevice = new DeviceDescriptor(device);
             } else {

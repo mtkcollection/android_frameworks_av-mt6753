@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -138,6 +143,10 @@ public:
     virtual status_t getAllSupportInfo(
             int uniqueId, int* length, DrmSupportInfo** drmSupportInfoArray) = 0;
 
+    //Add by rui to pass client's client to drmserver
+    virtual DecryptHandle* openDecryptSession(int uniqueId, int fd, off64_t offset, off64_t length,
+            const char* mime, pid_t pid) = 0;
+
     virtual DecryptHandle* openDecryptSession(
                 int uniqueId, int fd, off64_t offset,
                 off64_t length, const char* mime) = 0;
@@ -228,6 +237,10 @@ public:
     virtual DecryptHandle* openDecryptSession(
                 int uniqueId, int fd, off64_t offset, off64_t length,
                 const char* mime);
+
+    //Add by rui to pass client's client to drmserver
+    virtual DecryptHandle* openDecryptSession(int uniqueId, int fd, off64_t offset, off64_t length,
+            const char* mime, pid_t pid);
 
     virtual DecryptHandle* openDecryptSession(
                 int uniqueId, const char* uri, const char* mime);

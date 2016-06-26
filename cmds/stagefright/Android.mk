@@ -136,7 +136,9 @@ LOCAL_SHARED_LIBRARIES := \
 
 LOCAL_C_INCLUDES:= \
 	frameworks/av/media/libstagefright \
-	$(TOP)/frameworks/native/include/media/openmax
+	$(TOP)/frameworks/native/include/media/openmax \
+	$(TOP)/frameworks/native/include/media/editor \
+	$(TOP)/frameworks/av/libvideoeditor/lvpp \
 
 LOCAL_CFLAGS += -Wno-multichar -Werror -Wall
 LOCAL_CLANG := true
@@ -171,6 +173,29 @@ LOCAL_MODULE_TAGS := optional
 LOCAL_MODULE:= codec
 
 include $(BUILD_EXECUTABLE)
+
+################################################################################
+
+#include $(CLEAR_VARS)
+
+#LOCAL_SRC_FILES:=               \
+#        SimpleLooper.cpp        \
+
+#LOCAL_SHARED_LIBRARIES := \
+#	libstagefright liblog libutils libbinder libstagefright_foundation \
+#        libmedia libgui libcutils libui
+
+#LOCAL_C_INCLUDES:= \
+#	frameworks/av/media/libstagefright \
+#	$(TOP)/frameworks/native/include/media/openmax
+
+#LOCAL_CFLAGS += -Wno-multichar
+
+#LOCAL_MODULE_TAGS := optional
+
+#LOCAL_MODULE:= mylooper
+
+#include $(BUILD_EXECUTABLE)
 
 ################################################################################
 

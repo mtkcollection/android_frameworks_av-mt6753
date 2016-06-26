@@ -51,7 +51,11 @@
  */
 static inline bool is_state_in_call(int state)
 {
-    return (state == AUDIO_MODE_IN_CALL) || (state == AUDIO_MODE_IN_COMMUNICATION);
+    /**
+     * MTK extend in call state
+     */
+    return (state == AUDIO_MODE_IN_CALL) || (state == AUDIO_MODE_IN_COMMUNICATION) ||
+           (state == AUDIO_MODE_IN_CALL_2) || (state == AUDIO_MODE_IN_CALL_EXTERNAL);
 }
 
 /**

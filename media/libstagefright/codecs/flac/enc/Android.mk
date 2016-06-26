@@ -6,7 +6,7 @@ LOCAL_SRC_FILES := \
 
 LOCAL_C_INCLUDES := \
         frameworks/av/media/libstagefright/include \
-        frameworks/native/include/media/openmax \
+        $(TOP)/$(MTK_ROOT)/frameworks/native/include/media/openmax \
         external/flac/include
 
 LOCAL_CFLAGS += -Werror

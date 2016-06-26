@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
 **
 ** Copyright 2007, The Android Open Source Project
 **
@@ -64,7 +69,18 @@
 
 #include <media/nbaio/NBLog.h>
 #include <private/media/AudioTrackShared.h>
+#ifdef DOLBY_DAP
+#include "ds_config.h"
+#endif // DOLBY_END
 
+//<MTK_AUDIO_ADD
+#include "AudioMTKDcRemoval.h"
+#include <hardware/audio_policy_mtk.h>
+
+extern "C" {
+#include  "MtkAudioSrc.h"
+}
+//MTK_AUDIO_ADD>
 namespace android {
 
 struct audio_track_cblk_t;
@@ -87,12 +103,8 @@ class ServerProxy;
 #define FCC_8 8     // FCC_8 = Fixed Channel Count 8
 
 static const nsecs_t kDefaultStandbyTimeInNsecs = seconds(3);
-
-
-// Max shared memory size for audio tracks and audio records per client process
-static const size_t kClientSharedHeapSizeBytes = 1024*1024;
-// Shared memory size multiplier for non low ram devices
-static const size_t kClientSharedHeapSizeMultiplier = 4;
+#define MAX_GAIN 4096.0f
+#define MAX_GAIN_INT 0x1000
 
 #define INCLUDING_FROM_AUDIOFLINGER_H
 
@@ -103,6 +115,77 @@ class AudioFlinger :
     friend class BinderService<AudioFlinger>;   // for AudioFlinger()
 public:
     static const char* getServiceName() ANDROID_API { return "media.audio_flinger"; }
+
+//<MTK_AUDIO_ADD
+    /////////////////////////////////////////////////////////////////////////
+    //    for PCMxWay Interface API ...   Stan
+    /////////////////////////////////////////////////////////////////////////
+    virtual int xWayPlay_Start(int sample_rate);
+    virtual int xWayPlay_Stop(void);
+    virtual int xWayPlay_Write(void *buffer, int size_bytes);
+    virtual int xWayPlay_GetFreeBufferCount(void);
+    virtual int xWayRec_Start(int sample_rate);
+    virtual int xWayRec_Stop(void);
+    virtual int xWayRec_Read(void *buffer, int size_bytes);
+
+    // add by chipeng to EM mode setting
+    virtual status_t GetEMParameter(void *ptr, size_t len);
+    virtual status_t SetEMParameter(void *ptr, size_t len);
+    virtual status_t SetAudioData(int par1,size_t len,void *ptr);
+    virtual status_t GetAudioData(int par1,size_t len,void *ptr);
+    virtual status_t SetAudioCommand(int parameters1,int parameters2);
+    virtual status_t GetAudioCommand(int parameters1);
+
+    //add by Tina, set acf preview param
+    virtual status_t SetACFPreviewParameter(void *ptr, size_t len);
+    virtual status_t SetHCFPreviewParameter(void *ptr, size_t len);
+
+    //wendy, get voice unlock dl object.
+    virtual status_t ReadRefFromRing(void*buf, uint32_t datasz, void* DLtime);
+    virtual int GetVoiceUnlockULTime(void* DLtime);
+    virtual status_t SetVoiceUnlockSRC(uint outSR, uint outChannel);
+    virtual bool startVoiceUnlockDL();
+    virtual bool stopVoiceUnlockDL();
+    virtual void freeVoiceUnlockDLInstance();
+    virtual int GetVoiceUnlockDLLatency();
+    virtual bool getVoiceUnlockDLInstance();
+    virtual status_t setSurroundMode(int value);
+    virtual status_t setSurroundOnOff(int value);
+    int mDL1ONLY; // set true to forbid fast track
+
+    // for S2M
+    int mSteroToMono; // apply to all device
+
+
+    int32_t mBesSurroundState;
+    int32_t mBesSurroundMode;
+//#ifdef MTK_HDMI_MULTI_CHANNEL_SUPPORT
+   struct HDMI_Capability{
+     int mHDMI_ChannelCount;
+     int mHDMI_Bitwidth;
+      int mHDMI_MaxSampleRate;
+   };
+
+   HDMI_Capability* mHDMI_Capability;
+//#endif
+    virtual status_t getHDMICapability( int* HDMI_ChannelCount,int* HDMI_Bitwidth, int* HDMI_MaxSampleRate);
+
+    //=== Lossless BT Audio related ===
+    bool mIsLosslessBTOn;   //is setting on
+    bool mIsLosslessBTSupport;  //is lossless device connect or not
+    bool mIsLosslessBTVolumeSatisfied;  //is volume max or is absolute volume
+    bool mIsLosslessBTPlaying;  //is offload playing
+    bool mIsLosslessBTWorking;  //is lossless enable( change audiotrack routing)
+    bool mIsLosslessBTAbsoluteVolume;  //is absolute volume device
+    pthread_t mLLBTCommandT;
+    volatile int32_t mIsLosslessBTVaild;
+    Condition mLLWaitWorkCV;
+    Mutex     mLLBroadcastMutex;
+    static void *ReadLLBTCommandThread(void *arg);
+    status_t ReadLLBTCommand();
+    //=================================
+//MTK_AUDIO_ADD>
+
 
     virtual     status_t    dump(int fd, const Vector<String16>& args);
 
@@ -429,7 +512,7 @@ private:
                             Client(const Client&);
                             Client& operator = (const Client&);
         const sp<AudioFlinger> mAudioFlinger;
-              sp<MemoryDealer> mMemoryDealer;
+        const sp<MemoryDealer> mMemoryDealer;
         const pid_t         mPid;
 
         Mutex               mTimedTrackLock;
@@ -715,6 +798,10 @@ private:
 
                 // list of sessions for which a valid HW A/V sync ID was retrieved from the HAL
                 DefaultKeyedVector< audio_session_t , audio_hw_sync_t >mHwAvSyncIds;
+//<MTK_AUDIO_ADD
+                sp<EffectHandle> eff_handle;
+//MTK_AUDIO_ADD>
+
 private:
     sp<Client>  registerPid(pid_t pid);    // always returns non-0
 
@@ -769,7 +856,13 @@ private:
 
     sp<PatchPanel> mPatchPanel;
 
-    bool        mSystemReady;
+    uint32_t    mPrimaryOutputSampleRate;   // sample rate of the primary output, or zero if none
+                                            // protected by mHardwareLock
+    bool       mSystemReady;
+
+    #ifdef DOLBY_DAP
+    #include "EffectDapController.h"
+    #endif // DOLBY_END
 };
 
 #undef INCLUDING_FROM_AUDIOFLINGER_H

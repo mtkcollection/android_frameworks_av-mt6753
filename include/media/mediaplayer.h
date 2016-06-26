@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2007 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -54,6 +59,12 @@ enum media_event_type {
     MEDIA_INFO              = 200,
     MEDIA_SUBTITLE_DATA     = 201,
     MEDIA_META_DATA         = 202,
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    MEDIA_DURATION_UPDATE   = 300,
+    MEDIA_PAUSE_COMPLETE    = 600, // mtk80902
+    MEDIA_PLAY_COMPLETE    = 601, // mtk80902
+#endif
 };
 
 // Generic error codes for the media player framework.  Errors are fatal, the
@@ -82,7 +93,15 @@ enum media_error_type {
     MEDIA_ERROR_SERVER_DIED = 100,
     // 2xx
     MEDIA_ERROR_NOT_VALID_FOR_PROGRESSIVE_PLAYBACK = 200,
+#ifdef MTK_AOSP_ENHANCEMENT
+    MEDIA_ERROR_BAD_FILE = 260,
+    MEDIA_ERROR_CANNOT_CONNECT_TO_SERVER = 261,
+    MEDIA_ERROR_TYPE_NOT_SUPPORTED = 262,
+    MEDIA_ERROR_DRM_NOT_SUPPORTED = 263,
+    MEDIA_ERROR_INVALID_CONNECTION = 264,
     // 3xx
+    MEDIA_ERROR_SD_CARD_BAD_REMOVAL = 300,
+#endif
 };
 
 
@@ -131,6 +150,16 @@ enum media_info_type {
     MEDIA_INFO_NOT_SEEKABLE = 801,
     // New media metadata is available.
     MEDIA_INFO_METADATA_UPDATE = 802,
+#ifdef MTK_AOSP_ENHANCEMENT
+// <--- Morris Yang PLAYER_CHECK_LIVE_STREAMING is completed.
+    MEDIA_INFO_CHECK_LIVE_STREAMING_COMPLETE = 803,
+// --->
+    // <--- sam sun for aac seek table gen
+    // The media is seekable.
+    MEDIA_INFO_SEEKABLE = 804,
+    MEDIA_INFO_HAS_UNSUPPORT_VIDEO = 860,
+    MEDIA_INFO_HAS_UNSUPPORT_AUDIO = 862,
+#endif
 
     //9xx
     MEDIA_INFO_TIMED_TEXT_ERROR = 900,
@@ -165,8 +194,20 @@ enum media_parameter_keys {
     // values used for rewinding or reverse playback.
     KEY_PARAMETER_PLAYBACK_RATE_PERMILLE = 1300,                // set only
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    KEY_PARAMETER_AUDIO_ATTRIBUTES = 1400,
+    KEY_PARAMETER_AUDIO_SEEKTABLE = 1500,                       //set seektable only
+//#ifdef MTK_CLEARMOTION_SUPPORT
+    KEY_PARAMETER_CLEARMOTION_DISABLE = 1700,                // clear motion enable
+//#endif
+    KEY_PARAMETER_SlowMotion_Speed_value = 1800,
+    KEY_PARAMETER_SlowMotion_Speed_Section = 1900,
+    KEY_PARAMETER_DRM_CLIENT_PROC = 2000,                       // OMA DRM v1.0 implementation
+    KEY_PARAMETER_PLAYBACK_MTK = 2100                       // handle for mtk playback notify msg
+#else
     // Set a Parcel containing the value of a parcelled Java AudioAttribute instance
     KEY_PARAMETER_AUDIO_ATTRIBUTES = 1400                       // set only
+#endif
 };
 
 // Keep INVOKE_ID_* in sync with MediaPlayer.java.

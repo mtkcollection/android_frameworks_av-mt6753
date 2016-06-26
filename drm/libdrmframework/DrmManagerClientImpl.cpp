@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -35,18 +40,32 @@ sp<IDrmManagerService> DrmManagerClientImpl::sDrmManagerService;
 sp<DrmManagerClientImpl::DeathNotifier> DrmManagerClientImpl::sDeathNotifier;
 const String8 DrmManagerClientImpl::EMPTY_STRING("");
 
+// M:
+KeyedVector<int, DrmManagerClientImpl*> DrmManagerClientImpl::sClientVector;
+
 DrmManagerClientImpl* DrmManagerClientImpl::create(
         int* pUniqueId, bool isNative) {
     sp<IDrmManagerService> service = getDrmManagerService();
     if (service != NULL) {
         *pUniqueId = getDrmManagerService()->addUniqueId(isNative);
-        return new DrmManagerClientImpl();
+
+        // M: modified for OMA DRM v1.0 implementation
+        //return new DrmManagerClientImpl();
+        // OMA DRM v1.0 implementation: save unique id for deathnotifier
+        Mutex::Autolock lock(sMutex);
+        DrmManagerClientImpl* impl = new DrmManagerClientImpl();
+        sClientVector.add(*pUniqueId, impl);
+        return impl;
     }
     return new NoOpDrmManagerClientImpl();
 }
 
 void DrmManagerClientImpl::remove(int uniqueId) {
     getDrmManagerService()->removeUniqueId(uniqueId);
+
+    // M: modified for OMA DRM v1.0 implementation: remove unique id saved for deathnotifier
+    Mutex::Autolock lock(sMutex);
+    sClientVector.removeItem(uniqueId);
 }
 
 const sp<IDrmManagerService>& DrmManagerClientImpl::getDrmManagerService() {
@@ -351,8 +370,19 @@ DrmManagerClientImpl::DeathNotifier::~DeathNotifier() {
 }
 
 void DrmManagerClientImpl::DeathNotifier::binderDied(const wp<IBinder>& who) {
+    // M: for OMA DRM v1.0 implementation
+    { // limit the effect range of Autolock -sMutex
     Mutex::Autolock lock(sMutex);
     DrmManagerClientImpl::sDrmManagerService.clear();
     ALOGW("DrmManager server died!");
+    }
+
+    // M: for OMA DRM v1.0 implementation
+    // re-add client to server
+    // Note: the DrmManagerClientImpl::addClient() function will also locks the sMutex! (by calling getDrmManagerService())
+    int size = sClientVector.size();
+    for (int i = 0; i < size; i++) {
+        sClientVector.valueAt(i)->addClient(sClientVector.keyAt(i));
+    }
 }
 

@@ -1,4 +1,10 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -62,6 +68,10 @@ private:
     static int MakeUDPSocket(unsigned port);
 
     DISALLOW_EVIL_CONSTRUCTORS(ARTPSession);
+public:
+#ifdef MTK_AOSP_ENHANCEMENT
+    void stop();
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
 };
 
 }  // namespace android

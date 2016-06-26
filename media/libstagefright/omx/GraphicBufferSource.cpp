@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2013 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -34,6 +39,13 @@
 
 #include <inttypes.h>
 #include "FrameDropper.h"
+
+#ifdef MTK_AOSP_ENHANCEMENT
+//FIXME
+//#include "stringprintf.h"
+#include <cutils/properties.h>
+#include <utils/CallStack.h> //Callstack
+#endif //ifdef MTK_AOSP_ENHANCEMENT
 
 namespace android {
 
@@ -143,6 +155,11 @@ GraphicBufferSource::GraphicBufferSource(
     ALOGV("GraphicBufferSource w=%u h=%u c=%u",
             bufferWidth, bufferHeight, bufferCount);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    mDumpRawFile = NULL;
+    mIsDumpRawFile = false;
+#endif //ifdef MTK_AOSP_ENHANCEMENT
+
     if (bufferWidth == 0 || bufferHeight == 0) {
         ALOGE("Invalid dimensions %ux%u", bufferWidth, bufferHeight);
         mInitCheck = BAD_VALUE;
@@ -207,6 +224,15 @@ GraphicBufferSource::~GraphicBufferSource() {
             ALOGW("consumerDisconnect failed: %d", err);
         }
     }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (mDumpRawFile != NULL) {
+        fclose(mDumpRawFile);
+        mDumpRawFile = NULL;
+        ALOGD("dump raw file closed");
+    }
+#endif //ifdef MTK_AOSP_ENHANCEMENT
+
 }
 
 void GraphicBufferSource::omxExecuting() {
@@ -308,6 +334,12 @@ void GraphicBufferSource::addCodecBuffer(OMX_BUFFERHEADERTYPE* header) {
 
     ALOGV("addCodecBuffer h=%p size=%" PRIu32 " p=%p",
             header, header->nAllocLen, header->pBuffer);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    //generate NE for ALPS01556865 debugging
+    CHECK( 0 != header->pBuffer );
+#endif //ifdef MTK_AOSP_ENHANCEMENT
+
     CodecBuffer codecBuffer;
     codecBuffer.mHeader = header;
     mCodecBuffers.add(codecBuffer);
@@ -759,10 +791,57 @@ status_t GraphicBufferSource::submitBuffer_l(const BufferItem &item, int cbi) {
     codecBuffer.mFrameNumber = item.mFrameNumber;
 
     OMX_BUFFERHEADERTYPE* header = codecBuffer.mHeader;
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    //error handling ALPS01556865
+    if( NULL == header->pBuffer )
+    {
+        ALOGW("WARNING: header->pBuffer is NULL, line:%d", __LINE__);
+        return OMX_ErrorBadParameter;
+    }
+    else if(mDumpRawFile != NULL) //try to dump if necessary
+    {
+        OMX_U8 *rawbuffer=NULL;
+        uint32_t mWidth;
+        uint32_t mHeight;
+        uint32_t mStride;
+
+        //buffer_handle_t _handle = *((buffer_handle_t*)(header->pBuffer + 4));
+        //GraphicBufferMapper &gbm = GraphicBufferMapper::getInstance();
+        codecBuffer.mGraphicBuffer->lock(GRALLOC_USAGE_SW_READ_OFTEN, (void**)&rawbuffer);
+        //gbm.lock(_handle, GRALLOC_USAGE_SW_READ_OFTEN, Rect(iSrcWidth, iSrcHeight), (void**)&rawbuffer);
+        //memcpy(mEffectYUVBuffer, buffer, iSrcWidth*iSrcHeight*3/2);
+
+        mWidth = codecBuffer.mGraphicBuffer->getWidth();
+        mHeight = codecBuffer.mGraphicBuffer->getHeight();
+        mStride = codecBuffer.mGraphicBuffer->getStride();
+
+        ALOGD("getWidth:%d, Height:%d, Stride:%d, PixelFormat:%d", mWidth,
+            mHeight, mStride,
+            codecBuffer.mGraphicBuffer->getPixelFormat());
+
+        if (NULL == rawbuffer)
+        {
+            codecBuffer.mGraphicBuffer->unlock();
+        }
+        else if ( ( 0 != codecBuffer.mGraphicBuffer->getWidth() ) && (mDumpRawFile != NULL) ) {
+                //size_t nWrite = fwrite(rawbuffer, 1, mWidth*mHeight*4,  mDumpRawFile);//fix ARGB, FIXME
+                //FIXME: logging size_t with correct type
+                //ALOGD("RawBuf %p, written %d bytes, %d, mRangeLength = %d, ftell = %d",
+                //    rawbuffer, nWrite, mWidth*mHeight, mStride*mHeight, (int)ftell(mDumpRawFile));
+        }
+        if (NULL != rawbuffer)
+        {
+            codecBuffer.mGraphicBuffer->unlock();
+        }
+    }
+#endif //ifdef MTK_AOSP_ENHANCEMENT
+
     sp<GraphicBuffer> buffer = codecBuffer.mGraphicBuffer;
     status_t err = mNodeInstance->emptyGraphicBuffer(
             header, buffer, OMX_BUFFERFLAG_ENDOFFRAME, timeUs,
             item.mFence->isValid() ? item.mFence->dup() : -1);
+
     if (err != OK) {
         ALOGW("WARNING: emptyNativeWindowBuffer failed: 0x%x", err);
         codecBuffer.mGraphicBuffer = NULL;

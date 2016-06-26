@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
 **
 ** Copyright 2012, The Android Open Source Project
 **
@@ -114,6 +119,14 @@ public:
     void invalidate();
     bool isInvalid() const { return mIsInvalid; }
     int fastIndex() const { return mFastIndex; }
+
+//<MTK_AUDIO_ADD
+    virtual void releaseBuffer(AudioBufferProvider::Buffer* buffer);
+    bool                       mPauseFlag;
+    bool                       mPauseFlagCanRelease;
+    Condition                  mPauseCond;
+    Mutex                      mPauseCondLock;
+//MTK_AUDIO_ADD>
 
 protected:
 

@@ -188,7 +188,13 @@ void Camera::stopRecording()
 // release a recording frame
 void Camera::releaseRecordingFrame(const sp<IMemory>& mem)
 {
+    //!++
+    #if 0 // use short log for debug.
     ALOGV("releaseRecordingFrame");
+    #else
+    ALOGD("RRF");
+    #endif
+    //!--
     sp <ICamera> c = mCamera;
     if (c == 0) return;
     c->releaseRecordingFrame(mem);

@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -132,6 +137,11 @@ SampleTable::SampleTable(const sp<DataSource> &source)
       mSyncSamples(NULL),
       mLastSyncSampleIndex(0),
       mSampleToChunkEntries(NULL) {
+#ifdef MTK_AOSP_ENHANCEMENT
+      mStartTimeOffset = 0;//added by hai.li to support track time offset
+      mSkipSample = -1;
+      mSkipOff = 0;
+#endif
     mSampleIterator = new SampleIterator(this);
 }
 
@@ -250,9 +260,14 @@ status_t SampleTable::setSampleToChunkParams(
                 != (ssize_t)sizeof(buffer)) {
             return ERROR_IO;
         }
-
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (U32_AT(buffer) < 1) {
+        ALOGE("Chunk index is less than 1 in stsc");
+        return ERROR_MALFORMED;
+    }
+#else
         CHECK(U32_AT(buffer) >= 1);  // chunk index is 1 based in the spec.
-
+#endif
         // We want the chunk index to be 0-based.
         mSampleToChunkEntries[i].startChunk = U32_AT(buffer) - 1;
         mSampleToChunkEntries[i].samplesPerChunk = U32_AT(&buffer[4]);
@@ -325,8 +340,13 @@ status_t SampleTable::setSampleSizeParams(
     return OK;
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+status_t SampleTable::setTimeToSampleParams(
+        off64_t data_offset, size_t data_size, uint32_t timescaleFactor) {
+#else
 status_t SampleTable::setTimeToSampleParams(
         off64_t data_offset, size_t data_size) {
+#endif
     if (mTimeToSample != NULL || data_size < 8) {
         return ERROR_MALFORMED;
     }
@@ -359,13 +379,22 @@ status_t SampleTable::setTimeToSampleParams(
 
     for (uint32_t i = 0; i < mTimeToSampleCount * 2; ++i) {
         mTimeToSample[i] = ntohl(mTimeToSample[i]);
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (i%2 == 1 && timescaleFactor != 0) {
+            mTimeToSample[i] /= timescaleFactor;
+        }
+#endif
     }
 
     return OK;
 }
-
+#ifdef MTK_AOSP_ENHANCEMENT
+status_t SampleTable::setCompositionTimeToSampleParams(
+        off64_t data_offset, size_t data_size, uint32_t timescaleFactor) {
+#else
 status_t SampleTable::setCompositionTimeToSampleParams(
         off64_t data_offset, size_t data_size) {
+#endif
     ALOGI("There are reordered frames present.");
 
     if (mCompositionTimeDeltaEntries != NULL || data_size < 8) {
@@ -386,9 +415,15 @@ status_t SampleTable::setCompositionTimeToSampleParams(
 
     size_t numEntries = U32_AT(&header[4]);
 
+#ifndef MTK_AOSP_ENHANCEMENT  // skip box might be included
     if (data_size != (numEntries + 1) * 8) {
         return ERROR_MALFORMED;
     }
+#else
+       if (data_size < (numEntries + 1) * 8) { //data_size not enough
+        return ERROR_MALFORMED;
+    }
+#endif
 
     mNumCompositionTimeDeltaEntries = numEntries;
     uint64_t allocSize = (uint64_t)numEntries * 2 * sizeof(uint32_t);
@@ -411,6 +446,12 @@ status_t SampleTable::setCompositionTimeToSampleParams(
 
     for (size_t i = 0; i < 2 * numEntries; ++i) {
         mCompositionTimeDeltaEntries[i] = ntohl(mCompositionTimeDeltaEntries[i]);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (i%2 == 1 && timescaleFactor != 0) {
+            mCompositionTimeDeltaEntries[i] /= timescaleFactor;
+        }
+#endif
     }
 
     mCompositionDeltaLookup->setEntries(
@@ -642,7 +683,11 @@ status_t SampleTable::findSyncSampleNear(
     }
 
     if (mNumSyncSamples == 0) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        *sample_index = start_sample_index;
+#else
         *sample_index = 0;
+#endif
         return OK;
     }
 
@@ -836,6 +881,52 @@ status_t SampleTable::getMetaDataForSample(
 uint32_t SampleTable::getCompositionTimeOffset(uint32_t sampleIndex) {
     return mCompositionDeltaLookup->getCompositionTimeOffset(sampleIndex);
 }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+status_t SampleTable::setStartTimeOffset(uint32_t time_offset)//added by hai.li to support track time offset
+{
+    mStartTimeOffset = time_offset;
+    return OK;
+}
+
+uint32_t SampleTable::getStartTimeOffset()
+{
+    return mStartTimeOffset;
+}
+
+uint32_t SampleTable::getSampleCount()//added by hai.li to check unsupport video
+{
+    return mNumSampleSizes;
+}
+
+void SampleTable::setSkipSample(int32_t skipSample)
+{
+    mSkipSample = skipSample;
+}
+int32_t SampleTable::getSkipSample()
+{
+    return mSkipSample;
+}
+
+void SampleTable::setSkipOff(uint32_t skipOff)
+{
+    mSkipOff = skipOff;
+}
+uint32_t SampleTable::getSkipOff()
+{
+    return mSkipOff;
+}
+
+uint32_t SampleTable::getTimeToSampleCount()//added by gary.wu to check final AU duration
+{
+    return mTimeToSampleCount;
+}
+
+uint32_t * SampleTable::getTimeToSample()//added by gary.wu to check final AU duration
+{
+    return mTimeToSample;
+}
+#endif  //#ifdef MTK_AOSP_ENHANCEMENT
 
 }  // namespace android
 

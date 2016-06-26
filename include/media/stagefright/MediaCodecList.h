@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright 2012, The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -128,9 +133,13 @@ private:
     status_t addFeature(const char **attrs);
     void addType(const char *name);
 
+
     status_t initializeCapabilities(const char *type);
 
     DISALLOW_EVIL_CONSTRUCTORS(MediaCodecList);
+#ifdef MTK_AOSP_ENHANCEMENT
+    status_t deleteByType(const char *name);
+#endif
 };
 
 }  // namespace android

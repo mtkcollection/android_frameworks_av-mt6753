@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2011 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -35,6 +40,13 @@
 #include <utils/String8.h>
 
 #include <private/gui/ComposerService.h>
+
+#ifdef MTK_AOSP_ENHANCEMENT
+#define ATRACE_TAG ATRACE_TAG_GRAPHICS
+#include <utils/Trace.h>
+
+#include <ui/gralloc_extra.h>
+#endif
 
 namespace android {
 
@@ -278,6 +290,16 @@ static void passMetadataBuffer(MediaBuffer **buffer,
 
 status_t SurfaceMediaSource::read(
         MediaBuffer **buffer, const ReadOptions * /* options */) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ATRACE_CALL();
+
+    sp<Fence> bufferFence;
+    gralloc_extra_ion_sf_info_t ext_info;
+
+    char atrace_tag[256];
+    sprintf(atrace_tag, "SMS-STG");
+    {
+#endif
     ALOGV("read");
     Mutex::Autolock lock(mMutex);
 
@@ -301,7 +323,11 @@ status_t SurfaceMediaSource::read(
             // wait for a buffer to be queued
             mFrameAvailableCondition.wait(mMutex);
         } else if (err == OK) {
+#ifdef MTK_AOSP_ENHANCEMENT
+            bufferFence = item.mFence;
+#else
             err = item.mFence->waitForever("SurfaceMediaSource::read");
+#endif
             if (err) {
                 ALOGW("read: failed to wait for buffer fence: %d", err);
             }
@@ -354,6 +380,19 @@ status_t SurfaceMediaSource::read(
     }
     mSlots[item.mBuf].mFrameNumber = item.mFrameNumber;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (CC_LIKELY(mSlots[mCurrentSlot].mGraphicBuffer == NULL))
+    {
+        ALOGW("read: acquire slot(%d) buffer is NULL", mCurrentSlot);
+        return ERROR_END_OF_STREAM;
+    }
+
+    gralloc_extra_query(mSlots[mCurrentSlot].mGraphicBuffer->handle,
+        GRALLOC_EXTRA_GET_IOCTL_ION_SF_INFO, &ext_info);
+
+    ATRACE_ASYNC_BEGIN(atrace_tag, ext_info.sequence);
+#endif
+
     mCurrentBuffers.push_back(mSlots[mCurrentSlot].mGraphicBuffer);
     int64_t prevTimeStamp = mCurrentTimestamp;
     mCurrentTimestamp = item.mTimestamp;
@@ -366,6 +405,10 @@ status_t SurfaceMediaSource::read(
     (*buffer)->setObserver(this);
     (*buffer)->add_ref();
     (*buffer)->meta_data()->setInt64(kKeyTime, mCurrentTimestamp / 1000);
+#ifdef MTK_AOSP_ENHANCEMENT
+    (*buffer)->meta_data()->setInt32(kKeyVideoTime, ext_info.timestamp);
+    (*buffer)->meta_data()->setInt32(kKeyWFDLatency, ext_info.sequence);
+#endif
     ALOGV("Frames encoded = %d, timestamp = %" PRId64 ", time diff = %" PRId64,
             mNumFramesEncoded, mCurrentTimestamp / 1000,
             mCurrentTimestamp / 1000 - prevTimeStamp / 1000);
@@ -377,6 +420,18 @@ status_t SurfaceMediaSource::read(
 #endif
 
     ALOGV("returning mbuf %p", *buffer);
+#ifdef MTK_AOSP_ENHANCEMENT
+    }
+
+    // wait fence here to avoid blocking
+    // 1. onFrameAvailable() callback
+    // 2. signalBufferReturned()
+    if (bufferFence != NULL) {
+        bufferFence->waitForever("SurfaceMediaSource::read");
+    }
+
+    ATRACE_ASYNC_END(atrace_tag, ext_info.sequence);
+#endif
 
     return OK;
 }

@@ -37,10 +37,18 @@
 #include <ctype.h>
 #include <inttypes.h>
 #include <openssl/aes.h>
-
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <cutils/properties.h>
+#endif
 #define FLOGV(fmt, ...) ALOGV("[fetcher-%d] " fmt, mFetcherID, ##__VA_ARGS__)
 #define FSLOGV(stream, fmt, ...) ALOGV("[fetcher-%d] [%s] " fmt, mFetcherID, \
          LiveSession::getNameForStream(stream), ##__VA_ARGS__)
+#ifdef MTK_AOSP_ENHANCEMENT
+#define FLOGD(fmt, ...) ALOGD("[fetcher-%d] " fmt, mFetcherID, ##__VA_ARGS__)
+
+#define FSLOGD(stream, fmt, ...) ALOGD("[fetcher-%d] [%s] " fmt, mFetcherID, \
+         LiveSession::getNameForStream(stream), ##__VA_ARGS__)
+#endif
 
 namespace android {
 
@@ -172,9 +180,34 @@ PlaylistFetcher::PlaylistFetcher(
       mHasMetadata(false) {
     memset(mPlaylistHash, 0, sizeof(mPlaylistHash));
     mHTTPDownloader = mSession->getHTTPDownloader();
+#ifdef MTK_AOSP_ENHANCEMENT
+    char value[PROPERTY_VALUE_MAX];
+    if (property_get("hls.dumpts", value, NULL)
+            && (!strcmp(value, "1") || !strcasecmp(value, "true"))) {
+
+        char name[48];
+        sprintf(name, "/sdcard/hls_%lld_%d.ts", (long long)ALooper::GetNowUs(),mSeqNumber);
+        mLogFile = fopen(name, "wb");
+        if(mLogFile == NULL)
+            ALOGW("open hls ts file fail");
+        else
+            ALOGI("open hls ts file success");
+    }else{
+        mLogFile = NULL;
+    }
+#endif
+
 }
 
 PlaylistFetcher::~PlaylistFetcher() {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("~PlaylistFetcher");
+    if(mLogFile != NULL){
+        fclose(mLogFile);
+        mLogFile = NULL;
+        ALOGD("write ts file done ");
+    }
+#endif
 }
 
 int32_t PlaylistFetcher::getFetcherID() const {
@@ -503,6 +536,10 @@ void PlaylistFetcher::startAsync(
         // metadataSource does not affect streamTypeMask.
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("StartAsync streamTypeMask %d startTimeUs %lld",streamTypeMask, (long long)startTimeUs);
+    ALOGD("StartAsync segmentStartTimeUs %lld startDiscontinuitySeq %d, seekMode %d",(long long)segmentStartTimeUs, startDiscontinuitySeq, seekMode);
+#endif
     msg->setInt32("streamTypeMask", streamTypeMask);
     msg->setInt64("startTimeUs", startTimeUs);
     msg->setInt64("segmentStartTimeUs", segmentStartTimeUs);
@@ -520,12 +557,18 @@ void PlaylistFetcher::startAsync(
  */
 void PlaylistFetcher::pauseAsync(
         float thresholdRatio, bool disconnect) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("pauseAsync %6.2f, %d", thresholdRatio, disconnect);
+#endif
     setStoppingThreshold(thresholdRatio, disconnect);
 
     (new AMessage(kWhatPause, this))->post();
 }
 
 void PlaylistFetcher::stopAsync(bool clear) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("stopAsync %d", clear);
+#endif
     setStoppingThreshold(0.0f, true /* disconncect */);
 
     sp<AMessage> msg = new AMessage(kWhatStop, this);
@@ -534,7 +577,11 @@ void PlaylistFetcher::stopAsync(bool clear) {
 }
 
 void PlaylistFetcher::resumeUntilAsync(const sp<AMessage> &params) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    FLOGD("resumeUntilAsync: params=%s", params->debugString().c_str());
+#else
     FLOGV("resumeUntilAsync: params=%s", params->debugString().c_str());
+#endif
 
     AMessage* msg = new AMessage(kWhatResumeUntil, this);
     msg->setMessage("params", params);
@@ -987,9 +1034,16 @@ bool PlaylistFetcher::initDownloadState(
                 mStartTimeUs -= getSegmentStartTimeUs(mSeqNumber);
             }
             mStartTimeUsRelative = true;
+
+#ifdef MTK_AOSP_ENHANCEMENT
+            FLOGD("Initial sequence number for time %lld is %d from (%d .. %d)",
+                    (long long)mStartTimeUs, mSeqNumber, firstSeqNumberInPlaylist,
+                    lastSeqNumberInPlaylist);
+#else
             FLOGV("Initial sequence number for time %lld is %d from (%d .. %d)",
                     (long long)mStartTimeUs, mSeqNumber, firstSeqNumberInPlaylist,
                     lastSeqNumberInPlaylist);
+#endif
         } else {
             // When adapting or track switching, mSegmentStartTimeUs (relative
             // to media time 0) is used to determine the start segment; mStartTimeUs (absolute
@@ -1010,6 +1064,9 @@ bool PlaylistFetcher::initDownloadState(
             }
             ssize_t minSeq = getSeqNumberForDiscontinuity(mDiscontinuitySeq);
             if (mSeqNumber < minSeq) {
+#ifdef MTK_AOSP_ENHANCEMENT
+                ALOGW("Depend on the server configure,may cause discontinuity");
+#endif
                 mSeqNumber = minSeq;
             }
 
@@ -1020,9 +1077,16 @@ bool PlaylistFetcher::initDownloadState(
             if (mSeqNumber > lastSeqNumberInPlaylist) {
                 mSeqNumber = lastSeqNumberInPlaylist;
             }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+            FLOGD("Initial sequence number is %d from (%d .. %d)",
+                    mSeqNumber, firstSeqNumberInPlaylist,
+                    lastSeqNumberInPlaylist);
+#else
             FLOGV("Initial sequence number is %d from (%d .. %d)",
                     mSeqNumber, firstSeqNumberInPlaylist,
                     lastSeqNumberInPlaylist);
+#endif
         }
     }
 
@@ -1171,6 +1235,13 @@ bool PlaylistFetcher::initDownloadState(
     }
 
     if (discontinuity) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        if(mSeqNumber == 0 || mStartup){
+            if(mStartup)
+                ALOGD("ignore the 1st discontinuity in playlist");
+            return true;
+        }
+#endif
         ALOGI("queueing discontinuity (explicit=%d)", discontinuity);
 
         // Signal a format discontinuity to ATSParser to clear partial data
@@ -1245,13 +1316,25 @@ void PlaylistFetcher::onDownloadNext() {
     // block-wise download
     bool shouldPause = false;
     ssize_t bytesRead;
+#ifdef MTK_AOSP_ENHANCEMENT
+    int64_t FetchFileSize = 0;
+    int64_t TotalfetchfileTimeUs = 0;
+    int64_t TotalParseTime = 0;
+    int64_t fetchStartTimeUs = ALooper::GetNowUs();
+
+    ALOGD("fetching segment %d from (%d .. %d) for:%s",
+        mSeqNumber, firstSeqNumberInPlaylist, lastSeqNumberInPlaylist, uri.c_str());
+#endif
     do {
         int64_t startUs = ALooper::GetNowUs();
         bytesRead = mHTTPDownloader->fetchBlock(
                 uri.c_str(), &buffer, range_offset, range_length, kDownloadBlockSize,
                 NULL /* actualURL */, connectHTTP);
         int64_t delayUs = ALooper::GetNowUs() - startUs;
-
+#ifdef MTK_AOSP_ENHANCEMENT
+        TotalfetchfileTimeUs += delayUs;
+        FetchFileSize += bytesRead;
+#endif
         if (bytesRead == ERROR_NOT_CONNECTED) {
             return;
         }
@@ -1259,6 +1342,14 @@ void PlaylistFetcher::onDownloadNext() {
             status_t err = bytesRead;
             ALOGE("failed to fetch .ts segment at url '%s'", uri.c_str());
             notifyError(err);
+#ifdef MTK_AOSP_ENHANCEMENT
+            if(mLogFile != NULL){
+                fwrite(buffer->data(), 1, buffer->size(), mLogFile);
+                fclose(mLogFile);
+                mLogFile = NULL;
+                ALOGD("write ts file done error occus");
+            }
+#endif
             return;
         }
 
@@ -1298,6 +1389,14 @@ void PlaylistFetcher::onDownloadNext() {
         bool startUp = mStartup; // save current start up state
 
         err = OK;
+#ifdef MTK_AOSP_ENHANCEMENT
+        int64_t TSParseStartTimeUs = ALooper::GetNowUs();
+        if(mLogFile != NULL){
+            fwrite(buffer->data(), 1, buffer->size(), mLogFile);
+            ALOGD("write buffer");
+        }
+
+#endif
         if (bufferStartsWithTsSyncByte(buffer)) {
             // Incremental extraction is only supported for MPEG2 transport streams.
             if (tsBuffer == NULL) {
@@ -1311,7 +1410,9 @@ void PlaylistFetcher::onDownloadNext() {
             tsBuffer->setRange(tsBuffer->offset(), tsBuffer->size() + bytesRead);
             err = extractAndQueueAccessUnitsFromTs(tsBuffer);
         }
-
+#ifdef MTK_AOSP_ENHANCEMENT
+        TotalParseTime += (ALooper::GetNowUs() - TSParseStartTimeUs);
+#endif
         if (err == -EAGAIN) {
             // starting sequence number too low/high
             mTSParser.clear();
@@ -1348,11 +1449,22 @@ void PlaylistFetcher::onDownloadNext() {
                         tsBuffer,
                         firstSeqNumberInPlaylist,
                         lastSeqNumberInPlaylist);
+#ifdef MTK_AOSP_ENHANCEMENT
+                ALOGD("fetching pause file size[%08lld]", (long long)FetchFileSize);
+#endif
                 return;
             }
             shouldPause = true;
         }
     } while (bytesRead != 0);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("fetching done file size [%08lld] rate [%lld] %08lld , TSparse[%02lld] %08lld, total Time %08lld", (long long)FetchFileSize,
+        (long long)(TotalfetchfileTimeUs * 100 /(ALooper::GetNowUs() - fetchStartTimeUs)),
+        (long long)TotalfetchfileTimeUs,
+        (long long)(TotalParseTime * 100 /(ALooper::GetNowUs() - fetchStartTimeUs)),
+        (long long)TotalParseTime, (long long)(ALooper::GetNowUs() - fetchStartTimeUs));
+#endif
 
     if (bufferStartsWithTsSyncByte(buffer)) {
         // If we don't see a stream in the program table after fetching a full ts segment
@@ -1395,8 +1507,10 @@ void PlaylistFetcher::onDownloadNext() {
                 || tsBuffer->size() > 16) {
             ALOGE("MPEG2 transport stream is not an even multiple of 188 "
                     "bytes in length.");
+#ifndef MTK_AOSP_ENHANCEMENT
             notifyError(ERROR_MALFORMED);
             return;
+#endif
         }
     }
 
@@ -1558,6 +1672,13 @@ const sp<ABuffer> &PlaylistFetcher::setAccessUnitProperties(
         accessUnit->meta()->setInt32("discard", discard);
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    static int32_t Seq = 0;
+    if(Seq != mDiscontinuitySeq){
+        ALOGD("disSeq change %d ==> %d",Seq, mDiscontinuitySeq);
+        Seq = mDiscontinuitySeq;
+    }
+#endif
     accessUnit->meta()->setInt32("discontinuitySeq", mDiscontinuitySeq);
     accessUnit->meta()->setInt64("segmentStartTimeUs", getSegmentStartTimeUs(mSeqNumber));
     accessUnit->meta()->setInt64("segmentFirstTimeUs", mSegmentFirstPTS);
@@ -1592,15 +1713,31 @@ bool PlaylistFetcher::isStartTimeReached(int64_t timeUs) {
 status_t PlaylistFetcher::extractAndQueueAccessUnitsFromTs(const sp<ABuffer> &buffer) {
     if (mTSParser == NULL) {
         // Use TS_TIMESTAMPS_ARE_ABSOLUTE so pts carry over between fetchers.
+#ifdef MTK_AOSP_ENHANCEMENT
+        if(mPlaylist->isComplete() || mPlaylist->isEvent()){
+            ALOGD("new ATSParser without absolute flag");
+            mTSParser = new ATSParser();
+        }else{
+            ALOGD("new ATSParser with absolute time flag");
+            mTSParser = new ATSParser(ATSParser::TS_TIMESTAMPS_ARE_ABSOLUTE);
+        }
+#else
+        ALOGD("new ATSParser with absolute time flag");
         mTSParser = new ATSParser(ATSParser::TS_TIMESTAMPS_ARE_ABSOLUTE);
+#endif
     }
 
     if (mNextPTSTimeUs >= 0ll) {
+        ALOGD("mNextPTSTimeus %lld, Before TS parser, mStartTimeUs %lld, start play %d",
+            (long long)mNextPTSTimeUs, (long long)mStartTimeUs, mStartTimeUsRelative);
         sp<AMessage> extra = new AMessage;
         // Since we are using absolute timestamps, signal an offset of 0 to prevent
         // ATSParser from skewing the timestamps of access units.
+#ifdef MTK_AOSP_ENHANCEMENT
+        extra->setInt64(IStreamListener::kKeyMediaTimeUs, mNextPTSTimeUs);
+#else
         extra->setInt64(IStreamListener::kKeyMediaTimeUs, 0);
-
+#endif
         // When adapting, signal a recent media time to the parser,
         // so that PTS wrap around is handled for the new variant.
         if (mStartTimeUs >= 0 && !mStartTimeUsRelative) {
@@ -1791,8 +1928,17 @@ status_t PlaylistFetcher::extractAndQueueAccessUnitsFromTs(const sp<ABuffer> &bu
                 }
             } else if (stream == LiveSession::STREAMTYPE_METADATA && !mHasMetadata) {
                 mHasMetadata = true;
+#ifdef MTK_AOSP_ENHANCEMENT
+                AString mimeType;
+                if(accessUnit->meta()->findString("mime", &mimeType)){
+                    ALOGD("mimeType %s, size %zu", mimeType.c_str(), accessUnit->size());
+                }
+#endif
                 sp<AMessage> notify = mNotify->dup();
                 notify->setInt32("what", kWhatMetadataDetected);
+#ifdef MTK_AOSP_ENHANCEMENT
+                notify->setBuffer("buffer", accessUnit);
+#endif
                 notify->post();
             }
 

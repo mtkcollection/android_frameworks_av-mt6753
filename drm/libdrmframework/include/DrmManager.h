@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -108,6 +113,10 @@ public:
     DrmConvertedStatus* closeConvertSession(int uniqueId, int convertId);
 
     status_t getAllSupportInfo(int uniqueId, int* length, DrmSupportInfo** drmSupportInfoArray);
+
+    //Add by rui to pass client's client to drmserver
+    DecryptHandle* openDecryptSession(
+            int uniqueId, int fd, off64_t offset, off64_t length, const char* mime, pid_t pid);
 
     DecryptHandle* openDecryptSession(
             int uniqueId, int fd, off64_t offset, off64_t length, const char* mime);

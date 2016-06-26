@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -30,6 +35,9 @@
 #include <utils/threads.h>
 #include <drm/DrmManagerClient.h>
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <media/stagefright/MetaData.h>
+#endif
 namespace android {
 
 class AudioPlayer;
@@ -47,6 +55,10 @@ class DecryptHandle;
 class TimedTextDriver;
 class WVMExtractor;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+struct ALooper;
+//struct MetaData;
+#endif
 struct AwesomeRenderer : public RefBase {
     AwesomeRenderer() {}
 
@@ -81,7 +93,9 @@ struct AwesomePlayer {
     status_t prepareAsync_l();
 
     status_t play();
+#ifndef MTK_AOSP_ENHANCEMENT
     status_t pause();
+#endif
 
     bool isPlaying() const;
 
@@ -144,6 +158,11 @@ private:
         TEXTPLAYER_INITIALIZED  = 0x20000,
 
         SLOW_DECODER_HACK   = 0x40000,
+#ifdef MTK_AOSP_ENHANCEMENT
+    PGDL_NONINTERLEAVE = 0x01000000,
+    EOS_HANDLING     = 0x04000000,
+    CACHE_MISSING    = 0x80000000,
+#endif
     };
 
     mutable Mutex mLock;
@@ -193,6 +212,9 @@ private:
     uint32_t mFlags;
     uint32_t mExtractorFlags;
     uint32_t mSinceLastDropped;
+#ifdef MTK_AOSP_ENHANCEMENT
+    uint32_t mSinceLastDelay;
+#endif
 
     int64_t mTimeSourceDeltaUs;
     int64_t mVideoTimeUs;
@@ -369,6 +391,102 @@ private:
 
     AwesomePlayer(const AwesomePlayer &);
     AwesomePlayer &operator=(const AwesomePlayer &);
+#ifdef MTK_AOSP_ENHANCEMENT
+
+public:
+    status_t pause(bool stop = false);
+    bool isPlaying_l() const;
+    typedef void (*callback_t)(void *observer, int64_t durationUs);
+    static void updateAudioDuration(void *observer, int64_t durationUs);
+
+    void postDurationUpdateEvent(int64_t duration);
+    void postDurationUpdateEvent_l(int64_t duration);
+    bool isNotifyDuration();
+    // qian
+    void mtk_omx_get_current_time(int64_t* pReal_time);
+    sp<MetaData> getMetaData() const;
+    status_t getVideoDimensions(int32_t *width, int32_t *height) const;
+
+private:
+    sp<TimedEventQueue::Event> mDurationUpdateEvent;
+    bool mDurationUpdateEventPending;
+
+    // work around alps00072030: ANR when continously pause/play
+    int32_t mCachedSourcePauseResponseState;
+    enum {
+        PauseTimeOut = 1,    // call pause is timeout
+        PausePending = 2,    // pause is pending
+    };
+
+    bool mIsCurrentComplete;  // OMA DRM v1 implementation
+    String8 mDrmValue;
+
+    // http non-interlace
+    sp<HTTPBase> mConnectingDataSource2;
+    sp<NuCachedSource2> mCachedSourceSecond;
+    sp<NuCachedSource2> mCachedSourceMain;
+
+
+    sp<ALooper> mLooper;
+    int64_t mAVSyncTimeUs;  // qian
+    int64_t mAVSyncThreshold;
+    sp<MetaData> mMetaData;
+    uint32_t  mFRAME_DROP_FREQ;
+    uint32_t  mLateMargin;
+    bool mPrerollEnable;
+    int64_t mLastPositionUs;
+    int64_t mAdjustPos;
+    bool mFirstSubmit;
+    uint32_t mVdecQuirks;
+    bool mAudioPadEnable;
+    bool mAudioNormalEOS;
+    int64_t mLastAudioSeekUs;
+    bool mStopped;
+    int64_t mHighWaterMarkUs;
+    int32_t mEnAudST;
+    // #ifdef MTK_CLEARMOTION_SUPPORT
+    int32_t mEnClearMotion;
+    // #endif
+    bool mCacheErrorNotify;
+    int64_t mLatencyUs;
+    MediaBuffer *mFirstVideoBuffer;
+    status_t mFirstVideoBufferStatus;
+    enum {
+        FINAL_OK = 0,
+        FINAL_HAS_UNSUPPORT_VIDEO = 1,
+        FINAL_HAS_UNSUPPORT_AUDIO = 2,
+        FINAL_UNKNOW = 0xFF,
+    };
+
+    uint32_t  mFinalStopFlag;
+    bool mIsLargeMetaData;
+    uint32_t  mThrottleVideoBufRel;
+
+    void OnDurationUpdate();
+
+    status_t httpHandleInterleave(const sp<MediaExtractor> &extractor);
+    bool pause_pre(bool stop, status_t *retCode);
+    status_t convertMsgIfNeed(int *msg, int *ext1, int *ext2);
+    void httpTryRead();
+    void onBufferingUpdateCachedSource_l();
+    status_t tryReadIfNeccessary_l();
+    void disconnectSafeIfNeccesary();
+    bool removeSpecificHeaders(const String8 MyKey, KeyedVector<String8, String8> *headers, String8 *MyHeader);
+
+    void httpHandleCacheMiss(bool checkSeek);
+    status_t httpPreCached();
+    void reset_pre();
+    bool isPlaying_pre(bool *isPlaying) const;
+    status_t setDecodePar(sp<MediaSource> mSource, bool isVideo);
+    bool play_pre();
+    void init();
+    void preBuffer();
+    void correctTs(TimeSource **pts, int64_t *realTimeUs, int64_t *mediaTimeUs, int64_t timeUs);
+    void reset_post();
+    void handleStreamDoneStatus();
+    void handleunSupportVideo(status_t err);
+    status_t setDataSource_l(const sp<DataSource> &dataSource, const char *mime);
+#endif
 };
 
 }  // namespace android

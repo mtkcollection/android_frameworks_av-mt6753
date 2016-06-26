@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2007 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -30,6 +35,11 @@
 
 #ifdef __arm__
     #define ASM_ARM_RESAMP1 // enable asm optimisation for ResamplerOrder1
+#endif
+
+#ifdef MTK_AUDIO
+#include "AudioResamplerMTK32.h"
+#include "AudioResamplermtk.h"
 #endif
 
 namespace android {
@@ -74,6 +84,14 @@ private:
     }
     int mX0L;
     int mX0R;
+//<MTK_ADDED
+public:
+    AudioResamplerOrder1(int bitDepth, int inChannelCount, int32_t sampleRate) :
+        AudioResampler(bitDepth, inChannelCount, sampleRate, LOW_QUALITY), mX0L(0), mX0R(0) {
+            }
+private:
+    void init(int32_t SrcSampleRate) {}
+//MTK_ADDED>
 };
 
 /*static*/
@@ -128,6 +146,11 @@ uint32_t AudioResampler::qualityMHz(src_quality quality)
         return 6;
     case HIGH_QUALITY:
         return 20;
+#ifdef MTK_AUDIO
+    case MTK_QUALITY:
+    case MTK_QUALITY_32BIT:
+        return 28;
+#endif
     case VERY_HIGH_QUALITY:
         return 34;
     case DYN_LOW_QUALITY:
@@ -262,6 +285,9 @@ AudioResampler::AudioResampler(int inChannelCount,
         mChannelCount(inChannelCount),
         mSampleRate(sampleRate), mInSampleRate(sampleRate), mInputIndex(0),
         mPhaseFraction(0), mLocalTimeFreq(0),
+        //<MTK_ADDED
+            mBitDepth(16),
+        //MTK_ADDED>
         mPTS(AudioBufferProvider::kInvalidPTS), mQuality(quality) {
 
     const int maxChannels = quality < DYN_LOW_QUALITY ? 2 : 8;
@@ -796,6 +822,187 @@ void AudioResamplerOrder1::AsmStereo16Loop(int16_t *in, int32_t* maxOutPt, int32
 
 #endif  // ASM_ARM_RESAMP1
 
+//<MTK_ADDED
+// only for timestretch
+
+//#ifdef TIME_STRETCH_ENABLE
+void AudioResampler::ResetBuffer() {
+    mBuffer.frameCount = 0;
+}
+//#endif
+AudioResampler* AudioResampler::create(int format, int inChannelCount,
+        int32_t sampleRate, src_quality quality, int32_t SrcSampleRate) {
+    bool atFinalQuality;
+    if (quality == DEFAULT_QUALITY) {
+        // read the resampler default quality property the first time it is needed
+        int ok = pthread_once(&once_control, init_routine);
+        if (ok != 0) {
+            ALOGE("%s pthread_once failed: %d", __func__, ok);
+        }
+        quality = defaultQuality;
+        atFinalQuality = false;
+
+        atFinalQuality = true;
+    }
+
+    /* if the caller requests DEFAULT_QUALITY and af.resampler.property
+     * has not been set, the target resampler quality is set to DYN_MED_QUALITY,
+     * and allowed to "throttle" down to DYN_LOW_QUALITY if necessary
+     * due to estimated CPU load of having too many active resamplers
+     * (the code below the if).
+     */
+    if (quality == DEFAULT_QUALITY) {
+        quality = DYN_MED_QUALITY;
+    }
+
+    // naive implementation of CPU load throttling doesn't account for whether resampler is active
+    pthread_mutex_lock(&mutex);
+    for (;;) {
+        uint32_t deltaMHz = qualityMHz(quality);
+        uint32_t newMHz = currentMHz + deltaMHz;
+        if ((qualityIsSupported(quality) && newMHz <= maxMHz) || atFinalQuality) {
+            ALOGV("resampler load %u -> %u MHz due to delta +%u MHz from quality %d",
+                    currentMHz, newMHz, deltaMHz, quality);
+            currentMHz = newMHz;
+            break;
+        }
+        // not enough CPU available for proposed quality level, so try next lowest level
+        switch (quality) {
+        default:
+        case LOW_QUALITY:
+#ifdef MTK_AUDIO
+        case MTK_QUALITY:
+        case MTK_QUALITY_32BIT:
+#endif
+            atFinalQuality = true;
+            break;
+        case MED_QUALITY:
+            quality = LOW_QUALITY;
+            break;
+        case HIGH_QUALITY:
+            quality = MED_QUALITY;
+            break;
+        case VERY_HIGH_QUALITY:
+            quality = HIGH_QUALITY;
+            break;
+        case DYN_LOW_QUALITY:
+            atFinalQuality = true;
+            break;
+        case DYN_MED_QUALITY:
+            quality = DYN_LOW_QUALITY;
+            break;
+        case DYN_HIGH_QUALITY:
+            quality = DYN_MED_QUALITY;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&mutex);
+
+    AudioResampler* resampler;
+
+    switch (quality) {
+    default:
+    case LOW_QUALITY:
+        ALOGV("Create linear Resampler");
+        LOG_ALWAYS_FATAL_IF(format != AUDIO_FORMAT_PCM_16_BIT);
+        #ifdef MTK_AUDIO
+        resampler = new AudioResamplerOrder1(format, inChannelCount, sampleRate);
+        #else
+        resampler = new AudioResamplerOrder1(inChannelCount, sampleRate);
+        #endif
+        break;
+    case MED_QUALITY:
+        ALOGV("Create cubic Resampler");
+        LOG_ALWAYS_FATAL_IF(format != AUDIO_FORMAT_PCM_16_BIT);
+        #ifdef MTK_AUDIO
+        resampler = new AudioResamplerCubic(format, inChannelCount, sampleRate);
+        #else
+        resampler = new AudioResamplerCubic(inChannelCount, sampleRate);
+        #endif
+        break;
+    case HIGH_QUALITY:
+        ALOGV("Create HIGH_QUALITY sinc Resampler");
+        LOG_ALWAYS_FATAL_IF(format != AUDIO_FORMAT_PCM_16_BIT);
+        #ifdef MTK_AUDIO
+        resampler = new AudioResamplerSinc(format, inChannelCount, sampleRate);
+        #else
+        resampler = new AudioResamplerSinc(inChannelCount, sampleRate);
+        #endif
+        break;
+    case VERY_HIGH_QUALITY:
+        ALOGV("Create VERY_HIGH_QUALITY sinc Resampler = %d", quality);
+        LOG_ALWAYS_FATAL_IF(format != AUDIO_FORMAT_PCM_16_BIT);
+        #ifdef MTK_AUDIO
+        resampler = new AudioResamplerSinc(format, inChannelCount, sampleRate);
+        #else
+        resampler = new AudioResamplerSinc(inChannelCount, sampleRate, quality);
+        #endif
+        break;
+    case DYN_LOW_QUALITY:
+    case DYN_MED_QUALITY:
+    case DYN_HIGH_QUALITY:
+        ALOGV("Create dynamic Resampler = %d", quality);
+        if (format == AUDIO_FORMAT_PCM_FLOAT) {
+            resampler = new AudioResamplerDyn<float, float, float>(inChannelCount,
+                    sampleRate, quality);
+        } else {
+            LOG_ALWAYS_FATAL_IF(format != AUDIO_FORMAT_PCM_16_BIT);
+            if (quality == DYN_HIGH_QUALITY) {
+                resampler = new AudioResamplerDyn<int32_t, int16_t, int32_t>(inChannelCount,
+                        sampleRate, quality);
+            } else {
+                resampler = new AudioResamplerDyn<int16_t, int16_t, int32_t>(inChannelCount,
+                        sampleRate, quality);
+            }
+        }
+        break;
+#if 0//def MTK_AUDIO
+    case MTK_QUALITY:
+        ALOGD("Create MTK Resampler");
+        resampler = new AudioResamplerMtk(format, inChannelCount, sampleRate);
+        break;
+    case MTK_QUALITY_32BIT:
+        ALOGD("Create MTK Resampler");
+#ifdef MTK_HD_AUDIO_ARCHITECTURE
+        resampler = new AudioResamplerMtk32(format, inChannelCount, sampleRate);
+#else
+        resampler = new AudioResamplerMtk(format, inChannelCount, sampleRate);
+#endif
+        break;
+#endif // MTK_AUDIO
+
+    }
+
+    // initialize resampler
+#ifndef MTK_AUDIO
+    resampler->init();
+#else
+    resampler->init(SrcSampleRate);
+#endif
+    return resampler;
+}
+//#ifdef MTK_AUDIO
+AudioResampler::AudioResampler(int format, int inChannelCount,
+        int32_t sampleRate, src_quality quality) :
+    mBitDepth(format), mChannelCount(inChannelCount),
+        mSampleRate(sampleRate), mInSampleRate(sampleRate), mInputIndex(0),
+        mPhaseFraction(0), mLocalTimeFreq(0),
+        mPTS(AudioBufferProvider::kInvalidPTS), mQuality(quality) {
+
+    const int maxChannels = quality < DYN_LOW_QUALITY ? 2 : 8;
+    if ( ((format != 16)&&(format != 24)&&(format != 32)) ||(inChannelCount < 1) || (inChannelCount > 2)) {
+        LOG_ALWAYS_FATAL("Unsupported sample format %d quality %d channels",
+                quality, inChannelCount);
+    }
+    if (sampleRate <= 0) {
+        LOG_ALWAYS_FATAL("Unsupported sample rate %d Hz", sampleRate);
+    }
+
+    // initialize common members
+    mVolume[0] = mVolume[1] = 0;
+    mBuffer.frameCount = 0;
+}
+//#endif
 
 // ----------------------------------------------------------------------------
 

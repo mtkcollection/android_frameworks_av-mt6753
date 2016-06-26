@@ -54,11 +54,6 @@ class Camera3DummyStream :
 
     status_t         setTransform(int transform);
 
-    /**
-     * Return if this output stream is for video encoding.
-     */
-    bool isVideoStream() const;
-
   protected:
 
     /**

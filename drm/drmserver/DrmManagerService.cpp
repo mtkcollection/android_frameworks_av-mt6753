@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -30,6 +35,11 @@
 #include "DrmManager.h"
 
 #include <selinux/android.h>
+
+#if defined(MTK_OMA_DRM_SUPPORT) || defined(MTK_WV_DRM_SUPPORT) || defined (MTK_CTA_DRM_SUPPORT)
+#include <drm/DrmMtkUtil.h>
+#include <drm/DrmMtkDef.h>
+#endif
 
 using namespace android;
 
@@ -84,20 +94,34 @@ bool DrmManagerService::isProtectedCallAllowed(drm_perm_t perm) {
     // TODO
     // Following implementation is just for reference.
     // Each OEM manufacturer should implement/replace with their own solutions.
+    bool result = false;
+
     IPCThreadState* ipcState = IPCThreadState::self();
     uid_t uid = ipcState->getCallingUid();
     pid_t spid = ipcState->getCallingPid();
 
     for (unsigned int i = 0; i < trustedUids.size(); ++i) {
         if (trustedUids[i] == uid) {
-            return selinuxIsProtectedCallAllowed(spid, perm);
+            result = selinuxIsProtectedCallAllowed(spid, perm);
         }
     }
-    return false;
+
+#if defined(MTK_OMA_DRM_SUPPORT) || defined(MTK_WV_DRM_SUPPORT) || defined (MTK_CTA_DRM_SUPPORT)
+    // M:
+    // for OMA DRM v1 implementation
+    // if can't authorize the process by UID, then check the process name.
+    if (!result) {
+        pid_t pid = ipcState->getCallingPid();
+        result = DrmTrustedClient::IsDrmTrustedClient(DrmMtkUtil::getProcessName(pid));
+    }
+#endif
+
+    return result;
 }
 
 void DrmManagerService::instantiate() {
     ALOGV("instantiate");
+    ALOGI("try register drm server to Service Manager.");
     defaultServiceManager()->addService(String16("drm.drmManager"), new DrmManagerService());
 
     if (0 >= trustedUids.size()) {
@@ -107,6 +131,10 @@ void DrmManagerService::instantiate() {
 
         // Add trusted uids here
         trustedUids.push(AID_MEDIA);
+        // M: migration these 3 from ICS
+        trustedUids.push(AID_DRM);
+        trustedUids.push(AID_SYSTEM);
+        trustedUids.push(AID_ROOT);
     }
 
     selinux_enabled = is_selinux_enabled();
@@ -261,6 +289,17 @@ status_t DrmManagerService::getAllSupportInfo(
             int uniqueId, int* length, DrmSupportInfo** drmSupportInfoArray) {
     ALOGV("Entering getAllSupportInfo");
     return mDrmManager->getAllSupportInfo(uniqueId, length, drmSupportInfoArray);
+}
+
+//Add by rui to pass client's client to drmserver
+DecryptHandle* DrmManagerService::openDecryptSession(
+            int uniqueId, int fd, off64_t offset, off64_t length, const char* mime, pid_t pid) {
+    ALOGV("Entering DrmManagerService::openDecryptSession");
+    if (isProtectedCallAllowed(OPEN_DECRYPT_SESSION)) {
+        return mDrmManager->openDecryptSession(uniqueId, fd, offset, length, mime, pid);
+    }
+
+    return NULL;
 }
 
 DecryptHandle* DrmManagerService::openDecryptSession(

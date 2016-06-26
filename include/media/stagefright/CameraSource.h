@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -241,8 +246,37 @@ private:
 
     CameraSource(const CameraSource &);
     CameraSource &operator=(const CameraSource &);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+/******************************************************************************
+*  Added members
+*******************************************************************************/
+    float mDropRate;
+    int32_t mNumRemainFrameReceived;
+    int32_t mLastNumFramesReceived;
+
+    bool mNeedUnlock;
+    int64_t mStartTimeOffsetUs;
+    int32_t mCodecConfigReceived; // for slowmotion directlink, show if configdata received
+    int32_t mIsViLTEMode;
+    int32_t mCameraBufferCount;// add for trigger aee, tell how many buffers camera allocated
+/******************************************************************************
+*  Added Operations
+*******************************************************************************/
+private:
+public:
+    status_t setFrameRate(int32_t fps);  // use read options instead
+private:
+    void preInit();
+    int32_t CheckTimeStampByMtk(int64_t &timestampUs,const sp<IMemory> &data);
+    int32_t CheckTimeStampByMtk(int64_t &timestampUs);
+    int32_t checktimestampincallback(int64_t timestampUs,const sp<IMemory> &data);
+    void checkTimestampForSlowMotion(int64_t timestampUs);
+    void CheckAEEWarningType();
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
 };
-
+#ifdef MTK_AOSP_ENHANCEMENT
+int32_t getColorFormatByMTK(const char* colorFormat);
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
 }  // namespace android
-
 #endif  // CAMERA_SOURCE_H_

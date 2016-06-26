@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2007 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -602,5 +607,49 @@ void AudioResamplerSinc::interpolate(
         r = l = mulAdd(samples[0], sinc, l);
     }
 }
+
+//<MTK_ADDED
+AudioResamplerSinc::AudioResamplerSinc(int bitDepth,
+    int inChannelCount, int32_t sampleRate, src_quality quality)
+    : AudioResampler(bitDepth, inChannelCount, sampleRate, quality),
+    mState(0), mImpulse(0), mRingFull(0), mFirCoefs(0)
+{
+    /*
+     * Layout of the state buffer for 32 tap:
+     *
+     * "present" sample            beginning of 2nd buffer
+     *                 v                v
+     *  0              01               2              23              3
+     *  0              F0               0              F0              F
+     * [pppppppppppppppInnnnnnnnnnnnnnnnpppppppppppppppInnnnnnnnnnnnnnnn]
+     *                 ^               ^ head
+     *
+     * p = past samples, convoluted with the (p)ositive side of sinc()
+     * n = future samples, convoluted with the (n)egative side of sinc()
+     * r = extra space for implementing the ring buffer
+     *
+     */
+
+    mVolumeSIMD[0] = 0;
+    mVolumeSIMD[1] = 0;
+
+    // Load the constants for coefficients
+    int ok = pthread_once(&once_control, init_routine);
+    if (ok != 0) {
+        ALOGE("%s pthread_once failed: %d", __func__, ok);
+    }
+    mConstants = (quality == VERY_HIGH_QUALITY) ?
+            &veryHighQualityConstants : &highQualityConstants;
+}
+void AudioResamplerSinc::init(int32_t SrcSampleRate) {
+    const Constants& c(*mConstants);
+    const size_t numCoefs = 2 * c.halfNumCoefs;
+    const size_t stateSize = numCoefs * mChannelCount * 2;
+    mState = (int16_t*)memalign(32, stateSize*sizeof(int16_t));
+    memset(mState, 0, sizeof(int16_t)*stateSize);
+    mImpulse  = mState   + (c.halfNumCoefs-1)*mChannelCount;
+    mRingFull = mImpulse + (numCoefs+1)*mChannelCount;
+}
+//MTK_ADDED>
 // ----------------------------------------------------------------------------
 } // namespace android

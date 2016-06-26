@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright 2012, The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -27,6 +32,14 @@
 #include <media/stagefright/MediaSource.h>
 #include <media/stagefright/MetaData.h>
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#include "DataPathTrace.h"
+#define ATRACE_TAG ATRACE_TAG_VIDEO
+#include <utils/Trace.h>
+#define WFD_LOGI(fmt,arg...) ALOGI(fmt,##arg)
+#else
+#define WFD_LOGI(fmt,arg...)
+#endif
 namespace android {
 
 MediaPuller::MediaPuller(
@@ -41,9 +54,13 @@ MediaPuller::MediaPuller(
     CHECK(meta->findCString(kKeyMIMEType, &mime));
 
     mIsAudio = !strncasecmp(mime, "audio/", 6);
+#ifdef MTK_AOSP_ENHANCEMENT
+      mFirstDeltaMs = -1;
+#endif
 }
 
 MediaPuller::~MediaPuller() {
+    ALOGD("~MediaPuller");
 }
 
 status_t MediaPuller::postSynchronouslyAndReturnError(
@@ -63,20 +80,24 @@ status_t MediaPuller::postSynchronouslyAndReturnError(
 }
 
 status_t MediaPuller::start() {
+    WFD_LOGI("start++");
     return postSynchronouslyAndReturnError(new AMessage(kWhatStart, this));
 }
 
 void MediaPuller::stopAsync(const sp<AMessage> &notify) {
+    WFD_LOGI("stopAsync");
     sp<AMessage> msg = new AMessage(kWhatStop, this);
     msg->setMessage("notify", notify);
     msg->post();
 }
 
 void MediaPuller::pause() {
+    WFD_LOGI("pause++");
     (new AMessage(kWhatPause, this))->post();
 }
 
 void MediaPuller::resume() {
+    WFD_LOGI("resume++");
     (new AMessage(kWhatResume, this))->post();
 }
 
@@ -85,13 +106,20 @@ void MediaPuller::onMessageReceived(const sp<AMessage> &msg) {
         case kWhatStart:
         {
             status_t err;
+            WFD_LOGI("start mIsAudio=%d",mIsAudio);
             if (mIsAudio) {
                 // This atrocity causes AudioSource to deliver absolute
                 // systemTime() based timestamps (off by 1 us).
+#ifdef MTK_AOSP_ENHANCEMENT
+                ATRACE_BEGIN("AudioPuller, kWhatStart");
+#endif
                 sp<MetaData> params = new MetaData;
                 params->setInt64(kKeyTime, 1ll);
                 err = mSource->start(params.get());
             } else {
+#ifdef MTK_AOSP_ENHANCEMENT
+                ATRACE_BEGIN("VideoPuller, kWhatStart");
+#endif
                 err = mSource->start();
                 if (err != OK) {
                     ALOGE("source failed to start w/ err %d", err);
@@ -99,6 +127,7 @@ void MediaPuller::onMessageReceived(const sp<AMessage> &msg) {
             }
 
             if (err == OK) {
+                   WFD_LOGI("start done, start to schedulePull data");
                 schedulePull();
             }
 
@@ -108,6 +137,9 @@ void MediaPuller::onMessageReceived(const sp<AMessage> &msg) {
             sp<AReplyToken> replyID;
             CHECK(msg->senderAwaitsResponse(&replyID));
             response->postReply(replyID);
+#ifdef MTK_AOSP_ENHANCEMENT
+            ATRACE_END();
+#endif
             break;
         }
 
@@ -132,6 +164,11 @@ void MediaPuller::onMessageReceived(const sp<AMessage> &msg) {
         case kWhatPull:
         {
             int32_t generation;
+#ifdef MTK_AOSP_ENHANCEMENT
+            mIsAudio?
+            ATRACE_BEGIN("AudioPuller, kWhatPull"):
+            ATRACE_BEGIN("VideoPuller, kWhatPull");
+#endif
             CHECK(msg->findInt32("generation", &generation));
 
             if (generation != mPullGeneration) {
@@ -152,12 +189,19 @@ void MediaPuller::onMessageReceived(const sp<AMessage> &msg) {
             }
 
             if (err != OK) {
+#ifdef MTK_AOSP_ENHANCEMENT
+                if(err == 1){
+                    //ALOGI("VP Repeat Buffer, do not pass it to encoder");
+                    schedulePull();
+                    break;
+                }
+#endif
                 if (err == ERROR_END_OF_STREAM) {
                     ALOGI("stream ended.");
                 } else {
                     ALOGE("error %d reading stream.", err);
                 }
-
+                WFD_LOGI("err=%d.post kWhatEOS",err);
                 sp<AMessage> notify = mNotify->dup();
                 notify->setInt32("what", kWhatEOS);
                 notify->post();
@@ -173,12 +217,29 @@ void MediaPuller::onMessageReceived(const sp<AMessage> &msg) {
 
                 accessUnit->meta()->setInt64("timeUs", timeUs);
 
+                if(mIsAudio){
+                    static int64_t lasttime = 0;
+                    int64_t ntime = ALooper::GetNowUs();
+                    if((ntime - lasttime) > 50000)
+                        ALOGE("#### now lasttime=%lld time=%lld  timeUs=%lld\n",
+                             (long long)lasttime, (long long)ntime, (long long)timeUs);
+                    lasttime = ntime;
+                }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+                read_pro(!mIsAudio,timeUs,mbuf,accessUnit);
+#endif
                 if (mIsAudio) {
                     mbuf->release();
                     mbuf = NULL;
+                    //WFD_LOGI("[WFDP][%s] ,timestamp=%lld ms",mIsAudio?"audio":"video",timeUs/1000);
+                    //Rock, remove log in L
                 } else {
                     // video encoder will release MediaBuffer when done
                     // with underlying data.
+                    //Rock, L migration 0930
+                    //WFD_LOGI("[WFDP][%s] ,mediaBuffer=%p,timestamp=%lld ms",mIsAudio?"audio":"video",mbuf,timeUs/1000);
+                    //Rock, remove log in L
                     accessUnit->setMediaBufferBase(mbuf);
                 }
 
@@ -193,6 +254,9 @@ void MediaPuller::onMessageReceived(const sp<AMessage> &msg) {
                 }
 
                 schedulePull();
+#ifdef MTK_AOSP_ENHANCEMENT
+                ATRACE_END();
+#endif
             }
             break;
         }
@@ -220,5 +284,40 @@ void MediaPuller::schedulePull() {
     msg->post();
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+void MediaPuller::read_pro(bool /*isVideo*/,int64_t timeUs, MediaBuffer *mbuf,sp<ABuffer>& Abuf){
+    mIsAudio?
+    ATRACE_INT64("AudioPuller, TS:  ms", timeUs/1000):
+    ATRACE_INT64("VideoPuller, TS:  ms", timeUs/1000);
+
+    int32_t latencyToken = 0;
+    if(mbuf->meta_data()->findInt32(kKeyWFDLatency, &latencyToken)){
+        Abuf->meta()->setInt32("LatencyToken", latencyToken);
+    }
+
+
+    sp<WfdDebugInfo> debugInfo= defaultWfdDebugInfo();
+    int64_t MpMs = ALooper::GetNowUs();
+    debugInfo->addTimeInfoByKey(!mIsAudio , timeUs, "MpIn", MpMs/1000);
+
+    int64_t NowMpDelta =0;
+
+    NowMpDelta = (MpMs - timeUs)/1000;
+
+    if(mFirstDeltaMs == -1){
+        mFirstDeltaMs = NowMpDelta;
+        ALOGE("[check Input ts and nowUs delta][%s],timestamp=%lld ms,[1th delta]=%lld ms",
+        mIsAudio?"audio":"video",(long long)(timeUs/1000), (long long)NowMpDelta);
+    }
+    NowMpDelta = NowMpDelta - mFirstDeltaMs;
+
+    if(NowMpDelta > 30ll || NowMpDelta < -30ll ){
+        ALOGE("[check Input ts and nowUs delta][%s] ,timestamp=%lld ms,[delta]=%lld ms",
+        mIsAudio?"audio":"video",(long long)(timeUs/1000),(long long)NowMpDelta);
+    }
+
+}
+
+#endif
 }  // namespace android
 

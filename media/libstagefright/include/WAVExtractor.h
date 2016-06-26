@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -58,6 +63,17 @@ private:
 
     WAVExtractor(const WAVExtractor &);
     WAVExtractor &operator=(const WAVExtractor &);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+private:
+    uint32_t mAvgBytesPerSec;
+    uint32_t mBlockAlign;
+    uint32_t mExtraDataSize;
+    uint8_t* mpExtraData;
+    uint32_t mSamplesPerBlock;
+    uint32_t mSamplesNumberPerChannel;
+    uint64_t mBlockDurationUs;
+#endif
 };
 
 bool SniffWAV(

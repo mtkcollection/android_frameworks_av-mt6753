@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -32,6 +37,9 @@
 #include <OMX_Core.h>
 #include <OMX_Video.h>
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <binder/IMemory.h>
+#endif
 namespace android {
 
 class IMemory;
@@ -224,6 +232,10 @@ struct omx_message {
             OMX_U32 range_length;
             OMX_U32 flags;
             OMX_TICKS timestamp;
+#ifdef MTK_AOSP_ENHANCEMENT
+            //for transmitting proprietary data
+            OMX_U32 token_tick;
+#endif
         } extended_buffer_data;
 
         // if type == FRAME_RENDERED

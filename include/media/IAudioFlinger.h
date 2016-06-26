@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2007 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -35,6 +40,7 @@
 #include <media/IEffectClient.h>
 #include <utils/String8.h>
 
+
 namespace android {
 
 // ----------------------------------------------------------------------------
@@ -51,6 +57,9 @@ public:
         TRACK_FAST    = 2,  // client requests a fast AudioTrack or AudioRecord
         TRACK_OFFLOAD = 4,  // client requests offload to hw codec
         TRACK_DIRECT = 8,   // client requests a direct output
+//<MTK_AUDIO_ADD
+        TRACK_REMOTE = 16,  // client requests a remote submix track for CrossMount
+//MTK_AUDIO_ADD>
     };
     typedef uint32_t track_flags_t;
 
@@ -220,6 +229,41 @@ public:
     // and should be called at most once.  For a definition of what "low RAM" means, see
     // android.app.ActivityManager.isLowRamDevice().
     virtual status_t setLowRamDevice(bool isLowRamDevice) = 0;
+//<MTK_AUDIO_ADD
+    // Interfaces mtk added
+    // add , get EM parameter
+    virtual status_t GetEMParameter(void *ptr, size_t len) = 0;
+    virtual status_t SetEMParameter(void *ptr, size_t len) = 0;
+    virtual status_t SetAudioCommand(int parameters1, int parameter2) = 0;
+    virtual status_t GetAudioCommand(int parameters1) = 0;
+    virtual status_t SetAudioData(int par1,size_t len,void *ptr)=0;
+    virtual status_t GetAudioData(int par1,size_t len,void *ptr)=0;
+    //add by Tina, set acf preview param
+    virtual status_t SetACFPreviewParameter(void *ptr, size_t len) = 0;
+    virtual status_t SetHCFPreviewParameter(void *ptr, size_t len) = 0;
+    /////////////////////////////////////////////////////////////////////////
+    //    for PCMxWay Interface API ...
+    /////////////////////////////////////////////////////////////////////////
+    virtual int xWayPlay_Start(int sample_rate) = 0;
+    virtual int xWayPlay_Stop(void) = 0;
+    virtual int xWayPlay_Write(void *buffer, int size_bytes) = 0;
+    virtual int xWayPlay_GetFreeBufferCount(void) = 0;
+    virtual int xWayRec_Start(int sample_rate) = 0;
+    virtual int xWayRec_Stop(void) = 0;
+    virtual int xWayRec_Read(void *buffer, int size_bytes) = 0;
+    //wendy
+    virtual int ReadRefFromRing(void*buf, uint32_t datasz, void* DLtime) = 0;
+    virtual int GetVoiceUnlockULTime(void* DLtime) = 0;
+    virtual int SetVoiceUnlockSRC(uint outSR, uint outCH) = 0;
+    virtual bool startVoiceUnlockDL() = 0;
+    virtual bool stopVoiceUnlockDL() = 0;
+    virtual void freeVoiceUnlockDLInstance () = 0;
+    virtual int GetVoiceUnlockDLLatency() = 0;
+    virtual bool getVoiceUnlockDLInstance() = 0;
+    virtual status_t getHDMICapability(int* HDMI_ChannelCount, int* HDMI_Bitwidth,int* HDMI_MaxSampleRate) = 0;
+    virtual status_t  setSurroundOnOff(int value) = 0;
+    virtual status_t  setSurroundMode(int value) = 0;
+//MTK_AUDIO_ADD>
 
     /* List available audio ports and their attributes */
     virtual status_t listAudioPorts(unsigned int *num_ports,

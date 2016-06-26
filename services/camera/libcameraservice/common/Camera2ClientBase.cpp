@@ -55,8 +55,7 @@ Camera2ClientBase<TClientBase>::Camera2ClientBase(
         TClientBase(cameraService, remoteCallback, clientPackageName,
                 cameraId, cameraFacing, clientPid, clientUid, servicePid),
         mSharedCameraCallbacks(remoteCallback),
-        mDeviceVersion(cameraService->getDeviceVersion(cameraId)),
-        mDeviceActive(false)
+        mDeviceVersion(cameraService->getDeviceVersion(cameraId))
 {
     ALOGI("Camera %d: Opened. Client: %s (PID %d, UID %d)", cameraId,
             String8(clientPackageName).string(), clientPid, clientUid);
@@ -124,7 +123,7 @@ Camera2ClientBase<TClientBase>::~Camera2ClientBase() {
 }
 
 template <typename TClientBase>
-status_t Camera2ClientBase<TClientBase>::dumpClient(int fd,
+status_t Camera2ClientBase<TClientBase>::dump(int fd,
                                               const Vector<String16>& args) {
     String8 result;
     result.appendFormat("Camera2ClientBase[%d] (%p) PID: %d, dump:\n",
@@ -236,13 +235,6 @@ void Camera2ClientBase<TClientBase>::notifyError(
 
 template <typename TClientBase>
 void Camera2ClientBase<TClientBase>::notifyIdle() {
-    if (mDeviceActive) {
-        getCameraService()->updateProxyDeviceState(
-            ICameraServiceProxy::CAMERA_STATE_IDLE,
-            String8::format("%d", TClientBase::mCameraId));
-    }
-    mDeviceActive = false;
-
     ALOGV("Camera device is now idle");
 }
 
@@ -251,13 +243,6 @@ void Camera2ClientBase<TClientBase>::notifyShutter(const CaptureResultExtras& re
                                                    nsecs_t timestamp) {
     (void)resultExtras;
     (void)timestamp;
-
-    if (!mDeviceActive) {
-        getCameraService()->updateProxyDeviceState(
-            ICameraServiceProxy::CAMERA_STATE_ACTIVE,
-            String8::format("%d", TClientBase::mCameraId));
-    }
-    mDeviceActive = true;
 
     ALOGV("%s: Shutter notification for request id %" PRId32 " at time %" PRId64,
             __FUNCTION__, resultExtras.requestId, timestamp);

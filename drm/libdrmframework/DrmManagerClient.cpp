@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,6 +19,9 @@
  * limitations under the License.
  */
 
+//#define LOG_NDEBUG 0
+#define LOG_TAG "DrmManagerClient(Native)"
+#include <utils/Log.h>
 #include <utils/String8.h>
 #include <binder/IServiceManager.h>
 #include <drm/DrmManagerClient.h>
@@ -26,12 +34,16 @@ DrmManagerClient::DrmManagerClient():
         mUniqueId(0), mDrmManagerClientImpl(NULL) {
     mDrmManagerClientImpl = DrmManagerClientImpl::create(&mUniqueId, true);
     mDrmManagerClientImpl->addClient(mUniqueId);
+    // M: add for native play debug
+    ALOGD("DrmManagerClient(): mUniqueId=[%d]",mUniqueId);
 }
 
 DrmManagerClient::~DrmManagerClient() {
     mDrmManagerClientImpl->remove(mUniqueId);
     mDrmManagerClientImpl->removeClient(mUniqueId);
     mDrmManagerClientImpl->setOnInfoListener(mUniqueId, NULL);
+    // M: add for native play debug
+    ALOGD("~DrmManagerClient(): mUniqueId=[%d]",mUniqueId);
 }
 
 status_t DrmManagerClient::setOnInfoListener(
@@ -83,6 +95,13 @@ status_t DrmManagerClient::consumeRights(
 
 status_t DrmManagerClient::setPlaybackStatus(
             sp<DecryptHandle> &decryptHandle, int playbackStatus, int64_t position) {
+    // M: add for native call before initial client,
+    ALOGD("setPlaybackStatus(), setPlaybackStatus. mUniqueId=[%d]",mUniqueId);
+    if (mUniqueId <= 0)
+    {
+        ALOGW("setPlaybackStatus(), DrmManagerClient is not initialized.");
+        return -1;
+    }
     return mDrmManagerClientImpl
             ->setPlaybackStatus(mUniqueId, decryptHandle, playbackStatus, position);
 }

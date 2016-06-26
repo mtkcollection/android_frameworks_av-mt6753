@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright 2012, The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -24,7 +29,10 @@
 #include <utils/Thread.h>
 
 #include <netinet/in.h>
-
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <utils/List.h>
+#include <media/stagefright/foundation/ABuffer.h>
+#endif
 namespace android {
 
 struct AMessage;
@@ -33,7 +41,6 @@ struct AMessage;
 // on a single thread. Clients are notified about activity through AMessages.
 struct ANetworkSession : public RefBase {
     ANetworkSession();
-
     status_t start();
     status_t stop();
 
@@ -46,7 +53,9 @@ struct ANetworkSession : public RefBase {
             const sp<AMessage> &notify, int32_t *sessionID);
 
     status_t createUDPSession(
-            unsigned localPort, const sp<AMessage> &notify, int32_t *sessionID);
+            unsigned localPort,
+            const sp<AMessage> &notify,
+            int32_t *sessionID);
 
     status_t createUDPSession(
             unsigned localPort,
@@ -77,7 +86,37 @@ struct ANetworkSession : public RefBase {
             int32_t sessionID, const void *data, ssize_t size = -1,
             bool timeValid = false, int64_t timeUs = -1ll);
 
+    ///Add by MTK @{
+    status_t createTCPTextDataSession(
+            const struct in_addr &addr, unsigned port,
+            const sp<AMessage> &notify, int32_t *sessionID);
+
+    status_t createUIBCClient(
+            const char *host, unsigned port, const sp<AMessage> &notify,
+            int32_t *sessionID);
+
+    status_t createUIBCServer(
+            const struct in_addr &addr, unsigned port,
+            const sp<AMessage> &notify, int32_t *sessionID);
+
+    status_t sendDirectRequest(
+            int32_t sessionID, const void *data, ssize_t size);
+
+    status_t createTCPBinaryDataSessionActive(
+            unsigned localPort,
+            const char *remoteHost,
+            unsigned remotePort,
+            const sp<AMessage> &notify,
+            int32_t *sessionID);
+
     status_t switchToWebSocketMode(int32_t sessionID);
+    ///M: Add for RTP data control @{
+    status_t mtkRTPRecvPause(int32_t sessionID);
+    status_t mtkRTPRecvResume(int32_t sessionID);
+    status_t setNetworkSessionTestMode();
+    int64_t getRTPRecvNum(int32_t sessionID);
+    status_t resetRTPRecvNum(int32_t sessionID);
+    ///@}
 
     enum NotificationReason {
         kWhatError,
@@ -88,6 +127,8 @@ struct ANetworkSession : public RefBase {
         kWhatBinaryData,
         kWhatWebSocketMessage,
         kWhatNetworkStall,
+        kWhatTextData,
+        kWhatUibcData
     };
 
 protected:
@@ -108,10 +149,16 @@ private:
 
     enum Mode {
         kModeCreateUDPSession,
-        kModeCreateTCPDatagramSessionPassive,
-        kModeCreateTCPDatagramSessionActive,
+        kModeCreateTCPDatagramSessionPassive,           // RTP over TCP
+        kModeCreateTCPDatagramSessionActive,            // RTP over TCP
         kModeCreateRTSPServer,
         kModeCreateRTSPClient,
+        ///Add by MTK @{
+        kModeCreateTCPTextDataSessionPassive,
+        kModeCreateUIBCServer,
+        kModeCreateUIBCClient,
+        kModeCreateTCPBinaryDataSessionActive,          // TCP binary data
+        /// @}
     };
     status_t createClientOrServer(
             Mode mode,
@@ -124,10 +171,17 @@ private:
 
     void threadLoop();
     void interrupt();
-
+    bool mTestMode;
     static status_t MakeSocketNonBlocking(int s);
+    static status_t MakeSocketBlocking(int s);
 
     DISALLOW_EVIL_CONSTRUCTORS(ANetworkSession);
+#ifdef MTK_AOSP_ENHANCEMENT
+public:
+    status_t sendWFDRequest(
+            int32_t sessionID, List<sp<ABuffer> > &packets, int64_t timeUs = -1ll);
+#endif
+
 };
 
 }  // namespace android

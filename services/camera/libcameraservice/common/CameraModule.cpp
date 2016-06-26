@@ -15,10 +15,7 @@
  */
 
 #define LOG_TAG "CameraModule"
-#define ATRACE_TAG ATRACE_TAG_CAMERA
 //#define LOG_NDEBUG 0
-
-#include <utils/Trace.h>
 
 #include "CameraModule.h"
 
@@ -26,7 +23,6 @@ namespace android {
 
 void CameraModule::deriveCameraCharacteristicsKeys(
         uint32_t deviceVersion, CameraMetadata &chars) {
-    ATRACE_CALL();
     // HAL1 devices should not reach here
     if (deviceVersion < CAMERA_DEVICE_API_VERSION_2_0) {
         ALOGV("%s: Cannot derive keys for HAL version < 2.0");
@@ -154,7 +150,9 @@ CameraModule::CameraModule(camera_module_t *module) {
         ALOGE("%s: camera hardware module must not be null", __FUNCTION__);
         assert(0);
     }
+
     mModule = module;
+    mCameraInfoMap.setCapacity(getNumberOfCameras());
 }
 
 CameraModule::~CameraModule()
@@ -170,20 +168,14 @@ CameraModule::~CameraModule()
 }
 
 int CameraModule::init() {
-    ATRACE_CALL();
-    int res = OK;
     if (getModuleApiVersion() >= CAMERA_MODULE_API_VERSION_2_4 &&
             mModule->init != NULL) {
-        ATRACE_BEGIN("camera_module->init");
-        res = mModule->init();
-        ATRACE_END();
+        return mModule->init();
     }
-    mCameraInfoMap.setCapacity(getNumberOfCameras());
-    return res;
+    return OK;
 }
 
 int CameraModule::getCameraInfo(int cameraId, struct camera_info *info) {
-    ATRACE_CALL();
     Mutex::Autolock lock(mCameraInfoLock);
     if (cameraId < 0) {
         ALOGE("%s: Invalid camera ID %d", __FUNCTION__, cameraId);
@@ -193,20 +185,14 @@ int CameraModule::getCameraInfo(int cameraId, struct camera_info *info) {
     // Only override static_camera_characteristics for API2 devices
     int apiVersion = mModule->common.module_api_version;
     if (apiVersion < CAMERA_MODULE_API_VERSION_2_0) {
-        int ret;
-        ATRACE_BEGIN("camera_module->get_camera_info");
-        ret = mModule->get_camera_info(cameraId, info);
-        ATRACE_END();
-        return ret;
+        return mModule->get_camera_info(cameraId, info);
     }
 
     ssize_t index = mCameraInfoMap.indexOfKey(cameraId);
     if (index == NAME_NOT_FOUND) {
         // Get camera info from raw module and cache it
         camera_info rawInfo, cameraInfo;
-        ATRACE_BEGIN("camera_module->get_camera_info");
         int ret = mModule->get_camera_info(cameraId, &rawInfo);
-        ATRACE_END();
         if (ret != 0) {
             return ret;
         }
@@ -231,36 +217,20 @@ int CameraModule::getCameraInfo(int cameraId, struct camera_info *info) {
 }
 
 int CameraModule::open(const char* id, struct hw_device_t** device) {
-    int res;
-    ATRACE_BEGIN("camera_module->open");
-    res = filterOpenErrorCode(mModule->common.methods->open(&mModule->common, id, device));
-    ATRACE_END();
-    return res;
+    return filterOpenErrorCode(mModule->common.methods->open(&mModule->common, id, device));
 }
 
 int CameraModule::openLegacy(
         const char* id, uint32_t halVersion, struct hw_device_t** device) {
-    int res;
-    ATRACE_BEGIN("camera_module->open_legacy");
-    res = mModule->open_legacy(&mModule->common, id, halVersion, device);
-    ATRACE_END();
-    return res;
+    return mModule->open_legacy(&mModule->common, id, halVersion, device);
 }
 
 int CameraModule::getNumberOfCameras() {
-    int numCameras;
-    ATRACE_BEGIN("camera_module->get_number_of_cameras");
-    numCameras = mModule->get_number_of_cameras();
-    ATRACE_END();
-    return numCameras;
+    return mModule->get_number_of_cameras();
 }
 
 int CameraModule::setCallbacks(const camera_module_callbacks_t *callbacks) {
-    int res;
-    ATRACE_BEGIN("camera_module->set_callbacks");
-    res = mModule->set_callbacks(callbacks);
-    ATRACE_END();
-    return res;
+    return mModule->set_callbacks(callbacks);
 }
 
 bool CameraModule::isVendorTagDefined() {
@@ -269,18 +239,12 @@ bool CameraModule::isVendorTagDefined() {
 
 void CameraModule::getVendorTagOps(vendor_tag_ops_t* ops) {
     if (mModule->get_vendor_tag_ops) {
-        ATRACE_BEGIN("camera_module->get_vendor_tag_ops");
         mModule->get_vendor_tag_ops(ops);
-        ATRACE_END();
     }
 }
 
 int CameraModule::setTorchMode(const char* camera_id, bool enable) {
-    int res;
-    ATRACE_BEGIN("camera_module->set_torch_mode");
-    res = mModule->set_torch_mode(camera_id, enable);
-    ATRACE_END();
-    return res;
+    return mModule->set_torch_mode(camera_id, enable);
 }
 
 status_t CameraModule::filterOpenErrorCode(status_t err) {

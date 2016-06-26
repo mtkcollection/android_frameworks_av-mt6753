@@ -35,6 +35,10 @@ LOCAL_SRC_FILES:=                                       \
                   MtpStorage.cpp                        \
                   MtpUtils.cpp                          \
 
+ifeq (user, $(strip $(TARGET_BUILD_VARIANT)))
+LOCAL_CPPFLAGS += -DMTK_USER_BUILD
+endif
+
 LOCAL_MODULE:= libmtp
 
 LOCAL_CFLAGS := -DMTP_DEVICE -DMTP_HOST

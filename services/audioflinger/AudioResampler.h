@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2007 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -47,6 +52,11 @@ public:
         DYN_LOW_QUALITY=5,
         DYN_MED_QUALITY=6,
         DYN_HIGH_QUALITY=7,
+//<MTK_AUDIO_ADD
+        MTK_QUALITY=8,
+        MTK_QUALITY_32BIT=9
+//MTK_AUDIO_ADD>
+
     };
 
     static const CONSTEXPR float UNITY_GAIN_FLOAT = 1.0f;
@@ -173,6 +183,17 @@ private:
     // Return the estimated CPU load for specific resampler in MHz.
     // The absolute number is irrelevant, it's the relative values that matter.
     static uint32_t qualityMHz(src_quality quality);
+public:
+//<MTK_AUDIO_ADD
+    static AudioResampler* create(int bitDepth, int inChannelCount,
+            int32_t sampleRate, src_quality quality=DEFAULT_QUALITY, int32_t SrcSampleRate=0);
+    virtual void init(int32_t SrcSampleRate) = 0;
+    //for TIME_STRETCH_ENABLE
+    virtual void ResetBuffer();
+protected:
+    AudioResampler(int bitDepth, int inChannelCount, int32_t sampleRate, src_quality quality);
+    const int32_t mBitDepth;
+//MTK_AUDIO_ADD>
 };
 
 // ----------------------------------------------------------------------------

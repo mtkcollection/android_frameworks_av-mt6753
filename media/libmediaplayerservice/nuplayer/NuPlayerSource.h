@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -30,6 +35,14 @@ namespace android {
 struct ABuffer;
 class MediaBuffer;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+// To add Parcel into an AMessage as an object, it should be 'RefBase'.
+struct ParcelEvent : public RefBase {
+    Parcel parcel;
+};
+#endif
+
+
 struct NuPlayer::Source : public AHandler {
     enum Flags {
         FLAG_CAN_PAUSE          = 1,
@@ -54,9 +67,22 @@ struct NuPlayer::Source : public AHandler {
         kWhatSubtitleData,
         kWhatTimedTextData,
         kWhatTimedMetaData,
+#ifdef MTK_AOSP_ENHANCEMENT
+        kWhatTimedTextData2,
+#endif
         kWhatQueueDecoderShutdown,
         kWhatDrmNoLicense,
         kWhatInstantiateSecureDecoders,
+#ifdef MTK_AOSP_ENHANCEMENT
+        kWhatConnDone       = 'cdon',
+        kWhatBufferNotify   = 'buff',
+        kWhatSeekDone       = 'sdon',
+        kWhatPauseDone      = 'psdn',
+        kWhatPlayDone       = 'pldn',
+        kWhatPicture        = 'pict', // orange
+        kWhatSourceError    = 'serr',
+        kWhatDurationUpdate = 'dura'
+#endif
     };
 
     // The provides message is used to notify the player about various
@@ -69,9 +95,10 @@ struct NuPlayer::Source : public AHandler {
 
     virtual void start() = 0;
     virtual void stop() {}
+#ifndef MTK_AOSP_ENHANCEMENT
     virtual void pause() {}
     virtual void resume() {}
-
+#endif
     // Explicitly disconnect the underling data source
     virtual void disconnect() {}
 
@@ -137,6 +164,50 @@ protected:
 private:
     sp<AMessage> mNotify;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+public:
+    virtual bool hasVideo() { return false;}
+    // mtk80902: just keep default defination..
+    virtual void pause() {
+        sp<AMessage> notify = dupNotify();
+        notify->setInt32("what", kWhatPauseDone);
+        notify->setInt32("result", OK);
+        notify->post();
+    }
+    virtual void resume() {
+        sp<AMessage> notify = dupNotify();
+        notify->setInt32("what", kWhatPlayDone);
+        notify->setInt32("result", OK);
+        notify->post();
+    }
+    //  return -EWOULDBLOCK: not ready
+    //  return OK: is ready
+    //  virtual status_t allTracksPresent() {return INVALID_OPERATION;};
+    virtual status_t initCheck() const {return OK;}
+    virtual void setParams(const sp<MetaData> &) {};
+    virtual status_t getFinalStatus() const {return OK;}
+    virtual status_t getBufferedDuration(bool , int64_t *) {return INVALID_OPERATION;};
+    virtual sp<MetaData> getMetaData() {return mMetaData;};
+    virtual void stopTrack(bool ) { return; }
+    virtual bool notifyCanNotConnectServerIfPossible(int64_t /*curPositionUs*/) {return false;}
+
+    enum DataSourceType {
+        SOURCE_Default,
+        SOURCE_HttpLive,
+        SOURCE_Local,
+        SOURCE_Rtsp,
+        SOURCE_Http,
+    };
+
+    virtual DataSourceType getDataSourceType() { return SOURCE_Default; }
+
+    enum {
+        NOT_USE_RENDEREDPOSITIONUS = -1
+    };
+
+protected:
+    sp<MetaData> mMetaData;
+#endif
     DISALLOW_EVIL_CONSTRUCTORS(Source);
 };
 

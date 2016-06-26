@@ -29,6 +29,10 @@ LOCAL_SHARED_LIBRARIES := liblog libcutils libutils libdl libeffects
 LOCAL_C_INCLUDES := \
         system/media/audio_effects/include \
         frameworks/av/media/libeffects/factory
+ifeq ($(MTK_AUDIO),yes)
+LOCAL_C_INCLUDES+= \
+   $(TOP)/$(MTK_PATH_SOURCE)/hardware/audio/common/include
+endif
 
 include $(BUILD_SHARED_LIBRARY)
 

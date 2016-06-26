@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -289,6 +294,134 @@ private:
     // MetaData &operator=(const MetaData &);
 };
 
+#ifdef MTK_AOSP_ENHANCEMENT
+enum {
+    kKeyCropPaddingRect   = 'crpp',
+    kKeyIsLivePhoto       = 'islp',  // int32_t
+    kKeySlowMotionSpeedValue    = 'smsv',  // int32_t
+    kKeyIsDirectLink            = 'drlk',
+    kKeyEnableNonRefP           = 'enrp',  // bool (int32_t)
+    kKeyNonRefPFreq             = 'nrpf',  // int32_t
+    kKeyVideoPreCheck     = 'vpck',  // int32_t(bool)
+    kKeyAudioPadEnable    = 'apEn',  // int32_t(bool),hai.li
+    kKeyMaxQueueBuffer    = 'mque',  // int32_t, Demon Deng for OMXCodec
+    kKeyIsProtectDrm      = 'IPDf',  // int32_t, protect drm flag
+    kKeyAacObjType         = 'aaco',    // Morris Yang for MPEG4 audio object type
+    kKeySDP               = 'ksdp',  // int32_t, Demon Deng for SDP
+    kKeyUri                 ='kuri',  // int32_t,haizhen for sdp
+    kKeyRvActualWidth     =  'rvaw',  // int32_t, Morris Yang for RV
+    kKeyRvActualHeight    =  'rvah',  // int32_t, Morris Yang for RV
+    kKeyServerTimeout     = 'srvt',   // int32_t, Demon Deng for RTSP Server timeout
+    kKeyIs3gpBrand        = '3gpB',   // int32_t(bool), hai.li
+    kKeyIsQTBrand         = 'qtBd',   // int32_t(bool), hai.li
+    kKeyFirstSampleOffset = 'FSOf',   // int64_t, hai.li
+    kKeyLastSampleOffset  = 'FSOl',   // int64_t, hai.li
+    kKeyMPEG4VOS              = 'MP4C',  // raw data, hai.li for other container support mpeg4 codec
+    kKeyRTSPSeekMode      = 'rskm',   // int32_t, Demon Deng for RTSP Seek Mode
+    kKeyInputBufferNum    = 'inbf',   // int32_t, Demon Deng for OMXCodec
+    kKeyOutputBufferNum   = 'onbf',   // int32_t,for VE
+    kKeyHasUnsupportVideo = 'UnSV',   // int32_t(bool), hai.li, file has unsupport video track.
+    kKeyRTPTarget         = 'rtpt',   // int32_t, Demon Deng for ARTPWriter
+    kKeyCodecInfoIsInFirstFrame = 'CIFF',  // int32(bool), hai.li,codec info is in the first frame
+    kKeyCamMemInfo        = 'CMIf',   // int32_t, Morris Yang for OMXVEnc With Camera
+    kKeyCamMCIMemInfo = 'CMCI',       // pointer,, Morris Yang for Camera MCI mem info
+    kKeyCamMemMode        = 'CMMd',  // add by haizhen for 89 cam Buffer mode
+    // int32_t, Morris Yang for camera whiteboard effect (need to modify QP value for bitstream size)
+    kKeyCamWhiteboardEffect = 'CWEf',
+    kKeyAspectRatioWidth          =  'aspw',
+    kKeyAspectRatioHeight         =  'asph',
+    kKeyHLSVideoFirestRender   = 'v1Rn',  // int64, timestamp, http live
+    kKeyOutBufSize        = 'OBSz',  // int32_t,for OMX Output Buffer Size       //zxy  inbuf  --> OBSz
+    kKeyFrameNum          = 'frnu',  // int32_t,for mp3 output buffer frame limit.
+    kKeySamplesperframe      = 'sapf',  // int32_t samples per frame
+    kKeyRTSPOutputTimeoutUS = 'rsto',   // int64_t, omx output buf timeout for rtsp in US
+    kKeyHTTPOutputTimeoutUS = 'htpo',   // int64_t, omx output buf timeout for http in US
+    kKeyIsHTTPStreaming = 'htst',   // for omxcodec use
+    kKeyWFDUseBufferPointer = 'ubpo',        // zxy usebufferpointer --> ubpo
+    kKeyWFDUseExternalDisplay = 'uedp',      // zxy useexternaldisplay --> uedp
+    KKeyMultiSliceBS      = 'NalM',   // int32_t (bool), to indicate multi-slice Stream
+    kKeyIsFromMP3Extractor = 'iF3E',           // zxy  isFromMP3Extractor --> iF3E
+    kKeyTimeToSampleNumberEntry  = 'ttsn',  // int32_t     //zxy ttsne --> ttsn
+    kKeyTimeScaleOptional     = 'tmso',  // int32_t    // zxy timesclop --> tmso
+    kKeyTimeToSampleTable  = 'ttst',  // int32_t
+    kKeySampleCount     = 'scnt',  // int32_t     // zxy samplecnt --> scnt
+
+    kKeyEndian = 'endi',           // zxy  endian -->  endi
+    kKeyBitWidth = 'bwid',     // zxy bitwidth --> bwid
+    kKeyPCMType = 'pcmT',   // zxy pcmtype --> pcmT
+    kKeyChannelAssignment = 'chAs',      // zxy channelAssignment --> chAs
+    kKeyNumericalType = 'NuTy',  // zxy numericalType --> NuTy
+
+    kKeyALACC             = 'alac',  // alac codec specific data
+    kKeyNumSamples        = 'nsmp',
+
+    kKeyRequiresMaxFBuffers = 'MaxB',  // bool (int32_t)   // zxy  maxfb --> MaxB
+    kKeyWFDLatency = 'wfdl',  // uint32_t
+    kKeyVideoTime = 'viti',  // uint32_t (msecs)
+    kKeyIsPlayReady = 'plrd',             // for playready
+    kKeyAVIRawAac = 'avir',
+    kKeyMediaInfoFlag = 'infg',//add for mtk defined infos in mediarecorder.h.
+    kKeyIsMtkMusic = 'iMtk',
+
+    kKeyBlockAlign        = 'bkal',  // uint32_t
+    kKeyBitsPerSample     = 'btps',  // uint32_t
+    kKeyExtraDataSize     = 'exds',  // uint32_t
+    kKeyExtraDataPointer  = 'exdp',  // uint8_t*
+    kKeyBlockDurationUs   = 'bkdu',  // uint64_t
+    kkeyComptype            = 'ctyp',   // int16_t compress type
+    kkeyApechl              = 'chls',   // int16_t compress type
+    kkeyApebit              = 'bits',   // int16_t compress type
+    kKeyTotalFrame         = 'alls',    // int32_t all frame in file
+    kKeyFinalSample         = 'fins',   // int32_t last frame's sample
+    kKeyBufferSize            = 'bufs',  // int32_t buffer size for ape
+    kKeyNemFrame            = 'nfrm',   // int32_t seek frame's numbers for ape
+    kKeySeekByte            = 'sekB',   // int32_t new seek first byte  for ape
+    kKeyApeFlag            = 'apef',    // int32_t new seek first byte  for ape
+
+    kKeyVorbisFlag         = 'vbfg',   // vorbis flag   // zxy  vorbisf --> vbfg
+
+
+    kKeyWMAC              = 'wmac',  // wma codec specific data
+    kKeyWMAPROC              = 'wmap',  // wma codec specific data    // zxy wmaproc --> wmap
+    kKeyWMVC              = 'wmvc',  // wmv codec specific data
+
+    kKeyCodecConfigInfo    = 'cinf',  // raw data
+    kkeyOmxTimeSource      = 'omts',
+    kKeySupportTryRead     = 'tryR',  // in32_t try read is supported
+    kKeyIsAACADIF          = 'adif',  // int32_t (bool)
+    kKeyAacProfile         = 'prof',  // int32_t aac profile
+    kKeyDataSourceObserver = 'dsob',      // pointer,
+    kKeyUpdateDuraCallback = 'udcb',      // pointer, update duration
+    kKeyHasSEIBuffer      = 'SEIB',  // bool (int32_t)
+    kKeyFlacMetaInfo          = 'FMIF',  // Flac metadata info
+    kKeyVideoStereoMode   = 'VStM',  // int32_t video 3d mode
+    kKeyInterpolateFrame   = 'MJCF',  // int32_t Interpolate Frame
+    kKeyVideoBitRate      = 'vbrt',   // int32_t VR video Bitrate
+    kKeyVideoEncoder      = 'venc',   // int32_t VR encoder type refer MediaProfie.h
+    kKeyMPEGAudLayer        = 'layr',  // int32_t, mpeg audio layer number
+    kInvalidKeyTime         = 'invt',
+
+    kKeyVideoEditorVa   = 'VEVA',  // pointer
+    kKeyVideoEditorPa   = 'VEPA',  // pointer
+    // for ape seek
+    kKeynewframe = 'sfrm',
+    kKeyseekbyte = 'sbyte',
+};
+enum video_stereo_mode{
+    VIDEO_STEREO_DEFAULT = -1,
+    VIDEO_STEREO_2D = 0,
+    VIDEO_STEREO_FRAME_SEQUENCE = 1,
+    VIDEO_STEREO_SIDE_BY_SIDE = 2,
+    VIDEO_STEREO_TOP_BOTTOM = 3,
+    VIDEO_STEREO_LIST_END
+};
+
+enum camera_mem_mode{
+    CAMERA_CONTINUOUS_MEM_MODE = 0,  // camera mem is continus for 77
+    CAMERA_DISCONTINUOUS_MEM_VA_MODE = 1,  // camera mem is discontinus for 89
+    CAMERA_DISCONTINUOUS_MEM_ION_MODE = 2,  // camera mem is discontinus for 89--ion mem
+};
+#endif
 }  // namespace android
 
 #endif  // META_DATA_H_

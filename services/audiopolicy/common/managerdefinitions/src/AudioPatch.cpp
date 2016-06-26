@@ -16,7 +16,9 @@
 
 #define LOG_TAG "APM::AudioPatch"
 //#define LOG_NDEBUG 0
-
+#ifdef MTK_AUDIO
+#define LOG_NDEBUG 0
+#endif
 #include "AudioPatch.h"
 #include "AudioGain.h"
 #include "ConfigParsingUtils.h"

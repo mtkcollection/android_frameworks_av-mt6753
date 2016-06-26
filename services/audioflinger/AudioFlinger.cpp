@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
 **
 ** Copyright 2007, The Android Open Source Project
 **
@@ -39,7 +44,21 @@
 #include <cutils/properties.h>
 
 #include <system/audio.h>
+#ifdef MTK_AUDIO
+#include <hardware/audio_mtk.h>
+#ifdef MTK_LOSSLESS_BT_SUPPORT
+#include "AudioLosslessBTBroadcast.h"
+#endif
+#include "MtkAudioLoud.h"
+#ifdef HAVE_SRSAUDIOEFFECT
+#include "postpro_patch.h"
+#endif
+#ifdef MTK_HDMI_MULTI_CHANNEL_SUPPORT
+#include <linux/hdmitx.h>
+#endif
+#else
 #include <hardware/audio.h>
+#endif
 
 #include "AudioMixer.h"
 #include "AudioFlinger.h"
@@ -65,6 +84,9 @@
 #include <media/AudioParameter.h>
 #include <private/android_filesystem_config.h>
 
+#ifdef DEBUG_AUDIO_PCM
+#include "AudioUtilmtk.h"
+#endif
 // ----------------------------------------------------------------------------
 
 // Note: the following macro is used for extremely verbose logging message.  In
@@ -79,6 +101,10 @@
 #else
 #define ALOGVV(a...) do { } while(0)
 #endif
+
+#ifdef DOLBY_DAP
+#include "EffectDapController_impl.h"
+#endif // DOLBY_END
 
 namespace android {
 
@@ -103,9 +129,780 @@ size_t AudioFlinger::mTeeSinkTrackFrames = kTeeSinkTrackFramesDefault;
 
 // In order to avoid invalidating offloaded tracks each time a Visualizer is turned on and off
 // we define a minimum time during which a global effect is considered enabled.
+#ifdef MTK_AUDIO  // google mistake
+static const nsecs_t kMinGlobalEffectEnabletimeNs = 2000000;
+#else
 static const nsecs_t kMinGlobalEffectEnabletimeNs = seconds(7200);
-
+#endif
 // ----------------------------------------------------------------------------
+#ifdef MTK_AUDIO
+#ifdef DEBUG_AUDIO_PCM
+//add by weiguo to dump pcm data
+    static   const char * gaf_track_pcm = "/sdcard/mtklog/audio_dump/af_track_pcm";
+    static   const char * gaf_track_propty = "af.track.pcm";
+
+    static   const char * gaf_mixer_pcm = "/sdcard/mtklog/audio_dump/af_mixer_pcm.pcm";
+    static   const char * gaf_mixer_propty = "af.mixer.pcm";
+
+    static   const char * gaf_record_pcm = "/sdcard/mtklog/audio_dump/af_record.pcm";
+    static   const char * gaf_record_propty = "af.record.dump.pcm";
+
+    static   const char * AF_PARAM_KEY[] = { "af.mixer.pcm",
+                                             "af.track.pcm",
+                                             "af.mixer.drc.pcm",
+                                             "af.timestretch.in.pcm",
+                                             "af.offload.write.raw",
+                                             "af.mixer.dwnmx.pcm",
+                                             "af.resampler.pcm",
+                                             "af.mixer.end.pcm",
+                                             "af.record.dump.pcm",
+                                             "af.dumplog"};
+#endif
+#endif
+
+#ifdef MTK_AUDIO
+void inline MTK_downmix_to_mono_i16_from_stereo_i16(int16_t *dst, const int16_t *src, size_t count)
+{
+    ALOGV("MTK_downmix_to_mono_i16_from_stereo_i16");
+    while (count--) {
+        *dst++ = src[0];
+        src += 2;
+    }
+}
+#endif
+//<MTK_AUDIO_ADD
+// add by chipeng , support EM mode setting
+#ifdef MTK_AUDIO
+status_t AudioFlinger::SetEMParameter(void *ptr, size_t len)
+{
+    ALOGV("SetEMParameter ");
+    AutoMutex lock(mHardwareLock);
+    if (NULL == mPrimaryHardwareDev)
+    {
+        ALOGE("%s mPrimaryHardwareDev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+
+    audio_hw_device_mtk_t *dev = (audio_hw_device_mtk_t*) mPrimaryHardwareDev->hwDevice();
+
+    if (NULL == dev)
+    {
+        ALOGE("%s dev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+
+    if (NULL == dev->SetEMParameter)
+    {
+        ALOGE("%s dev->%s is null",__FUNCTION__,__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+
+    mHardwareStatus = AUDIO_HW_SET_PARAMETER;
+    dev->SetEMParameter(dev,ptr,len);
+    mHardwareStatus = AUDIO_HW_IDLE;
+    return NO_ERROR;
+}
+
+// add by chipeng , support EM mode setting
+status_t AudioFlinger::GetEMParameter(void *ptr, size_t len)
+{
+    ALOGV("GetEMParameter ");
+    // ioHandle == 0 means the parameters are global to the audio hardware interface
+    AutoMutex lock(mHardwareLock);
+    if (NULL == mPrimaryHardwareDev)
+    {
+        ALOGE("%s mPrimaryHardwareDev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    audio_hw_device_mtk_t *dev = static_cast<audio_hw_device_mtk_t*>(mPrimaryHardwareDev->hwDevice());
+    if (NULL == dev)
+    {
+        ALOGE("%s dev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    if (NULL == dev->GetEMParameter)
+    {
+        ALOGE("%s dev->%s is null",__FUNCTION__,__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    mHardwareStatus = AUDIO_HW_SET_PARAMETER;
+    dev->GetEMParameter(dev,ptr,len);
+    mHardwareStatus = AUDIO_HW_IDLE;
+    return NO_ERROR;
+}
+
+status_t AudioFlinger::SetAudioData(int par1,size_t len,void *ptr)
+{
+    ALOGV("SetAudioData par1 = %d,len = %d ",par1,len);
+    AutoMutex lock(mHardwareLock);
+    if (NULL == mPrimaryHardwareDev)
+    {
+        ALOGE("%s mPrimaryHardwareDev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    audio_hw_device_mtk_t *dev = static_cast<audio_hw_device_mtk_t*>(mPrimaryHardwareDev->hwDevice());
+    if (NULL == dev)
+    {
+        ALOGE("%s dev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    if (NULL == dev->SetAudioData)
+    {
+        ALOGE("%s dev->%s is null",__FUNCTION__,__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    mHardwareStatus = AUDIO_HW_SET_PARAMETER;
+    dev->SetAudioData(dev,par1,len,ptr);
+    mHardwareStatus = AUDIO_HW_IDLE;
+    return NO_ERROR;
+}
+
+status_t AudioFlinger::GetAudioData(int par1,size_t len,void *ptr)
+{
+    ALOGV("GetAudioData par1 = %d,len = %d ",par1,len);
+    AutoMutex lock(mHardwareLock);
+    if (NULL == mPrimaryHardwareDev)
+    {
+        ALOGE("%s mPrimaryHardwareDev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    audio_hw_device_mtk_t *dev = static_cast<audio_hw_device_mtk_t*>(mPrimaryHardwareDev->hwDevice());
+    if (NULL == dev)
+    {
+        ALOGE("%s dev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    if (NULL == dev->GetAudioData)
+    {
+        ALOGE("%s dev->%s is null",__FUNCTION__,__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    mHardwareStatus = AUDIO_HW_SET_PARAMETER;
+    dev->GetAudioData(dev,par1,len,ptr);
+    mHardwareStatus = AUDIO_HW_IDLE;
+    return NO_ERROR;
+}
+
+status_t AudioFlinger::SetAudioCommand(int parameters1,int parameters2)
+{
+    ALOGV("SetAudioCommand par1 = %d,par2 = %d ",parameters1,parameters2);
+    AutoMutex lock(mHardwareLock);
+    if (NULL == mPrimaryHardwareDev)
+    {
+        ALOGE("%s mPrimaryHardwareDev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    audio_hw_device_mtk_t *dev = static_cast<audio_hw_device_mtk_t*>(mPrimaryHardwareDev->hwDevice());
+    if (NULL == dev)
+    {
+        ALOGE("%s dev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    if (NULL == dev->SetAudioCommand)
+    {
+        ALOGE("%s dev->%s is null",__FUNCTION__,__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    mHardwareStatus = AUDIO_HW_SET_PARAMETER;
+    dev->SetAudioCommand(dev,parameters1,parameters2);
+    mHardwareStatus = AUDIO_HW_IDLE;
+    return NO_ERROR;
+}
+
+status_t AudioFlinger::GetAudioCommand(int parameters1)
+{
+    ALOGV("GetAudioCommand par1 = %d",parameters1);
+    int value =0;
+    AutoMutex lock(mHardwareLock);
+    if (NULL == mPrimaryHardwareDev)
+    {
+        ALOGE("%s mPrimaryHardwareDev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    audio_hw_device_mtk_t *dev = static_cast<audio_hw_device_mtk_t*>(mPrimaryHardwareDev->hwDevice());
+    if (NULL == dev)
+    {
+        ALOGE("%s dev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    if (NULL == dev->GetAudioCommand)
+    {
+        ALOGE("%s dev->%s is null",__FUNCTION__,__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+
+    mHardwareStatus = AUDIO_HW_SET_PARAMETER;
+    value =dev->GetAudioCommand(dev,parameters1);
+    mHardwareStatus = AUDIO_HW_IDLE;
+    return value;
+}
+
+
+status_t AudioFlinger::SetACFPreviewParameter(void *ptr, size_t len)
+{
+    ALOGV("+AudioFlinger::SetACFPreviewParameter!! ");
+    AutoMutex lock(mHardwareLock);
+    if (NULL == mPrimaryHardwareDev)
+    {
+        ALOGE("%s mPrimaryHardwareDev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    audio_hw_device_mtk_t *dev = static_cast<audio_hw_device_mtk_t*>(mPrimaryHardwareDev->hwDevice());
+    if (NULL == dev)
+    {
+        ALOGE("%s dev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    if (NULL == dev->SetACFPreviewParameter)
+    {
+        ALOGE("%s dev->%s is null",__FUNCTION__,__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    mHardwareStatus = AUDIO_HW_SET_PARAMETER;
+    dev->SetACFPreviewParameter(dev,ptr,len);
+    mHardwareStatus = AUDIO_HW_IDLE;
+    ALOGV("-SetACFPreviewParameter");
+    return NO_ERROR;
+}
+
+status_t AudioFlinger::SetHCFPreviewParameter(void *ptr, size_t len)
+{
+    ALOGV("+AudioFlinger::SetHCFPreviewParameter!! ");
+    AutoMutex lock(mHardwareLock);
+    if (NULL == mPrimaryHardwareDev)
+    {
+        ALOGE("%s mPrimaryHardwareDev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    audio_hw_device_mtk_t *dev = static_cast<audio_hw_device_mtk_t*>(mPrimaryHardwareDev->hwDevice());
+    if (NULL == dev)
+    {
+        ALOGE("%s dev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    if (NULL == dev->SetHCFPreviewParameter)
+    {
+        ALOGE("%s dev->%s is null",__FUNCTION__,__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    mHardwareStatus = AUDIO_HW_SET_PARAMETER;
+    dev->SetHCFPreviewParameter(dev,ptr,len);
+    mHardwareStatus = AUDIO_HW_IDLE;
+    ALOGV("-SetHCFPreviewParameter");
+    return NO_ERROR;
+}
+
+/////////////////////////////////////////////////////////////////////////
+//    for PCMxWay Interface API ...   Stan
+/////////////////////////////////////////////////////////////////////////
+int AudioFlinger::xWayPlay_Start(int sample_rate)
+{
+    AutoMutex lock(mHardwareLock);
+    if (NULL == mPrimaryHardwareDev)
+    {
+        ALOGE("%s mPrimaryHardwareDev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    audio_hw_device_mtk_t *dev = static_cast<audio_hw_device_mtk_t*>(mPrimaryHardwareDev->hwDevice());
+    if (NULL == dev)
+    {
+        ALOGE("%s dev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    if (NULL == dev->xWayPlay_Start)
+    {
+        ALOGE("%s dev->%s is null",__FUNCTION__,__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    return dev->xWayPlay_Start(dev,sample_rate);
+}
+
+int AudioFlinger::xWayPlay_Stop()
+{
+    AutoMutex lock(mHardwareLock);
+    if (NULL == mPrimaryHardwareDev)
+    {
+        ALOGE("%s mPrimaryHardwareDev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    audio_hw_device_mtk_t *dev = static_cast<audio_hw_device_mtk_t*>(mPrimaryHardwareDev->hwDevice());
+    if (NULL == dev)
+    {
+        ALOGE("%s dev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    if (NULL == dev->xWayPlay_Stop)
+    {
+        ALOGE("%s dev->%s is null",__FUNCTION__,__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    return dev->xWayPlay_Stop(dev);
+}
+
+int AudioFlinger::xWayPlay_Write(void *buffer, int size_bytes)
+{
+    AutoMutex lock(mHardwareLock);
+    if (NULL == mPrimaryHardwareDev)
+    {
+        ALOGE("%s mPrimaryHardwareDev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    audio_hw_device_mtk_t *dev = static_cast<audio_hw_device_mtk_t*>(mPrimaryHardwareDev->hwDevice());
+    if (NULL == dev)
+    {
+        ALOGE("%s dev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    if (NULL == dev->xWayPlay_Write)
+    {
+        ALOGE("%s dev->%s is null",__FUNCTION__,__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    return dev->xWayPlay_Write(dev,buffer,size_bytes);
+}
+
+int AudioFlinger::xWayPlay_GetFreeBufferCount()
+{
+    AutoMutex lock(mHardwareLock);
+    if (NULL == mPrimaryHardwareDev)
+    {
+        ALOGE("%s mPrimaryHardwareDev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    audio_hw_device_mtk_t *dev = static_cast<audio_hw_device_mtk_t*>(mPrimaryHardwareDev->hwDevice());
+    if (NULL == dev)
+    {
+        ALOGE("%s dev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    if (NULL == dev->xWayPlay_GetFreeBufferCount)
+    {
+        ALOGE("%s dev->%s is null",__FUNCTION__,__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    return dev->xWayPlay_GetFreeBufferCount(dev);
+}
+
+int AudioFlinger::xWayRec_Start(int sample_rate)
+{
+    AutoMutex lock(mHardwareLock);
+    if (NULL == mPrimaryHardwareDev)
+    {
+        ALOGE("%s mPrimaryHardwareDev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    audio_hw_device_mtk_t *dev = static_cast<audio_hw_device_mtk_t*>(mPrimaryHardwareDev->hwDevice());
+    if (NULL == dev)
+    {
+        ALOGE("%s dev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    if (NULL == dev->xWayRec_Start)
+    {
+        ALOGE("%s dev->%s is null",__FUNCTION__,__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    return dev->xWayRec_Start(dev,sample_rate);
+}
+
+int AudioFlinger::xWayRec_Stop()
+{
+    AutoMutex lock(mHardwareLock);
+    if (NULL == mPrimaryHardwareDev)
+    {
+        ALOGE("%s mPrimaryHardwareDev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    audio_hw_device_mtk_t *dev = static_cast<audio_hw_device_mtk_t*>(mPrimaryHardwareDev->hwDevice());
+    if (NULL == dev)
+    {
+        ALOGE("%s dev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    if (NULL == dev->xWayRec_Stop)
+    {
+        ALOGE("%s dev->%s is null",__FUNCTION__,__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    return dev->xWayRec_Stop(dev);
+}
+
+int AudioFlinger::xWayRec_Read(void *buffer, int size_bytes)
+{
+    AutoMutex lock(mHardwareLock);
+    if (NULL == mPrimaryHardwareDev)
+    {
+        ALOGE("%s mPrimaryHardwareDev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    audio_hw_device_mtk_t *dev = static_cast<audio_hw_device_mtk_t*>(mPrimaryHardwareDev->hwDevice());
+    if (NULL == dev)
+    {
+        ALOGE("%s dev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    if (NULL == dev->xWayRec_Read)
+    {
+        ALOGE("%s dev->%s is null",__FUNCTION__,__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    return dev->xWayRec_Read(dev,buffer,size_bytes);
+}
+
+//wendy
+int AudioFlinger::ReadRefFromRing(void*buf, uint32_t datasz,void* DLtime)
+{
+    //AutoMutex lock(mHardwareLock);
+    ALOGV("AudioFlinger:: ReadRefFromRing");
+    if (NULL == mPrimaryHardwareDev)
+    {
+        ALOGE("%s mPrimaryHardwareDev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    audio_hw_device_mtk_t *dev = static_cast<audio_hw_device_mtk_t*>(mPrimaryHardwareDev->hwDevice());
+    if (NULL == dev)
+    {
+        ALOGE("%s dev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    if (NULL == dev->ReadRefFromRing)
+    {
+        ALOGE("%s dev->%s is null",__FUNCTION__,__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    return dev->ReadRefFromRing(dev,buf, datasz, DLtime);
+}
+int AudioFlinger::GetVoiceUnlockULTime(void* DLtime)
+{
+    //AutoMutex lock(mHardwareLock);
+    ALOGV("AudioFlinger:: GetVoiceUnlockULTime");
+    if (NULL == mPrimaryHardwareDev)
+    {
+        ALOGE("%s mPrimaryHardwareDev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    audio_hw_device_mtk_t *dev = static_cast<audio_hw_device_mtk_t*>(mPrimaryHardwareDev->hwDevice());
+    if (NULL == dev)
+    {
+        ALOGE("%s dev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    if (NULL == dev->GetVoiceUnlockULTime)
+    {
+        ALOGE("%s dev->%s is null",__FUNCTION__,__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    return dev->GetVoiceUnlockULTime(dev, DLtime);
+}
+int AudioFlinger::SetVoiceUnlockSRC(uint outSR, uint outChannel)
+{
+    //AutoMutex lock(mHardwareLock);
+    ALOGD("AudioFlinger:: SetVoiceUnlockSRC");
+    if (NULL == mPrimaryHardwareDev)
+    {
+        ALOGE("%s mPrimaryHardwareDev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    audio_hw_device_mtk_t *dev = static_cast<audio_hw_device_mtk_t*>(mPrimaryHardwareDev->hwDevice());
+    if (NULL == dev)
+    {
+        ALOGE("%s dev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    if (NULL == dev->SetVoiceUnlockSRC)
+    {
+        ALOGE("%s dev->%s is null",__FUNCTION__,__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    return dev->SetVoiceUnlockSRC(dev,outSR, outChannel);
+}
+bool AudioFlinger::startVoiceUnlockDL()
+{
+    //AutoMutex lock(mHardwareLock);
+    ALOGD("AudioFlinger:: startVoiceUnlockDL");
+    if (NULL == mPrimaryHardwareDev)
+    {
+        ALOGE("%s mPrimaryHardwareDev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    audio_hw_device_mtk_t *dev = static_cast<audio_hw_device_mtk_t*>(mPrimaryHardwareDev->hwDevice());
+    if (NULL == dev)
+    {
+        ALOGE("%s dev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    if (NULL == dev->startVoiceUnlockDL)
+    {
+        ALOGE("%s dev->%s is null",__FUNCTION__,__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    return dev->startVoiceUnlockDL(dev);
+}
+bool AudioFlinger::stopVoiceUnlockDL()
+{
+    //AutoMutex lock(mHardwareLock);
+    ALOGD("AudioFlinger:: stopVoiceUnlockDL");
+    if (NULL == mPrimaryHardwareDev)
+    {
+        ALOGE("%s mPrimaryHardwareDev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    audio_hw_device_mtk_t *dev = static_cast<audio_hw_device_mtk_t*>(mPrimaryHardwareDev->hwDevice());
+    if (NULL == dev)
+    {
+        ALOGE("%s dev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    if (NULL == dev->stopVoiceUnlockDL)
+    {
+        ALOGE("%s dev->%s is null",__FUNCTION__,__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    return dev->stopVoiceUnlockDL(dev);
+}
+void AudioFlinger::freeVoiceUnlockDLInstance()
+{
+    //AutoMutex lock(mHardwareLock);
+    ALOGD("AudioFlinger:: freeVoiceUnlockDLInstance");
+    if (NULL == mPrimaryHardwareDev)
+    {
+        ALOGE("%s mPrimaryHardwareDev is null",__FUNCTION__);
+        return;// INVALID_OPERATION;
+    }
+    audio_hw_device_mtk_t *dev = static_cast<audio_hw_device_mtk_t*>(mPrimaryHardwareDev->hwDevice());
+    if (NULL == dev)
+    {
+        ALOGE("%s dev is null",__FUNCTION__);
+        return;// INVALID_OPERATION;
+    }
+    if (NULL == dev->freeVoiceUnlockDLInstance)
+    {
+        ALOGE("%s dev->%s is null",__FUNCTION__,__FUNCTION__);
+        return;// INVALID_OPERATION;
+    }
+    return dev->freeVoiceUnlockDLInstance(dev);
+}
+
+bool AudioFlinger::getVoiceUnlockDLInstance()
+{
+    //AutoMutex lock(mHardwareLock);
+    ALOGD("AudioFlinger:: getVoiceUnlockDLInstance");
+    if (NULL == mPrimaryHardwareDev)
+    {
+        ALOGE("%s mPrimaryHardwareDev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    audio_hw_device_mtk_t *dev = static_cast<audio_hw_device_mtk_t*>(mPrimaryHardwareDev->hwDevice());
+    if (NULL == dev)
+    {
+        ALOGE("%s dev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    if (NULL == dev->getVoiceUnlockDLInstance)
+    {
+        ALOGE("%s dev->%s is null",__FUNCTION__,__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    return dev->getVoiceUnlockDLInstance(dev);
+}
+int AudioFlinger::GetVoiceUnlockDLLatency()
+{
+    //AutoMutex lock(mHardwareLock);
+    ALOGD("AudioFlinger:: GetVoiceUnlockDLLatency");
+    if (NULL == mPrimaryHardwareDev)
+    {
+        ALOGE("%s mPrimaryHardwareDev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    audio_hw_device_mtk_t *dev = static_cast<audio_hw_device_mtk_t*>(mPrimaryHardwareDev->hwDevice());
+    if (NULL == dev)
+    {
+        ALOGE("%s dev is null",__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    if (NULL == dev->GetVoiceUnlockDLLatency)
+    {
+        ALOGE("%s dev->%s is null",__FUNCTION__,__FUNCTION__);
+        return INVALID_OPERATION;
+    }
+    return dev->GetVoiceUnlockDLLatency(dev);
+}
+
+status_t AudioFlinger::setSurroundOnOff(int value)
+{
+    #ifdef MTK_BESSURROUND_ENABLE
+        ALOGD("mBesSurroundState %d",value);
+        mBesSurroundState = value;
+    #endif
+    return OK;
+}
+
+status_t AudioFlinger::setSurroundMode(int value)
+{
+    #ifdef MTK_BESSURROUND_ENABLE
+    ALOGD("mBesSurroundMode %d",value);
+    mBesSurroundMode = value;
+    #endif
+    return OK;
+}
+#else
+status_t AudioFlinger::SetEMParameter(void *ptr, size_t len)
+{
+    return NO_ERROR;
+}
+
+// add by chipeng , support EM mode setting
+status_t AudioFlinger::GetEMParameter(void *ptr, size_t len)
+{
+    return NO_ERROR;
+}
+
+
+status_t AudioFlinger::SetAudioData(int par1,size_t len,void *ptr)
+    {
+        return NO_ERROR;
+    }
+
+
+
+status_t AudioFlinger::GetAudioData(int par1,size_t len,void *ptr)
+    {
+        return NO_ERROR;
+    }
+
+
+status_t AudioFlinger::SetAudioCommand(int parameters1,int parameters2)
+    {
+        return NO_ERROR;
+    }
+
+
+status_t AudioFlinger::GetAudioCommand(int parameters1)
+    {
+        return NO_ERROR;
+    }
+
+status_t AudioFlinger::SetACFPreviewParameter(void *ptr, size_t len)
+    {
+        return NO_ERROR;
+    }
+
+status_t AudioFlinger::SetHCFPreviewParameter(void *ptr, size_t len)
+    {
+        return NO_ERROR;
+    }
+
+/////////////////////////////////////////////////////////////////////////
+//    for PCMxWay Interface API ...   Stan
+/////////////////////////////////////////////////////////////////////////
+int AudioFlinger::xWayPlay_Start(int sample_rate)
+    {
+        return NO_ERROR;
+    }
+
+
+int AudioFlinger::xWayPlay_Stop()
+    {
+        return NO_ERROR;
+    }
+
+
+int AudioFlinger::xWayPlay_Write(void *buffer, int size_bytes)
+    {
+        return NO_ERROR;
+    }
+
+
+int AudioFlinger::xWayPlay_GetFreeBufferCount()
+    {
+        return NO_ERROR;
+    }
+
+
+int AudioFlinger::xWayRec_Start(int sample_rate)
+    {
+        return NO_ERROR;
+    }
+
+
+int AudioFlinger::xWayRec_Stop()
+    {
+        return NO_ERROR;
+    }
+
+
+int AudioFlinger::xWayRec_Read(void *buffer, int size_bytes)
+    {
+        return NO_ERROR;
+    }
+
+
+//wendy
+int AudioFlinger::ReadRefFromRing(void*buf, uint32_t datasz,void* DLtime)
+    {
+        return NO_ERROR;
+    }
+
+int AudioFlinger::GetVoiceUnlockULTime(void* DLtime)
+    {
+        return NO_ERROR;
+    }
+
+int AudioFlinger::SetVoiceUnlockSRC(uint outSR, uint outChannel)
+    {
+        return NO_ERROR;
+    }
+
+bool AudioFlinger::startVoiceUnlockDL()
+    {
+        return NO_ERROR;
+    }
+
+bool AudioFlinger::stopVoiceUnlockDL()
+    {
+        return NO_ERROR;
+    }
+void AudioFlinger::freeVoiceUnlockDLInstance()
+    {
+        return;
+    }
+
+
+bool AudioFlinger::getVoiceUnlockDLInstance()
+    {
+        return NO_ERROR;
+    }
+
+int AudioFlinger::GetVoiceUnlockDLLatency()
+    {
+        return NO_ERROR;
+    }
+
+status_t AudioFlinger::setSurroundOnOff(int value)
+{
+    return OK;
+}
+
+status_t AudioFlinger::setSurroundMode(int value)
+{
+    return OK;
+}
+
+#endif
+//MTK_AUDIO_ADD>
+status_t AudioFlinger::getHDMICapability(int* HDMI_ChannelCount,int* HDMI_Bitwidth,int* HDMI_MaxSampleRate    )
+{
+    #ifdef MTK_HDMI_MULTI_CHANNEL_SUPPORT
+    if( mHDMI_Capability !=NULL){
+    *HDMI_ChannelCount = mHDMI_Capability->mHDMI_ChannelCount;
+    *HDMI_Bitwidth =  mHDMI_Capability->mHDMI_Bitwidth;
+    *HDMI_MaxSampleRate = mHDMI_Capability ->mHDMI_MaxSampleRate;
+        }
+    ALOGD("getHDMICapability  *HDMI_ChannelCount %d,*HDMI_Bitwidth %d, *HDMI_MaxSampleRate %d", *HDMI_ChannelCount,*HDMI_Bitwidth,*HDMI_MaxSampleRate);
+    #endif
+    return OK;
+}
+
 
 const char *formatToString(audio_format_t format) {
     switch (format & AUDIO_FORMAT_MAIN_MASK) {
@@ -145,6 +942,17 @@ static int load_audio_interface(const char *if_name, audio_hw_device_t **dev)
     rc = hw_get_module_by_class(AUDIO_HARDWARE_MODULE_ID, if_name, &mod);
     ALOGE_IF(rc, "%s couldn't load audio hw module %s.%s (%s)", __func__,
                  AUDIO_HARDWARE_MODULE_ID, if_name, strerror(-rc));
+/*
+#ifdef MTK_AUDIO
+    if (rc)
+    {
+        ALOGE("%s reload %s.%s ",__func__, AUDIO_HARDWARE_MODULE_ID2,if_name);
+        rc = hw_get_module_by_class(AUDIO_HARDWARE_MODULE_ID2, if_name, &mod);
+        ALOGE_IF(rc, "%s couldn't load audio hw module %s.%s (%s)", __func__,
+                 AUDIO_HARDWARE_MODULE_ID2, if_name, strerror(-rc));
+    }
+#endif
+*/
     if (rc) {
         goto out;
     }
@@ -190,6 +998,12 @@ AudioFlinger::AudioFlinger()
         mLogMemoryDealer = new MemoryDealer(kLogMemorySize, "LogWriters",
                 MemoryHeapBase::READ_ONLY);
     }
+#ifdef MTK_AUDIO
+#ifdef MTK_LOSSLESS_BT_SUPPORT
+    //Create broadcast command thread
+    pthread_create(&mLLBTCommandT, NULL, ReadLLBTCommandThread, (void *)this);
+#endif
+#endif
 
 #ifdef TEE_SINK
     (void) property_get("ro.debuggable", value, "0");
@@ -210,6 +1024,20 @@ AudioFlinger::AudioFlinger()
         mTeeSinkTrackEnabled = true;
     }
 #endif
+#ifdef DOLBY_DAP
+    EffectDapController::mInstance = new EffectDapController(this);
+#endif // DOLBY_END
+
+#ifdef MTK_AUDIO
+    mSteroToMono = BLOUD_S2M_MODE_ST2MO2ST;
+    mDL1ONLY = 0;
+#endif
+#ifdef MTK_HDMI_MULTI_CHANNEL_SUPPORT
+mHDMI_Capability = NULL;
+#endif
+mBesSurroundState = 0;
+mBesSurroundMode = 0;
+
 }
 
 void AudioFlinger::onFirstRef()
@@ -239,6 +1067,9 @@ void AudioFlinger::onFirstRef()
 
 AudioFlinger::~AudioFlinger()
 {
+#ifdef DOLBY_DAP
+    delete EffectDapController::mInstance;
+#endif // DOLBY_END
     while (!mRecordThreads.isEmpty()) {
         // closeInput_nonvirtual() will remove specified entry from mRecordThreads
         closeInput_nonvirtual(mRecordThreads.keyAt(0));
@@ -253,6 +1084,11 @@ AudioFlinger::~AudioFlinger()
         audio_hw_device_close(mAudioHwDevs.valueAt(i)->hwDevice());
         delete mAudioHwDevs.valueAt(i);
     }
+#ifdef MTK_HDMI_MULTI_CHANNEL_SUPPORT
+    if(mHDMI_Capability != NULL){
+        delete mHDMI_Capability;
+    }
+#endif
 
     // Tell media.log service about any old writers that still need to be unregistered
     sp<IBinder> binder = defaultServiceManager()->getService(String16("media.log"));
@@ -850,6 +1686,8 @@ bool AudioFlinger::getMicMute() const
 
 status_t AudioFlinger::setMasterMute(bool muted)
 {
+    ALOGD("%s, muted %d", __FUNCTION__, muted);
+
     status_t ret = initCheck();
     if (ret != NO_ERROR) {
         return ret;
@@ -973,6 +1811,16 @@ status_t AudioFlinger::setStreamMute(audio_stream_type_t stream, bool muted)
     if (status != NO_ERROR) {
         return status;
     }
+#ifdef MTK_AUDIO
+#ifdef MATV_AUDIO_LINEIN_PATH
+    if(stream == AUDIO_STREAM_MUSIC)
+    {
+        ALOGD("setStreamMute MATV muted=%d",muted);
+        audio_hw_device_t *dev = mPrimaryHardwareDev->hwDevice();
+        dev->set_parameters (dev,String8::format("SetMatvMute=%d",muted));
+    }
+#endif
+#endif //#ifdef MTK_AUDIO
     ALOG_ASSERT(stream != AUDIO_STREAM_PATCH, "attempt to mute AUDIO_STREAM_PATCH");
 
     if (uint32_t(stream) == AUDIO_STREAM_ENFORCED_AUDIBLE) {
@@ -983,7 +1831,9 @@ status_t AudioFlinger::setStreamMute(audio_stream_type_t stream, bool muted)
     AutoMutex lock(mLock);
     mStreamTypes[stream].mute = muted;
     for (size_t i = 0; i < mPlaybackThreads.size(); i++)
+    {
         mPlaybackThreads.valueAt(i)->setStreamMute(stream, muted);
+    }
 
     return NO_ERROR;
 }
@@ -1039,10 +1889,204 @@ status_t AudioFlinger::setParameters(audio_io_handle_t ioHandle, const String8& 
         return PERMISSION_DENIED;
     }
 
+#ifdef MTK_AUDIO
+    String8 keyStereoOutput = String8("EnableStereoOutput");
+    int value = 0;
+
+    AudioParameter param = AudioParameter(keyValuePairs);
+
+#ifdef DEBUG_AUDIO_PCM
+    String8 value_str;
+    int count = sizeof(AF_PARAM_KEY)/sizeof(AF_PARAM_KEY[0]);
+    for( int i = 0; i < count; i ++ )
+    {
+        if (param.get( String8(AF_PARAM_KEY[i]), value_str) == NO_ERROR)
+        {
+            ALOGD("%s set", AF_PARAM_KEY[i] );
+            property_set( AF_PARAM_KEY[i], value_str );
+            AudioDump::updateKeys( AF_PARAM_KEY[i] );
+            return NO_ERROR;
+        }
+    }
+#endif
+    if (param.getInt(String8("VoiceFeatureOn"), value) == NO_ERROR)
+    {
+        mDL1ONLY = value;
+        ALOGD("set VoiceFeatureOn %d ", value);
+        return NO_ERROR;
+    }
+
+    if (param.getInt(keyStereoOutput, value) == NO_ERROR)
+    {
+       // EnableStereoOutput=1 will force output stereo data.(Disable S2M)
+       // EnableStereoOutput=0 denote don't care this parameter.
+       mSteroToMono = (value) ? BLOUD_S2M_MODE_NONE : BLOUD_S2M_MODE_ST2MO2ST;
+       param.remove(keyStereoOutput);
+    }
+
+    if (param.getInt(String8("AudioTestWakelock"), value) == NO_ERROR)
+    {
+        PlaybackThread *thread = primaryPlaybackThread_l();
+        thread->setParameters(keyValuePairs);
+        return NO_ERROR;
+    }
+
+    #ifdef MTK_HDMI_MULTI_CHANNEL_SUPPORT
+    if (param.getInt(String8(AudioParameter::keyHDMIBitwidth), value) == NO_ERROR) {
+        if(mHDMI_Capability == NULL){
+            mHDMI_Capability = (HDMI_Capability *) new int[3];
+            }
+        if(mHDMI_Capability !=NULL){
+            switch(value)
+            {
+                case HDMI_MAX_BITWIDTH_16:
+                    mHDMI_Capability->mHDMI_Bitwidth = 16;
+                    break;
+                case HDMI_MAX_BITWIDTH_24:
+                    mHDMI_Capability->mHDMI_Bitwidth = 24;
+                    break;
+                default:
+                    mHDMI_Capability->mHDMI_Bitwidth = 0;
+                    break;
+            }
+
+            ALOGD("mHDMI_Bitwidth %d", mHDMI_Capability->mHDMI_Bitwidth);
+        }
+    }
+    if (param.getInt(String8(AudioParameter::keyHDMIChannel), value) == NO_ERROR) {
+
+        if(mHDMI_Capability == NULL){
+            mHDMI_Capability = (HDMI_Capability *) new int[3];
+            }
+
+        if(mHDMI_Capability !=NULL){
+             switch(value)
+             {
+             case HDMI_MAX_CHANNEL_2:
+                  mHDMI_Capability->mHDMI_ChannelCount = 2;
+                  break;
+             case HDMI_MAX_CHANNEL_3:
+                 mHDMI_Capability->mHDMI_ChannelCount = 3;
+                 break;
+             case HDMI_MAX_CHANNEL_4:
+                 mHDMI_Capability->mHDMI_ChannelCount = 4;
+                 break;
+             case HDMI_MAX_CHANNEL_5:
+                 mHDMI_Capability->mHDMI_ChannelCount = 5;
+                 break;
+             case HDMI_MAX_CHANNEL_6:
+                 mHDMI_Capability->mHDMI_ChannelCount = 6;
+                 break;
+             case HDMI_MAX_CHANNEL_7:
+                 mHDMI_Capability->mHDMI_ChannelCount = 7;
+                 break;
+             case HDMI_MAX_CHANNEL_8:
+                 mHDMI_Capability->mHDMI_ChannelCount = 8;
+                 break;
+            default:
+                mHDMI_Capability->mHDMI_ChannelCount = 0;
+                break;
+             }
+
+             ALOGD("mHDMI_ChannelCount %d", mHDMI_Capability->mHDMI_ChannelCount);
+            }
+    }
+    if (param.getInt(String8(AudioParameter::keyHDMIMaxSamplerate), value) == NO_ERROR) {
+
+        if(mHDMI_Capability == NULL){
+            mHDMI_Capability = (HDMI_Capability *) new int[3];
+            }
+
+        if(mHDMI_Capability !=NULL){
+            switch(value)
+            {
+                case HDMI_MAX_SAMPLERATE_32:
+                    mHDMI_Capability->mHDMI_MaxSampleRate = 32000;
+                    break;
+                case HDMI_MAX_SAMPLERATE_44:
+                    mHDMI_Capability->mHDMI_MaxSampleRate = 44100;
+                    break;
+                case HDMI_MAX_SAMPLERATE_48:
+                    mHDMI_Capability->mHDMI_MaxSampleRate = 48000;
+                    break;
+                case HDMI_MAX_SAMPLERATE_96:
+                    mHDMI_Capability->mHDMI_MaxSampleRate = 96000;
+                    break;
+                case HDMI_MAX_SAMPLERATE_192:
+                    mHDMI_Capability->mHDMI_MaxSampleRate = 192000;
+                    break;
+                default:
+                    mHDMI_Capability->mHDMI_MaxSampleRate = 0;
+                    break;
+            }
+            ALOGD("mHDMI_MaxSampleRate %d", mHDMI_Capability->mHDMI_MaxSampleRate);
+
+            }
+    }
+    #endif
+    #ifdef MTK_BESSURROUND_ENABLE
+    {
+        int  value =0;
+        if (param.getInt(String8(AudioParameter::keyBessurroundOnOff), value) == NO_ERROR) {
+        mBesSurroundState = value;
+        ALOGV("setParameters mAudioFlinger->mBesSurroundState %d", value);
+        }
+
+        if (param.getInt(String8(AudioParameter::keyBessurroundMode), value) == NO_ERROR) {
+        mBesSurroundMode = value;
+        ALOGV("setParameters mAudioFlinger->mBesSurroundMode %d", value);
+            }
+    }
+    #endif
+
+#ifdef MTK_LOSSLESS_BT_SUPPORT
+    if (param.getInt(String8(AudioParameter::keyLosslessBTStatus), value) == NO_ERROR)
+    {
+        SetLosslessBTStatus(value!=0);
+        ALOGD("LosslessBTStatus to %d", mIsLosslessBTOn);
+        param.remove(String8(AudioParameter::keyLosslessBTStatus));
+        return NO_ERROR;
+    }
+    if (param.getInt(String8(AudioParameter::keyLosslessBTVolumeSatisfied), value) == NO_ERROR)
+    {
+        SetLosslessBTVolumeStatus(value!=0);
+        ALOGD("SetLosslessBTVolumeStatus to %d", mIsLosslessBTVolumeSatisfied);
+        param.remove(String8(AudioParameter::keyLosslessBTVolumeSatisfied));
+        return NO_ERROR;
+    }
+    if (param.getInt(String8(AudioParameter::keyLosslessBTAbsoluteVolume), value) == NO_ERROR)
+    {
+        SetLosslessBTAbsoluteVolume(value!=0);
+        ALOGD("keyLosslessBTAbsoluteVolume to %d", mIsLosslessBTAbsoluteVolume);
+        param.remove(String8(AudioParameter::keyLosslessBTAbsoluteVolume));
+        return NO_ERROR;
+    }
+#endif
+#endif
+
     // AUDIO_IO_HANDLE_NONE means the parameters are global to the audio hardware interface
     if (ioHandle == AUDIO_IO_HANDLE_NONE) {
         Mutex::Autolock _l(mLock);
         status_t final_result = NO_ERROR;
+
+        #ifdef HAVE_SRSAUDIOEFFECT
+            {
+                int value;
+                AudioParameter param = AudioParameter(keyValuePairs);
+                if (param.getInt(String8("srs_cfg:trumedia_enable"), value) == NO_ERROR) {
+                    ALOGD("switch srs command");
+                    AudioParameter param2 =AudioParameter();
+                    param2.addInt(String8("srs_cfg:srs_skip"), !value);
+                    ALOGD("set srs_cfg:srs_skip %d ", value);
+                    POSTPRO_PATCH_PARAMS_SET(param.toString());
+                    POSTPRO_PATCH_PARAMS_SET(param2.toString());
+                }else
+                {
+                    ALOGD("srs set parameter %s", keyValuePairs.string());
+                    POSTPRO_PATCH_PARAMS_SET(keyValuePairs);
+                }
+         }
+        #endif
         {
             AutoMutex lock(mHardwareLock);
             mHardwareStatus = AUDIO_HW_SET_PARAMETER;
@@ -1086,6 +2130,17 @@ status_t AudioFlinger::setParameters(audio_io_handle_t ioHandle, const String8& 
                 AudioFlinger::mScreenState = ((AudioFlinger::mScreenState & ~1) + 2) | isOff;
             }
         }
+
+#ifdef MTK_AUDIOMIXER_ENABLE_DRC
+        int intValue;
+        if (param.getInt(String8("UpdateACFHCFParameters"), intValue) == NO_ERROR) {
+            for (size_t i = 0; i < mPlaybackThreads.size(); i++) {
+                sp<PlaybackThread> thread = mPlaybackThreads.valueAt(i);
+                thread->setParameters(keyValuePairs);
+            }
+        }
+#endif
+
         return final_result;
     }
 
@@ -1119,9 +2174,64 @@ String8 AudioFlinger::getParameters(audio_io_handle_t ioHandle, const String8& k
             ioHandle, keys.string(), IPCThreadState::self()->getCallingPid());
 
     Mutex::Autolock _l(mLock);
+    ALOGD("+%s(): %s", __FUNCTION__, keys.string());
+
+#ifdef MTK_AUDIO
+#ifdef DEBUG_AUDIO_PCM
+    char value_str[PROPERTY_VALUE_MAX] = { 0 };
+    int count = sizeof(AF_PARAM_KEY)/sizeof(AF_PARAM_KEY[0]);
+    for( int i = 0; i < count; i ++ )
+    {
+        if (keys.compare(String8(AF_PARAM_KEY[i])) == 0) {
+            property_get(AF_PARAM_KEY[i], value_str, "0");
+            String8 ret = String8::format("%s=%s", AF_PARAM_KEY[i], value_str );
+            return ret;
+        }
+    }
+#endif
+    if(keys.compare(String8("VoiceFeatureOn")) == 0){
+        String8 ret = mDL1ONLY ? String8("VoiceFeatureOn=1") : String8("VoiceFeatureOn=0");
+        ALOGD("%s  %s", __FUNCTION__, ret.string());
+        return ret;
+    }
+    if (keys.compare(String8("AudioTestWakelock")) == 0) {
+        PlaybackThread *thread = primaryPlaybackThread_l();
+        return thread->getParameters(keys);
+    }
+#ifdef MTK_LOSSLESS_BT_SUPPORT
+    // reject offload request from policymanager::isOffloadSupport when user didn't turn on LosslessBT config.
+            /// routing
+    if (keys.compare(String8(AudioParameter::keyLosslessBTOffloadSupport)) == 0)
+    {
+        if(!mIsLosslessBTOn){
+            ALOGD("getParamter(Offload_Support) rejected cause setting is off");
+            return String8("");
+        }
+    }else if (keys.compare(String8(AudioParameter::keyLosslessBTStatus)) == 0){
+        String8 ret = mIsLosslessBTOn ? String8("LosslessBT_Status=1") : String8("LosslessBT_Status=0");
+        ALOGD("%s=%d", AudioParameter::keyLosslessBTStatus, mIsLosslessBTOn);
+        return ret;
+    }else if (keys.compare(String8(AudioParameter::keyLosslessBTWorking)) == 0){
+        String8 ret = mIsLosslessBTWorking ? String8("yes") : String8("no");
+        ALOGD("%s=%d", AudioParameter::keyLosslessBTWorking, mIsLosslessBTWorking);
+        return ret;
+    }
+#endif
+#endif
 
     if (ioHandle == AUDIO_IO_HANDLE_NONE) {
         String8 out_s8;
+
+#ifdef HAVE_SRSAUDIOEFFECT
+        ALOGD("SRS get parameter");
+        POSTPRO_PATCH_PARAMS_GET(keys, out_s8);
+#endif
+#ifdef MTK_AUDIO
+        if (keys == String8("EnableStereoOutput")) {
+            ALOGD("getParamter(EnableStereoOutput)=%d", BLOUD_S2M_MODE_NONE == mSteroToMono ? 1:0);
+            out_s8 += String8((BLOUD_S2M_MODE_NONE == mSteroToMono) ? "EnableStereoOutput=1" : "EnableStereoOutput=0");
+        }
+#endif
 
         for (size_t i = 0; i < mAudioHwDevs.size(); i++) {
             char *s;
@@ -1352,16 +2462,16 @@ sp<AudioFlinger::PlaybackThread> AudioFlinger::getEffectThread_l(int sessionId, 
 AudioFlinger::Client::Client(const sp<AudioFlinger>& audioFlinger, pid_t pid)
     :   RefBase(),
         mAudioFlinger(audioFlinger),
+        // FIXME should be a "k" constant not hard-coded, in .h or ro. property, see 4 lines below
+#ifdef MTK_AUDIO
+        mMemoryDealer(new MemoryDealer(1024*1024*4, "AudioFlinger::Client")),
+#else
+        mMemoryDealer(new MemoryDealer(1024*1024, "AudioFlinger::Client")),
+#endif
         mPid(pid),
         mTimedTrackCount(0)
 {
-    size_t heapSize = kClientSharedHeapSizeBytes;
-    // Increase heap size on non low ram devices to limit risk of reconnection failure for
-    // invalidated tracks
-    if (!audioFlinger->isLowRamDevice()) {
-        heapSize *= kClientSharedHeapSizeMultiplier;
-    }
-    mMemoryDealer = new MemoryDealer(heapSize, "AudioFlinger::Client");
+    // 1 MB of address space is good for 32 tracks, 8 buffers each, 4 KB/buffer
 }
 
 // Client destructor must be called with AudioFlinger::mClientLock held
@@ -1779,6 +2889,18 @@ sp<AudioFlinger::PlaybackThread> AudioFlinger::openOutput_l(audio_module_handle_
     }
 
     mHardwareStatus = AUDIO_HW_OUTPUT_OPEN;
+#ifdef MTK_HDMI_MULTI_CHANNEL_SUPPORT
+    ALOGD("mHDMI_Capability 0x%x", mHDMI_Capability);
+    if(mHDMI_Capability !=NULL){
+        ALOGD("mHDMI_ChannelCount 0x%x, *pDevices 0x%x",  mHDMI_Capability->mHDMI_ChannelCount, devices);
+        if( mHDMI_Capability->mHDMI_ChannelCount == 2 &&  devices == AUDIO_DEVICE_OUT_AUX_DIGITAL)
+        {
+            config->channel_mask = AUDIO_CHANNEL_OUT_STEREO;
+            flags = (audio_output_flags_t)(flags &~AUDIO_OUTPUT_FLAG_DIRECT);
+            ALOGD("openOutput() ignore input flags %d, 0x%x",flags, config->channel_mask);
+        }
+    }
+#endif
 
     // FOR TESTING ONLY:
     // This if statement allows overriding the audio policy settings
@@ -1812,11 +2934,37 @@ sp<AudioFlinger::PlaybackThread> AudioFlinger::openOutput_l(audio_module_handle_
 
     mHardwareStatus = AUDIO_HW_IDLE;
 
-    if (status == NO_ERROR) {
+    ALOGV("openOutput_l() openOutputStream returned output %p, sampleRate %d, Format %#x, "
+            "channelMask %#x, status %d",
+            outputStream,
+            config->sample_rate,
+            config->format,
+            config->channel_mask,
+            status);
 
+    if (status == NO_ERROR) {
+#ifdef MTK_AUDIO
+#ifdef MTK_LOSSLESS_BT_SUPPORT
+        // Check offload support when opening offload streamout
+        if((devices & AUDIO_DEVICE_OUT_BLUETOOTH_A2DP) && (config->format & AUDIO_FORMAT_PCM_16_BIT) ){
+            char *result = outputStream->hwDev()->get_parameters( outputStream->hwDev(), AudioParameter::keyLosslessBTOffloadSupport);
+            String8 ok = String8("yes");
+            ALOGD("openOutput_l LosslessBT audio check device %s = %s ", AudioParameter::keyLosslessBTOffloadSupport, result);
+            SetLosslessBTSupport(String8(result)==ok);
+        }
+#endif
+#endif
         PlaybackThread *thread;
         if (flags & AUDIO_OUTPUT_FLAG_COMPRESS_OFFLOAD) {
             thread = new OffloadThread(this, outputStream, *output, devices, mSystemReady);
+#ifdef MTK_AUDIO
+#ifdef MTK_LOSSLESS_BT_SUPPORT
+            // Offload + A2DP device => LosslessBT audio
+            if(devices & AUDIO_DEVICE_OUT_BLUETOOTH_A2DP){
+                SetLosslessBTPlaying(true);
+            }
+#endif
+#endif
             ALOGV("openOutput_l() created offload output: ID %d thread %p", *output, thread);
         } else if ((flags & AUDIO_OUTPUT_FLAG_DIRECT)
                 || !isValidPcmSinkFormat(config->format)
@@ -1893,8 +3041,19 @@ audio_io_handle_t AudioFlinger::openDuplicateOutput(audio_io_handle_t output1,
     }
 
     audio_io_handle_t id = nextUniqueId();
+
+#ifdef MTK_AUDIO
+    uint32_t latencyThread1 = thread1->latency();
+    uint32_t latencyThread2 = thread2->latency();
+    uint32_t latencyMs = latencyThread1 > latencyThread2 ? latencyThread1 : latencyThread2;
+
+    DuplicatingThread *thread = new DuplicatingThread(this, thread1, id, mSystemReady, latencyMs);
+    thread->addOutputTrack(thread2, latencyMs);
+#else
     DuplicatingThread *thread = new DuplicatingThread(this, thread1, id, mSystemReady);
     thread->addOutputTrack(thread2);
+#endif
+
     mPlaybackThreads.add(id, thread);
     // notify client processes of the new output creation
     thread->ioConfigChanged(AUDIO_OUTPUT_OPENED);
@@ -1919,6 +3078,18 @@ status_t AudioFlinger::closeOutput_nonvirtual(audio_io_handle_t output)
         }
 
         ALOGV("closeOutput() %d", output);
+#ifdef MTK_AUDIO
+#ifdef MTK_LOSSLESS_BT_SUPPORT
+        struct audio_stream *s = &(thread->mOutput->stream->common);
+        // pcm + A2DP device => LosslessBT audio disconnect
+        ALOGD("LosslessBT audio device: %#x, format: %#x", thread->mOutDevice, s->get_format(s));
+        if((thread->mOutDevice & AUDIO_DEVICE_OUT_BLUETOOTH_A2DP) &&
+            (s->get_format(s) & AUDIO_FORMAT_PCM_16_BIT)){
+            SetLosslessBTSupport(false);
+        }
+#endif
+#endif
+
 
         if (thread->type() == ThreadBase::MIXER) {
             for (size_t i = 0; i < mPlaybackThreads.size(); i++) {
@@ -1986,7 +3157,7 @@ status_t AudioFlinger::suspendOutput(audio_io_handle_t output)
         return BAD_VALUE;
     }
 
-    ALOGV("suspendOutput() %d", output);
+    ALOGD("suspendOutput() %d", output);
     thread->suspend();
 
     return NO_ERROR;
@@ -2001,7 +3172,7 @@ status_t AudioFlinger::restoreOutput(audio_io_handle_t output)
         return BAD_VALUE;
     }
 
-    ALOGV("restoreOutput() %d", output);
+    ALOGD("restoreOutput() %d", output);
 
     thread->restore();
 
@@ -2698,6 +3869,11 @@ status_t AudioFlinger::moveEffects(int sessionId, audio_io_handle_t srcOutput,
 
     Mutex::Autolock _dl(dstThread->mLock);
     Mutex::Autolock _sl(srcThread->mLock);
+#ifdef DOLBY_DAP_MOVE_EFFECT
+    if (sessionId == DOLBY_MOVE_EFFECT_SIGNAL) {
+        return EffectDapController::instance()->moveEffect(AUDIO_SESSION_OUTPUT_MIX, srcThread, dstThread);
+    }
+#endif // DOLBY_END
     return moveEffectChain_l(sessionId, srcThread, dstThread, false);
 }
 
@@ -2720,8 +3896,14 @@ status_t AudioFlinger::moveEffectChain_l(int sessionId,
     // Check whether the destination thread has a channel count of FCC_2, which is
     // currently required for (most) effects. Prevent moving the effect chain here rather
     // than disabling the addEffect_l() call in dstThread below.
+#ifdef DOLBY_DAP_HW
+    // Allow DAP effect to move to any track. This also affects other effects attached to
+    // the session 0.
+    if (sessionId != AUDIO_SESSION_OUTPUT_MIX && dstThread->mChannelCount != FCC_2) {
+#else
     if ((dstThread->type() == ThreadBase::MIXER || dstThread->isDuplicating()) &&
             dstThread->mChannelCount != FCC_2) {
+#endif
         ALOGW("moveEffectChain_l() effect chain failed because"
                 " destination thread %p channel count(%u) != %u",
                 dstThread, dstThread->mChannelCount, FCC_2);
@@ -2743,6 +3925,10 @@ status_t AudioFlinger::moveEffectChain_l(int sessionId,
     status_t status = NO_ERROR;
     while (effect != 0) {
         srcThread->removeEffect_l(effect);
+#ifdef MTK_AUDIO
+      // when remove effect, clear buffer inside the effect.
+     effect->clearbuf_l();
+#endif
         removed.add(effect);
         status = dstThread->addEffect_l(effect);
         if (status != NO_ERROR) {
@@ -2779,6 +3965,13 @@ status_t AudioFlinger::moveEffectChain_l(int sessionId,
     if (status != NO_ERROR) {
         for (size_t i = 0; i < removed.size(); i++) {
             srcThread->addEffect_l(removed[i]);
+#ifdef DOLBY_DAP_MOVE_EFFECT
+            // removeEffect_l() has stopped the effect if it was active so it must be restarted
+            if (effect->state() == EffectModule::ACTIVE ||
+                    effect->state() == EffectModule::STOPPING) {
+                effect->start();
+            }
+#endif // DOLBY_END
             if (dstChain != 0 && reRegister) {
                 AudioSystem::unregisterEffect(removed[i]->id());
                 AudioSystem::registerEffect(&removed[i]->desc(),

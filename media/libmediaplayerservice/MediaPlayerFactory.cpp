@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
 **
 ** Copyright 2012, The Android Open Source Project
 **
@@ -34,6 +39,16 @@
 #include "StagefrightPlayer.h"
 #include "nuplayer/NuPlayerDriver.h"
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#ifdef MTK_DRM_APP
+#include <drm/DrmManagerClient.h> // OMA DRM v1 implementation
+#include <drm/DrmMtkUtil.h>
+#endif
+#include <media/stagefright/DataSource.h>
+#include <media/stagefright/MediaDefs.h>
+#include <media/stagefright/MetaData.h>
+#include <media/stagefright/FileSource.h>
+#endif
 namespace android {
 
 Mutex MediaPlayerFactory::sLock;
@@ -254,7 +269,11 @@ class NuPlayerFactory : public MediaPlayerFactory::IFactory {
             if (strstr(url,"m3u8")) {
                 return kOurScore;
             }
-
+#ifdef MTK_AOSP_ENHANCEMENT
+            //char value[PROPERTY_VALUE_MAX];
+            if (len >= 5 && !strncasecmp(".smil", &url[len - 5], 5))
+                return kOurScore;
+#endif
             if ((len >= 4 && !strcasecmp(".sdp", &url[len - 4])) || strstr(url, ".sdp?")) {
                 return kOurScore;
             }
@@ -272,6 +291,65 @@ class NuPlayerFactory : public MediaPlayerFactory::IFactory {
                                float /*curScore*/) {
         return 1.0;
     }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    bool SniffSDP(
+            const sp<DataSource> &source, String8 *mimeType, float *confidence,
+            sp<AMessage>* /*meta*/) {
+        const int testLen = 7;
+        uint8_t line[testLen];
+        ssize_t n = source->readAt(0, line, testLen);
+        if (n < testLen)
+            return false;
+
+        const char* nline = "v=0\no=";
+        const char* rnline = "v=0\r\no=";
+
+        if (!memcmp(line, nline, sizeof(nline) - 1) ||
+                !memcmp(line, rnline, sizeof(rnline) - 1)) {
+            *mimeType = MEDIA_MIMETYPE_APPLICATION_SDP;
+            *confidence = 0.5;
+            return true;
+        }
+
+        return false;
+    }
+
+    virtual float scoreFactory(const sp<IMediaPlayer>& /*client*/,
+            int fd,
+            int64_t offset,
+            int64_t length,
+            float curScore) {
+
+        static const float kOurScore = 0.8;
+
+        if (kOurScore <= curScore)
+            return 0.0;
+
+        //char value[PROPERTY_VALUE_MAX];
+        sp<DataSource> dataSource = new FileSource(dup(fd), offset, length);
+        if (!dataSource.get()) {
+            ALOGE("FileSource create fail");
+            return 0.0;
+        }
+
+        String8 mimeType;
+        float confidence = 0.0;
+        bool ret=false;
+        ALOGD("Before sniff local sdp");
+        ret = SniffSDP(dataSource,&mimeType,&confidence,NULL);
+        ALOGD("After sniff local sdp");
+        if (ret) {
+            const char* mime = mimeType.string();
+            ALOGI("is sdp,mime=%s",mime);
+            if (!strcasecmp(mime, MEDIA_MIMETYPE_APPLICATION_SDP)) {
+                return kOurScore;
+            }
+        }
+        return 0.0;
+    }
+
+#endif
 
     virtual float scoreFactory(const sp<IMediaPlayer>& /*client*/,
                                const sp<DataSource>& /*source*/,
@@ -313,7 +391,6 @@ void MediaPlayerFactory::registerBuiltinFactories() {
     registerFactory_l(new StagefrightPlayerFactory(), STAGEFRIGHT_PLAYER);
     registerFactory_l(new NuPlayerFactory(), NU_PLAYER);
     registerFactory_l(new TestPlayerFactory(), TEST_PLAYER);
-
     sInitComplete = true;
 }
 

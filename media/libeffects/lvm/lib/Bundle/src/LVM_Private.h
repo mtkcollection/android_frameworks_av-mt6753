@@ -100,8 +100,11 @@ extern "C" {
 #define LVM_CS_MIN_EFFECT_LEVEL         0         /*CS Minimum Effect Level*/
 #define LVM_CS_MAX_REVERB_LEVEL         100       /*CS Maximum Reverb Level*/
 #define LVM_VIRTUALIZER_MAX_REVERB_LEVEL 100      /*Vitrualizer Maximum Reverb Level*/
-
+#ifdef MTK_AUDIO
+#define LVM_VC_MIXER_TIME              10       /*VC mixer time*/
+#else
 #define LVM_VC_MIXER_TIME              100       /*VC mixer time*/
+#endif
 #define LVM_VC_BALANCE_MAX             96        /*VC balance max value*/
 #define LVM_VC_BALANCE_MIN             -96       /*VC balance min value*/
 

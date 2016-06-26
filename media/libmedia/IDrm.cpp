@@ -658,7 +658,7 @@ status_t BnDrm::onTransact(
 
             Vector<uint8_t> request;
             String8 defaultUrl;
-            DrmPlugin::KeyRequestType keyRequestType = DrmPlugin::kKeyRequestType_Unknown;
+            DrmPlugin::KeyRequestType keyRequestType;
 
             status_t result = getKeyRequest(sessionId, initData, mimeType,
                     keyType, optionalParameters, request, defaultUrl,

@@ -1,4 +1,10 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -100,6 +106,9 @@ private:
         H263,
         AMR_NB,
         AMR_WB,
+#ifdef MTK_AOSP_ENHANCEMENT
+        MPEG_4_SP,
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
     } mMode;
 
     static uint64_t GetNowNTP();
@@ -121,6 +130,12 @@ private:
     void send(const sp<ABuffer> &buffer, bool isRTCP);
 
     DISALLOW_EVIL_CONSTRUCTORS(ARTPWriter);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+private:
+    void parseParams(MetaData *params);
+    void sendMPEG4Data(MediaBuffer *mediaBuf);
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
 };
 
 }  // namespace android

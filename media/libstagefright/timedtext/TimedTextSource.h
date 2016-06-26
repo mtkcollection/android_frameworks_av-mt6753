@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2012 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -33,6 +38,16 @@ class TimedTextSource : public RefBase {
   enum FileType {
       OUT_OF_BAND_FILE_SRT = 1,
       OUT_OF_BAND_FILE_SMI = 2,
+
+#ifdef MTK_AOSP_ENHANCEMENT
+      OUT_OF_BAND_FILE_SSA = 3,
+      OUT_OF_BAND_FILE_ASS = 4,
+      OUT_OF_BAND_FILE_TXT = 5,
+      OUT_OF_BAND_FILE_MPL = 6,
+      OUT_OF_BAND_FILE_SUB = 7,
+      OUT_OF_BAND_FILE_IDXSUB = 8,
+#endif
+
   };
   static sp<TimedTextSource> CreateTimedTextSource(
       const sp<MediaSource>& source);
@@ -57,6 +72,17 @@ class TimedTextSource : public RefBase {
 
  private:
   DISALLOW_EVIL_CONSTRUCTORS(TimedTextSource);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+ public:
+  virtual status_t parse(
+          uint8_t* text,
+          size_t size,
+          int64_t startTimeUs,
+          int64_t endTimeUs,
+          Parcel *parcel) = 0;
+#endif
+
 };
 
 }  // namespace android

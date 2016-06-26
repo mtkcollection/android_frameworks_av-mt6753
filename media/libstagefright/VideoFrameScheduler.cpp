@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2014 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -353,7 +358,12 @@ void VideoFrameScheduler::updateVsync() {
         if (res == OK) {
             ALOGV("vsync time:%lld period:%lld",
                     (long long)stats.vsyncTime, (long long)stats.vsyncPeriod);
+//#ifdef MTK_AOSP_ENHANCEMENT
+       //     mVsyncTime = stats.vsyncSFTime;//WR as not define this para
+        // ATRACE_INT64("VYSNC_Period(ms)", stats.vsyncPeriod / 1000000);
+//#else
             mVsyncTime = stats.vsyncTime;
+//#endif
             mVsyncPeriod = stats.vsyncPeriod;
         } else {
             ALOGW("getDisplayStats returned %d", res);

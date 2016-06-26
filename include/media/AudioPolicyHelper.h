@@ -54,7 +54,12 @@ static audio_stream_type_t audio_attributes_to_stream_type(const audio_attribute
     case AUDIO_USAGE_NOTIFICATION_COMMUNICATION_DELAYED:
     case AUDIO_USAGE_NOTIFICATION_EVENT:
         return AUDIO_STREAM_NOTIFICATION;
-
+//#ifdef MTK_AUDIO
+    case AUDIO_USAGE_BOOT:
+        return AUDIO_STREAM_BOOT;
+    case AUDIO_USAGE_VIBSPK:
+        return AUDIO_STREAM_VIBSPK;
+//#endif
     case AUDIO_USAGE_UNKNOWN:
     default:
         return AUDIO_STREAM_MUSIC;
@@ -107,6 +112,16 @@ static void stream_type_to_audio_attributes(audio_stream_type_t streamType,
         attr->content_type = AUDIO_CONTENT_TYPE_SPEECH;
         attr->usage = AUDIO_USAGE_ASSISTANCE_ACCESSIBILITY;
         break;
+//#ifdef MTK_AUDIO
+    case AUDIO_STREAM_BOOT:
+        attr->content_type = AUDIO_CONTENT_TYPE_BOOT;
+        attr->usage = AUDIO_USAGE_BOOT;
+        break;
+    case AUDIO_STREAM_VIBSPK:
+        attr->content_type = AUDIO_CONTENT_TYPE_VIBSPK;
+        attr->usage = AUDIO_USAGE_VIBSPK;
+        break;
+//#endif
     default:
         ALOGE("invalid stream type %d when converting to attributes", streamType);
     }

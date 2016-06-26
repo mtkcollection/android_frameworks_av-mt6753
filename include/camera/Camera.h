@@ -32,6 +32,7 @@ namespace android {
 class Surface;
 class String8;
 class String16;
+class IMetadataCallbacks;
 
 // ref-counted object for callbacks
 class CameraListener: virtual public RefBase
@@ -171,6 +172,15 @@ protected:
     sp<ICameraRecordingProxyListener>  mRecordingProxyListener;
 
     friend class        CameraBase;
+
+public:
+//!++
+#if 1   // defined(MTK_CAMERA_BSP_SUPPORT)
+        static  status_t    getProperty(String8 const& key, String8& value);
+        static  status_t    setProperty(String8 const& key, String8 const& value);
+#endif
+                status_t    setMetadataCallback(sp<IMetadataCallbacks>& cb);
+//!--
 };
 
 }; // namespace android

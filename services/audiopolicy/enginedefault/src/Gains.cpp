@@ -171,10 +171,10 @@ const VolumeCurvePoint *Gains::sVolumeProfiles[AUDIO_STREAM_CNT]
     },
     { // AUDIO_STREAM_TTS
       // "Transmitted Through Speaker": always silent except on DEVICE_CATEGORY_SPEAKER
-        Gains::sSilentVolumeCurve,    // DEVICE_CATEGORY_HEADSET
-        Gains::sFullScaleVolumeCurve, // DEVICE_CATEGORY_SPEAKER
-        Gains::sSilentVolumeCurve,    // DEVICE_CATEGORY_EARPIECE
-        Gains::sSilentVolumeCurve     // DEVICE_CATEGORY_EXT_MEDIA
+        Gains::sSilentVolumeCurve, // DEVICE_CATEGORY_HEADSET
+        Gains::sLinearVolumeCurve, // DEVICE_CATEGORY_SPEAKER
+        Gains::sSilentVolumeCurve, // DEVICE_CATEGORY_EARPIECE
+        Gains::sSilentVolumeCurve  // DEVICE_CATEGORY_EXT_MEDIA
     },
     { // AUDIO_STREAM_ACCESSIBILITY
         Gains::sDefaultMediaVolumeCurve, // DEVICE_CATEGORY_HEADSET
@@ -182,6 +182,22 @@ const VolumeCurvePoint *Gains::sVolumeProfiles[AUDIO_STREAM_CNT]
         Gains::sDefaultMediaVolumeCurve, // DEVICE_CATEGORY_EARPIECE
         Gains::sDefaultMediaVolumeCurve  // DEVICE_CATEGORY_EXT_MEDIA
     },
+//#ifdef MTK_AUDIO, audio.h always enable , don't mask MTK_AUDIO
+    {
+        // AUDIO_STREAM_BOOT
+        Gains::sDefaultMediaVolumeCurve, // DEVICE_CATEGORY_HEADSET
+        Gains::sSpeakerMediaVolumeCurve, // DEVICE_CATEGORY_SPEAKER
+        Gains::sDefaultMediaVolumeCurve, // DEVICE_CATEGORY_EARPIECE
+        Gains::sDefaultMediaVolumeCurve  // DEVICE_CATEGORY_EXT_MEDIA
+    },
+    {
+        // AUDIO_STREAM_VIBSPK
+        Gains::sDefaultMediaVolumeCurve, // DEVICE_CATEGORY_HEADSET
+        Gains::sSpeakerMediaVolumeCurve, // DEVICE_CATEGORY_SPEAKER
+        Gains::sDefaultMediaVolumeCurve, // DEVICE_CATEGORY_EARPIECE
+        Gains::sDefaultMediaVolumeCurve  // DEVICE_CATEGORY_EXT_MEDIA
+    },
+//#endif
     { // AUDIO_STREAM_REROUTING
         Gains::sFullScaleVolumeCurve, // DEVICE_CATEGORY_HEADSET
         Gains::sFullScaleVolumeCurve, // DEVICE_CATEGORY_SPEAKER

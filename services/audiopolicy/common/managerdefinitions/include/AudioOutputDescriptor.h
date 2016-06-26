@@ -23,6 +23,11 @@
 #include <utils/KeyedVector.h>
 #include <system/audio.h>
 
+//<MTK_AUDIO_ADD
+#include <utils/Mutex.h>
+#include <utils/threads.h>
+//MTK_AUDIO_ADD>
+
 namespace android {
 
 class IOProfile;
@@ -79,7 +84,11 @@ public:
     bool mStrategyMutedByDevice[NUM_STRATEGIES]; // strategies muted because of incompatible
                                         // device selection. See checkDeviceMuteStrategies()
     AudioPolicyClientInterface *mClientInterface;
-
+//<MTK_AUDIO_ADD
+    Mutex   mOutputDescStreamLock[AUDIO_STREAM_CNT];
+    audio_devices_t mMutePrevDevice;
+    int mMuteTid[AUDIO_STREAM_CNT];     // mute request tid
+//MTK_AUDIO_ADD>
 protected:
     audio_port_handle_t mId;
 };

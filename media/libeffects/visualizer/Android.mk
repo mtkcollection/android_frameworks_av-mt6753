@@ -18,6 +18,32 @@ LOCAL_MODULE:= libvisualizer
 
 LOCAL_C_INCLUDES := \
 	$(call include-path-for, audio-effects)
+	
+ifeq ($(strip $(BOARD_USES_MTK_AUDIO)),true)
+ ifeq ($(strip $(MTK_HIGH_RESOLUTION_AUDIO_SUPPORT)),true)
+#  LOCAL_CFLAGS += -DMTK_HD_AUDIO_ARCHITECTURE
+ endif
+ 
+#ifeq ($(strip $(MTK_BESLOUDNESS_SUPPORT)),yes)
+    LOCAL_CFLAGS += -DMTK_AUDIOMIXER_ENABLE_DRC
+#endif
 
+LOCAL_C_INCLUDES += \
+    $(TOP)/mediatek/frameworks-ext/av/services/audioflinger \
+    $(TOP)/frameworks/av/services/audioflinger \
+    $(MTK_PATH_SOURCE)/external/AudioCompensationFilter \
+    $(MTK_PATH_SOURCE)/external/AudioComponentEngine \
+    $(MTK_PATH_SOURCE)/external/nvram/libnvram \
+    $(MTK_PATH_SOURCE)/external/bessound_HD \
+    $(MTK_PATH_SOURCE)/external/limiter \
+    $(MTK_PATH_SOURCE)/external/shifter \
+    $(MTK_PATH_SOURCE)/external/bessurround_mtk/inc    
+
+ifeq ($(MTK_AUDIO),yes)
+LOCAL_C_INCLUDES+= \
+   $(TOP)/$(MTK_PATH_SOURCE)/hardware/audio/common/include
+endif
+
+endif
 
 include $(BUILD_SHARED_LIBRARY)

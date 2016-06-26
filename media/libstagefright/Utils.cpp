@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -37,6 +42,14 @@
 
 namespace android {
 
+#ifdef MTK_AOSP_ENHANCEMENT
+static void convertMeta_Audio(const sp<MetaData> &meta, sp<AMessage> msg);
+static void convertMeta_MoreKey(const sp<MetaData> &meta, sp<AMessage> msg);
+static void convertMeta_MoreData(const sp<MetaData> &meta, sp<AMessage> msg);
+static void convertMeta_Opus(const sp<MetaData> &meta, sp<AMessage> msg);
+static void convertMsg_Audio(const sp<AMessage> &msg, sp<MetaData> meta);
+static void convertMsg_More(const sp<AMessage> &msg, sp<MetaData> meta, AString mime);
+#endif
 uint16_t U16_AT(const uint8_t *ptr) {
     return ptr[0] << 8 | ptr[1];
 }
@@ -169,13 +182,20 @@ status_t convertMetaDataToMessage(
 
         int32_t isADTS;
         if (meta->findInt32(kKeyIsADTS, &isADTS)) {
+#ifdef MTK_AOSP_ENHANCEMENT
+            msg->setInt32("is-adts", isADTS);
+#else
             msg->setInt32("is-adts", true);
+#endif
         }
 
         int32_t aacProfile = -1;
         if (meta->findInt32(kKeyAACAOT, &aacProfile)) {
             msg->setInt32("aac-profile", aacProfile);
         }
+#ifdef MTK_AOSP_ENHANCEMENT
+        convertMeta_Audio(meta, msg);
+#endif
     }
 
     int32_t maxInputSize;
@@ -199,10 +219,13 @@ status_t convertMetaDataToMessage(
     }
 
     int32_t fps;
-    if (meta->findInt32(kKeyFrameRate, &fps) && fps > 0) {
+    if (meta->findInt32(kKeyFrameRate, &fps)) {
         msg->setInt32("frame-rate", fps);
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    convertMeta_MoreKey(meta, msg);
+#endif
     uint32_t type;
     const void *data;
     size_t size;
@@ -233,7 +256,11 @@ status_t convertMetaDataToMessage(
         ptr += 6;
         size -= 6;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        sp<ABuffer> buffer = new (std::nothrow) ABuffer(4096);
+#else
         sp<ABuffer> buffer = new (std::nothrow) ABuffer(1024);
+#endif
         if (buffer.get() == NULL || buffer->base() == NULL) {
             return NO_MEMORY;
         }
@@ -266,7 +293,12 @@ status_t convertMetaDataToMessage(
 
         msg->setBuffer("csd-0", buffer);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        // mtk80902: ALPS00457011 - special file with big sps/pps
+        buffer = new (std::nothrow) ABuffer(4096);
+#else
         buffer = new (std::nothrow) ABuffer(1024);
+#endif
         if (buffer.get() == NULL || buffer->base() == NULL) {
             return NO_MEMORY;
         }
@@ -307,11 +339,30 @@ status_t convertMetaDataToMessage(
         msg->setBuffer("csd-1", buffer);
     } else if (meta->findData(kKeyHVCC, &type, &data, &size)) {
         const uint8_t *ptr = (const uint8_t *)data;
-
+// Google modification conflict with mtk modification, so remove the patch.
+// The configurationVersion is 0 in mtk hvcc, but it is 1 by google default.
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (size < 23) {
+            ALOGE("b/23680780");
+            return BAD_VALUE;
+        }
+#else
         if (size < 23 || ptr[0] != 1) {  // configurationVersion == 1
             ALOGE("b/23680780");
             return BAD_VALUE;
         }
+#endif
+
+#ifdef MTK_AOSP_ENHANCEMENT
+        // the mkv file(hevc video) made by Divx
+        // may be with configurationVersion = 0
+        // set mtk hvcc, for trim feature
+        sp<ABuffer> bufferHvcc = new ABuffer(size);
+        memcpy(bufferHvcc->data(), data, size);
+
+        msg->setBuffer("mtk-hvcc", bufferHvcc);
+        ALOGI("set mtk-hvcc msg");
+#endif
         uint8_t profile __unused = ptr[1] & 31;
         uint8_t level __unused = ptr[12];
         ptr += 22;
@@ -371,7 +422,16 @@ status_t convertMetaDataToMessage(
 
     } else if (meta->findData(kKeyESDS, &type, &data, &size)) {
         ESDS esds((const char *)data, size);
+#ifdef MTK_AOSP_ENHANCEMENT
+        // mtk80902: ALPS00568022
+        status_t errcode = esds.InitCheck();
+        if (errcode != OK) {
+            ALOGE("esds init check fail with error %d", errcode);
+            return -EINVAL;
+        }
+#else
         CHECK_EQ(esds.InitCheck(), (status_t)OK);
+#endif
 
         const void *codec_specific_data;
         size_t codec_specific_data_size;
@@ -451,7 +511,14 @@ status_t convertMetaDataToMessage(
         buffer->meta()->setInt32("csd", true);
         buffer->meta()->setInt64("timeUs", 0);
         msg->setBuffer("csd-2", buffer);
+#ifdef MTK_AOSP_ENHANCEMENT
+        convertMeta_Opus(meta, msg);
+#endif
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+    else
+        convertMeta_MoreData(meta, msg);
+#endif
 
     *format = msg;
 
@@ -646,6 +713,9 @@ void convertMessageToMetaData(const sp<AMessage> &msg, sp<MetaData> &meta) {
         if (msg->findInt32("is-adts", &isADTS)) {
             meta->setInt32(kKeyIsADTS, isADTS);
         }
+#ifdef MTK_AOSP_ENHANCEMENT
+        convertMsg_Audio(msg, meta);
+#endif
     }
 
     int32_t maxInputSize;
@@ -664,10 +734,13 @@ void convertMessageToMetaData(const sp<AMessage> &msg, sp<MetaData> &meta) {
     }
 
     int32_t fps;
-    if (msg->findInt32("frame-rate", &fps) && fps > 0) {
+    if (msg->findInt32("frame-rate", &fps)) {
         meta->setInt32(kKeyFrameRate, fps);
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    convertMsg_More(msg, meta, mime);
+#endif
     // reassemble the csd data into its original form
     sp<ABuffer> csd0;
     if (msg->findBuffer("csd-0", &csd0)) {
@@ -685,6 +758,9 @@ void convertMessageToMetaData(const sp<AMessage> &msg, sp<MetaData> &meta) {
             // for transporting the CSD to muxers.
             reassembleESDS(csd0, esds);
             meta->setData(kKeyESDS, kKeyESDS, esds, sizeof(esds));
+#ifdef MTK_AOSP_ENHANCEMENT
+            ALOGI("aac &mpeg4v :%s csd0 set kKeyESDS, size:%lld", mime.c_str(), (long long)sizeof(esds));
+#endif
         }
     }
 
@@ -765,6 +841,11 @@ static const struct mime_conv_t mimeLookup[] = {
     { MEDIA_MIMETYPE_AUDIO_AAC,         AUDIO_FORMAT_AAC },
     { MEDIA_MIMETYPE_AUDIO_VORBIS,      AUDIO_FORMAT_VORBIS },
     { MEDIA_MIMETYPE_AUDIO_OPUS,        AUDIO_FORMAT_OPUS},
+#ifdef MTK_AUDIO_DDPLUS_SUPPORT
+    { MEDIA_MIMETYPE_AUDIO_AC3,         AUDIO_FORMAT_AC3},
+    { MEDIA_MIMETYPE_AUDIO_EAC3,        AUDIO_FORMAT_E_AC3},
+    { MEDIA_MIMETYPE_AUDIO_EAC3_JOC,    AUDIO_FORMAT_E_AC3},
+#endif
     { 0, AUDIO_FORMAT_INVALID }
 };
 
@@ -823,6 +904,17 @@ bool canOffloadStream(const sp<MetaData>& meta, bool hasVideo,
         return false;
     }
     CHECK(meta->findCString(kKeyMIMEType, &mime));
+#ifdef MTK_AOSP_ENHANCEMENT
+#ifdef MTK_LOSSLESS_BT_SUPPORT
+    int32_t isAacADTS = 0;
+    if (!strcasecmp(MEDIA_MIMETYPE_AUDIO_AAC, mime)) {
+        if (!meta->findInt32(kKeyIsADTS, &isAacADTS) || isAacADTS == 0) {
+            ALOGD("canOffloadStream--adif/adts without header, not offload.");
+            return false;
+        }
+    }
+#endif
+#endif
 
     audio_offload_info_t info = AUDIO_INFO_INITIALIZER;
 
@@ -1007,5 +1099,336 @@ void readFromAMessage(
     *sync = settings;
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+static void convertMeta_Audio(const sp<MetaData> &meta, sp<AMessage> msg) {
+    int32_t isAviRawAac;
+    if (meta->findInt32(kKeyAVIRawAac, &isAviRawAac)) {
+        msg->setInt32("is-rawAacInAvi", isAviRawAac);
+    }
+
+    int32_t isADIF;
+    if (meta->findInt32(kKeyIsAACADIF, &isADIF)) {
+        msg->setInt32("is-adif", isADIF);
+    }
+
+    int32_t aacPro = -1;
+    if (meta->findInt32(kKeyAACProfile, &aacPro)) {
+        msg->setInt32("aac-profile", aacPro);
+    }
+
+    int32_t kBitRate;
+    if (meta->findInt32(kKeyBitRate, &kBitRate)) {
+        msg->setInt32("bitrate", kBitRate);
+        ALOGD("kKeyBitRate in utils is %d", kBitRate);
+    }
+
+    int32_t endian;
+    if (meta->findInt32(kKeyEndian, &endian)) {
+        msg->setInt32("endian", endian);
+        ALOGD("kKeyEndian in utils is %d", endian);
+    }
+
+    int32_t bitWidth;
+    if (meta->findInt32(kKeyBitWidth, &bitWidth)) {
+        msg->setInt32("bit-width", bitWidth);
+        ALOGD("kKeyBitWidth in utils is %d", bitWidth);
+    }
+
+    int32_t pcmType;
+    if (meta->findInt32(kKeyPCMType, &pcmType)) {
+        msg->setInt32("pcm-type", pcmType);
+        ALOGD("kKeyPCMType in utils is %d", pcmType);
+    }
+
+    int32_t channelAssignment;
+    if (meta->findInt32(kKeyChannelAssignment, &channelAssignment)) {
+        msg->setInt32("channel-assign", channelAssignment);
+        ALOGD("kKeyChannelAssignment in utils is %d", channelAssignment);
+    }
+
+    int32_t numericalType;
+    if (meta->findInt32(kKeyNumericalType, &numericalType)) {
+        msg->setInt32("numerical-type", numericalType);
+        ALOGD("kKeyNumericalType in utils is %d", numericalType);
+    }
+
+    int32_t blockAlign;
+    if (meta->findInt32(kKeyBlockAlign, &blockAlign)) {
+        msg->setInt32("block-align", blockAlign);
+        ALOGD("kKeyBlockAlign in utils is %d", blockAlign);
+    }
+
+    int32_t bitPerSample;
+    if (meta->findInt32(kKeyBitsPerSample, &bitPerSample)) {
+        msg->setInt32("bit-per-sample", bitPerSample);
+        ALOGD("kKeyBitsPerSample in utils is %d", bitPerSample);
+    }
+
+    int32_t numSamples;
+    if (meta->findInt32(kKeyNumSamples, &numSamples)) {
+        msg->setInt32("number-samples", numSamples);
+        ALOGD("kKeyNumSamples in utils is %d", numSamples);
+    }
+
+    int32_t IsFromMp3Extractor;
+    if (meta->findInt32(kKeyIsFromMP3Extractor, &IsFromMp3Extractor)) {
+        msg->setInt32("is-from-mp3extractor", IsFromMp3Extractor);
+        ALOGD("kKeyIsFromMP3Extractor in utils is %d", IsFromMp3Extractor);
+    }
+    int32_t FinalSample;
+    if (meta->findInt32(kKeyFinalSample, &FinalSample)) {
+        msg->setInt32("ape-final-sample", FinalSample);
+        ALOGD("kKeyFinalSample in utils is %d", FinalSample);
+    }
+    int32_t TotalFrame;
+    if (meta->findInt32(kKeyTotalFrame, &TotalFrame)) {
+        msg->setInt32("ape-total-frame", TotalFrame);
+        ALOGD("kKeyTotalFrame in utils is %d", TotalFrame);
+    }
+    int32_t SampPerFrame;
+    if (meta->findInt32(kKeySamplesperframe, &SampPerFrame)) {
+        msg->setInt32("ape-sample-per-frame", SampPerFrame);
+        ALOGD("kKeySamplesperframe in utils is %d", SampPerFrame);
+    }
+    int32_t CompType;
+    if (meta->findInt32(kkeyComptype, &CompType)) {
+        msg->setInt32("ape-compression-type", CompType);
+        ALOGD("kkeyComptype in utils is %d", CompType);
+    }
+    int32_t FileType;
+    if (meta->findInt32(kKeyFileType, &FileType)) {
+        msg->setInt32("ape-file-type", FileType);
+        ALOGD("kKeyFileType in utils is %d", FileType);
+    }
+    int32_t BufferSize;
+    if (meta->findInt32(kKeyBufferSize, &BufferSize)) {
+        msg->setInt32("ape-buffer-size", BufferSize);
+        ALOGD("kKeyBufferSize in utils is %d", BufferSize);
+    }
+    int32_t ApeBitRate;
+    if (meta->findInt32(kkeyApebit, &ApeBitRate)) {
+        msg->setInt32("ape-bit-rate", ApeBitRate);
+        ALOGD("kkeyApebit in utils is %d", ApeBitRate);
+    }
+    int32_t ApeChl;
+    if (meta->findInt32(kkeyApechl, &ApeChl)) {
+        msg->setInt32("ape-chl", ApeChl);
+        ALOGD("kkeyApechl in utils is %d", ApeChl);
+    }
+    int64_t newframe;  // for ape seek on acodec
+    if (meta->findInt64(kKeynewframe, &newframe)) {
+        msg->setInt64("newframe", newframe);
+    }
+
+    int64_t seekbyte;  // for ape seek on acodec
+    if (meta->findInt64(kKeyseekbyte, &seekbyte)) {
+        msg->setInt64("seekbyte", seekbyte);
+    }
+}
+
+static void convertMeta_MoreKey(const sp<MetaData> &meta, sp<AMessage> msg) {
+    int32_t colorformat;
+    if (meta->findInt32(kKeyColorFormat, &colorformat)) {
+        msg->setInt32("color-format", colorformat);
+    }
+    // mtk80902: porting meta settings from AwesomePlayer
+    int32_t n;
+    if (meta->findInt32(kKeyRTSPSeekMode, &n)) {
+        msg->setInt32("rtsp-seek-mode", n);
+    }
+    if (meta->findInt32(kKeyMaxQueueBuffer, &n)) {
+        msg->setInt32("max-queue-buffer", n);
+    }
+    if (meta->findInt32(kKeyInputBufferNum, &n)) {
+        msg->setInt32("input-buffer-number", n);
+    }
+    if (meta->findInt32(kKeyIsProtectDrm, &n)) {
+        msg->setInt32("IsProtectVideo", n);
+    }
+    // add by mtk80691--for sdp over http
+    const char* uri = NULL;
+    if (meta->findCString(kKeyUri, &uri) && uri) {
+        msg->setString("rtsp-uri", uri);
+    }
+
+    void* sdp = NULL;
+    if (meta->findPointer(kKeySDP, &sdp) && sdp) {
+        const sp<RefBase> msessiondesc = (RefBase*)sdp;
+        msg->setObject("rtsp-sdp", msessiondesc);
+    }
+
+#ifdef MTK_SLOW_MOTION_VIDEO_SUPPORT
+    int32_t mtk_slowmotion_speed = 0;
+    if (meta->findInt32(kKeySlowMotionSpeedValue, &mtk_slowmotion_speed)) {
+        msg->setInt32("slow-motion-speed-value", mtk_slowmotion_speed);
+    }
+    int32_t nonRefPFreq = 0;
+    if (meta->findInt32(kKeyNonRefPFreq, &nonRefPFreq)) {
+        msg->setInt32("non-refP-Freq", nonRefPFreq);
+        ALOGD("convertMetaDataToMessage: kKeyNonRefPFreq in utils is %d", nonRefPFreq);
+    }
+#endif
+
+    int32_t isMultiSlice;
+    if (meta->findInt32(KKeyMultiSliceBS, &isMultiSlice) && isMultiSlice != 0) {
+        msg->setInt32("is-multi-slice", 1);
+    }
+}
+
+static void convertMeta_MoreData(const sp<MetaData> &meta, sp<AMessage> msg) {
+    uint32_t type;
+    const void *data;
+    size_t size;
+    if (meta->findData(kKeyFlacMetaInfo, &type, &data, &size)) {
+        sp<ABuffer> buffer = new ABuffer(size);
+        memcpy(buffer->data(), data, size);
+
+        msg->setBuffer("flacinfo", buffer);
+    }
+    else if (meta->findData(kKeyExtraDataPointer, &type, &data, &size)) {
+        sp<ABuffer> buffer = new ABuffer(size);
+        memcpy(buffer->data(), data, size);
+
+        msg->setBuffer("extra-data-pointer", buffer);
+    }
+    else if (meta->findData(kKeyMPEG4VOS, &type, &data, &size)) {
+        sp<ABuffer> buffer = new ABuffer(size);
+        memcpy(buffer->data(), data, size);
+
+        buffer->meta()->setInt32("csd", true);
+        buffer->meta()->setInt64("timeUs", 0);
+
+        msg->setBuffer("csd-0", buffer);
+    }
+    else if (meta->findData(kKeyCodecConfigInfo, &type, &data, &size)) {
+        sp<ABuffer> buffer = new ABuffer(size);
+        memcpy(buffer->data(), data, size);
+
+        buffer->meta()->setInt32("csd", true);
+        buffer->meta()->setInt64("timeUs", 0);
+
+        msg->setBuffer("csd-0", buffer);
+    }
+    else if (meta->findData(kKeyWMVC, &type, &data, &size)) {
+        sp<ABuffer> buffer = new ABuffer(size);
+        memcpy(buffer->data(), data, size);
+
+        buffer->meta()->setInt32("csd", true);
+        buffer->meta()->setInt64("timeUs", 0);
+
+        msg->setBuffer("csd-0", buffer);
+    }
+    else if (meta->findData(kKeyWMAC, &type, &data, &size)) {
+        sp<ABuffer> buffer = new ABuffer(size);
+        memcpy(buffer->data(), data, size);
+
+        buffer->meta()->setInt32("csd", true);
+        buffer->meta()->setInt64("timeUs", 0);
+
+        msg->setBuffer("csd-0", buffer);
+    }
+    else if (meta->findData(kKeyWMAPROC, &type, &data, &size)) {
+        sp<ABuffer> buffer = new ABuffer(size);
+        memcpy(buffer->data(), data, size);
+
+        buffer->meta()->setInt32("csd", true);
+        buffer->meta()->setInt64("timeUs", 0);
+
+        msg->setBuffer("csd-0", buffer);
+    }
+    else if (meta->findData(kKeyALACC, &type, &data, &size)) {
+        sp<ABuffer> buffer = new ABuffer(size);
+        memcpy(buffer->data(), data, size);
+
+        buffer->meta()->setInt32("csd", true);
+        buffer->meta()->setInt64("timeUs", 0);
+
+        msg->setBuffer("csd-0", buffer);
+    }
+      else if (meta->findData(kKeyWMVC, &type, &data, &size)) {
+        sp<ABuffer> buffer = new ABuffer(size);
+        memcpy(buffer->data(), data, size);
+
+        buffer->meta()->setInt32("csd", true);
+        buffer->meta()->setInt64("timeUs", 0);
+
+        msg->setBuffer("csd-0", buffer);
+    }
+}
+
+static void convertMeta_Opus(const sp<MetaData> &meta, sp<AMessage> msg) {
+    // for turn off and on screen,resubmit full csd frame with csd-1 & csd-2
+    int64_t OpusCosecDelay;
+    if (meta->findInt64(kKeyOpusCodecDelay, &OpusCosecDelay)) {
+        sp<ABuffer> buffer = new ABuffer(sizeof(OpusCosecDelay));
+        memcpy(buffer->data(), ((void *)&OpusCosecDelay), sizeof(OpusCosecDelay));
+
+        buffer->meta()->setInt32("csd", true);
+        buffer->meta()->setInt64("timeUs", 0);
+        msg->setBuffer("csd-1", buffer);
+    }
+
+    int64_t OpusSeekPreRoll;
+    if (meta->findInt64(kKeyOpusSeekPreRoll, &OpusSeekPreRoll)) {
+        sp<ABuffer> buffer = new ABuffer(sizeof(OpusSeekPreRoll));
+        memcpy(buffer->data(), ((void *)&OpusSeekPreRoll), sizeof(OpusSeekPreRoll));
+
+        buffer->meta()->setInt32("csd", true);
+        buffer->meta()->setInt64("timeUs", 0);
+        msg->setBuffer("csd-2", buffer);
+    }
+}
+
+static void convertMsg_Audio(const sp<AMessage> &msg, sp<MetaData> meta) {
+    int32_t blockAlign;
+    if (msg->findInt32("block-align", &blockAlign)) {
+        meta->setInt32(kKeyBlockAlign, blockAlign);
+    }
+
+    int32_t bitPerSample;
+    if (msg->findInt32("bit-per-sample", &bitPerSample)) {
+        meta->setInt32(kKeyBitsPerSample, bitPerSample);
+    }
+
+    sp<ABuffer> extraDataBuffer;
+    if (msg->findBuffer("extra-data-pointer", &extraDataBuffer)) {
+        meta->setData(kKeyExtraDataPointer, 0,
+                extraDataBuffer->data(), extraDataBuffer->size());
+    }
+    int32_t aacPro = -1;
+    if (msg->findInt32("aac-profile", &aacPro)) {
+        meta->setInt32(kKeyAACProfile, aacPro);
+    }
+}
+
+static void convertMsg_More(const sp<AMessage> &msg, sp<MetaData> meta, AString mime) {
+#ifdef MTK_SLOW_MOTION_VIDEO_SUPPORT
+    int32_t mtk_slowmotion_speed = 0;
+    if (msg->findInt32("slow-motion-speed-value", &mtk_slowmotion_speed)) {
+        meta->setInt32(kKeySlowMotionSpeedValue, mtk_slowmotion_speed);
+    }
+    int32_t nonrefpfreq = 0;
+    if (msg->findInt32("nonrefp-freq", &nonrefpfreq)) {
+        meta->setInt32(kKeyNonRefPFreq, nonrefpfreq);
+        ALOGD("convertMessageToMetaData: kKeyNonRefPFreq in utils is %d", nonrefpfreq);
+    }
+#endif
+
+    sp<ABuffer> csdHevc;
+    if (mime.startsWith("video/hevc")) {
+        if (msg->findBuffer("mtk-hvcc", &csdHevc)) {
+            ALOGI("video:%s csd set kKeyHVCC, size:%zu", mime.c_str(), csdHevc->size());
+            meta->setData(kKeyHVCC, kKeyHVCC, csdHevc->data(), csdHevc->size());
+        }
+        return;
+    }
+
+    int32_t isMultiSlice;
+    if (msg->findInt32("is-multi-slice", &isMultiSlice) && isMultiSlice != 0) {
+        meta->setInt32(KKeyMultiSliceBS, 1);
+    }
+}
+
+#endif
 }  // namespace android
 

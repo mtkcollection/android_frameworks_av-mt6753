@@ -1,3 +1,8 @@
+#
+# Copyright (C) 2014 MediaTek Inc.
+# Modification based on code covered by the mentioned copyright
+# and/or permission notice(s).
+#
 # Copyright 2013 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -36,6 +41,15 @@ LOCAL_C_INCLUDES := \
 
 LOCAL_CFLAGS += -Wno-multichar
 #LOCAL_CFLAGS += -UNDEBUG
+
+ifeq ($(strip $(MTK_USE_ANDROID_MM_DEFAULT_CODE)),yes)
+  #LOCAL_CFLAGS += -DANDROID_DEFAULT_CODE
+else  
+  LOCAL_C_INCLUDES += $(TOP)/$(MTK_ROOT)/kernel/include/linux/vcodec \
+
+  LOCAL_SHARED_LIBRARIES += \
+        libvcodecdrv  
+endif
 
 LOCAL_MODULE_TAGS := optional
 

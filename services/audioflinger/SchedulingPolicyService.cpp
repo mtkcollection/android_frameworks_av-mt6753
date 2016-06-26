@@ -20,7 +20,7 @@
 #include <binder/IServiceManager.h>
 #include <utils/Mutex.h>
 #include "ISchedulingPolicyService.h"
-#include "mediautils/SchedulingPolicyService.h"
+#include "SchedulingPolicyService.h"
 
 namespace android {
 

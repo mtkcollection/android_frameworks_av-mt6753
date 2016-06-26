@@ -16,6 +16,9 @@
 
 #define LOG_TAG "APM::Devices"
 //#define LOG_NDEBUG 0
+#ifdef MTK_AUDIO
+//#define LOG_NDEBUG 0
+#endif
 
 #include "DeviceDescriptor.h"
 #include "AudioGain.h"
@@ -153,6 +156,12 @@ void DeviceVector::loadDevicesFromTag(char *tag,
             audio_devices_t type = ConfigParsingUtils::stringToEnum(sDeviceTypeToEnumTable,
                                  ARRAY_SIZE(sDeviceTypeToEnumTable),
                                  devTag);
+#if defined(MTK_AUDIO)&&defined(DISABLE_EARPIECE)
+            if (type == AUDIO_DEVICE_OUT_EARPIECE) {
+                devTag = strtok(NULL, "|");
+                continue;
+            }
+#endif
             if (type != AUDIO_DEVICE_NONE) {
                 sp<DeviceDescriptor> dev = new DeviceDescriptor(type);
                 if (type == AUDIO_DEVICE_IN_REMOTE_SUBMIX ||

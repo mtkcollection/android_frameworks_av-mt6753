@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright 2013, The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -77,6 +82,7 @@ protected:
 private:
     enum {
         kWhatSenderNotify,
+
     };
 
     enum Mode {
@@ -92,6 +98,9 @@ private:
         List<sp<ABuffer> > mAccessUnits;
         ssize_t mPacketizerTrackIndex;
         bool mIsAudio;
+#ifdef MTK_AOSP_ENHANCEMENT
+        bool mFirstAccessUnitIsValid;
+#endif
     };
 
     sp<ANetworkSession> mNetSession;
@@ -124,6 +133,17 @@ private:
             sp<ABuffer> *tsPackets);
 
     DISALLOW_EVIL_CONSTRUCTORS(MediaSender);
+
+
+#ifdef MTK_AOSP_ENHANCEMENT
+private:
+    bool recordAudioOnly;
+    bool mAllTracksHaveAccessUnit;
+    bool allTracksHaveAccessUnit() ;
+    bool avsync_enable;
+#endif
+
+
 };
 
 }  // namespace android

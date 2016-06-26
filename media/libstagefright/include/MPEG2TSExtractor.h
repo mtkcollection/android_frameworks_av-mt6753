@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -61,6 +66,8 @@ private:
     // If no video track is present, audio track will be used instead.
     KeyedVector<int64_t, off64_t> *mSeekSyncPoints;
 
+    off64_t mOffsetPAT;
+
     off64_t mOffset;
 
     void init();
@@ -73,7 +80,33 @@ private:
     status_t feedUntilBufferAvailable(const sp<AnotherPacketSource> &impl);
 
     DISALLOW_EVIL_CONSTRUCTORS(MPEG2TSExtractor);
+#ifdef MTK_AOSP_ENHANCEMENT
+public:
+    void seekTo(int64_t seekTimeUs);
+    bool getSeeking();
+    void setVideoState(bool state);
+    bool getVideoState(void);
+    bool consumeData(sp<AnotherPacketSource> impl,int64_t timeUS,bool isAudio);
+    bool needRemoveData(sp<AnotherPacketSource> impl,int64_t timeUs,bool isAudio);
+private:
+    int64_t mDurationUs;
+    int64_t mSeekTimeUs;
+    bool mSeeking;
+    bool mFindingMaxPTS;
+    bool End_OF_FILE;
+    uint64_t mMaxcount;
+    off64_t mSeekingOffset;
+    off64_t mFileSize;
+    off64_t mMinOffset;
+    off64_t mMaxOffset;
+    bool mVideoUnSupportedByDecoder;
+    status_t parseMaxPTS();
+    uint64_t getDurationUs();
+    bool findPAT();
+#endif
 };
+
+bool findSyncWord(const sp<DataSource> &source,off64_t StartOffset, uint64_t size, size_t PacketSize, off64_t &NewOffset);
 
 bool SniffMPEG2TS(
         const sp<DataSource> &source, String8 *mimeType, float *confidence,

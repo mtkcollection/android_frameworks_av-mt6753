@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2012 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -282,12 +287,52 @@ static int Downmix_Process(effect_handle_t self,
         return -ENODATA;
     }
 
+#ifdef MTK_AUDIO
+    int16_t *pSrcAlloc = NULL;
+    int16_t *pDstAlloc = NULL;
+    size_t numFrames = outBuffer->frameCount;
+    if (pDwmModule->config.inputCfg.format == AUDIO_FORMAT_PCM_16_BIT || pDwmModule->config.inputCfg.format == AUDIO_FORMAT_PCM_8_BIT) {
+        pSrc = inBuffer->s16;
+        pDst = outBuffer->s16;
+    } else {
+        size_t i;
+        int32_t *pSrc32;
+        int channel_count =pDownmixer->input_channel_count, shift=0;
+
+        pSrcAlloc = malloc(inBuffer->frameCount * channel_count * sizeof(int16_t));
+        pDstAlloc = malloc(outBuffer->frameCount * 2 * sizeof(int16_t));
+
+        pSrc32 = inBuffer->s32;
+        pDst = pSrcAlloc;
+        shift = pDwmModule->config.inputCfg.format == AUDIO_FORMAT_PCM_8_24_BIT ? 8 : 16;
+        while(numFrames) {
+            for(i=0; i<channel_count; i++) {
+                pDst[i] = (pSrc32[i]>>shift);
+            }
+            pSrc32 += channel_count;
+            pDst   += channel_count;
+            numFrames --;
+        }
+
+        pSrc = pSrcAlloc;
+        pDst = pDstAlloc;
+        numFrames = outBuffer->frameCount;
+    }
+#else
     pSrc = inBuffer->s16;
     pDst = outBuffer->s16;
     size_t numFrames = outBuffer->frameCount;
+#endif
 
     const bool accumulate =
             (pDwmModule->config.outputCfg.accessMode == EFFECT_BUFFER_ACCESS_ACCUMULATE);
+    #ifdef MTK_AUDIO
+     if(pDwmModule->config.inputCfg.channels == (AUDIO_CHANNEL_OUT_FRONT_CENTER|AUDIO_CHANNEL_OUT_LOW_FREQUENCY))
+     {
+        ALOGV("force channel mask 0xc to stereo");
+        pDwmModule->config.inputCfg.channels = AUDIO_CHANNEL_OUT_STEREO;
+     }
+     #endif
     const uint32_t downmixInputChannelMask = pDwmModule->config.inputCfg.channels;
 
     switch(pDownmixer->type) {
@@ -346,8 +391,43 @@ static int Downmix_Process(effect_handle_t self,
         break;
 
       default:
+#ifdef MTK_AUDIO
+        free(pSrcAlloc);
+        free(pDstAlloc);
+#endif
         return -EINVAL;
     }
+
+#ifdef MTK_AUDIO
+    if (pDwmModule->config.inputCfg.format != AUDIO_FORMAT_PCM_16_BIT && pDwmModule->config.inputCfg.format != AUDIO_FORMAT_PCM_8_BIT) {
+        size_t i;
+        int32_t *pDst32;
+        int tempvalue;
+
+        pDst   = pDstAlloc;
+        pDst32 = outBuffer->s32;
+        numFrames = outBuffer->frameCount;
+
+        while(numFrames) {
+            if(pDwmModule->config.inputCfg.format == AUDIO_FORMAT_PCM_32_BIT) {
+                pDst32[0] = (pDst[0]<<16);
+                pDst32[1] = (pDst[1]<<16);
+            }
+            else {
+                tempvalue = (int) pDst[0];
+                pDst32[0] = tempvalue << 8;
+                tempvalue = (int) pDst[1];
+                pDst32[1] = tempvalue << 8;
+            }
+            pDst32 += 2;
+            pDst   += 2;
+            numFrames --;
+        }
+    }
+
+    free(pSrcAlloc);
+    free(pDstAlloc);
+#endif
 
     return 0;
 }
@@ -607,6 +687,17 @@ int Downmix_Configure(downmix_module_t *pDwmModule, effect_config_t *pConfig, bo
     downmix_object_t *pDownmixer = &pDwmModule->context;
 
     // Check configuration compatibility with build options, and effect capabilities
+#ifdef MTK_AUDIO
+    if (pConfig->inputCfg.samplingRate != pConfig->outputCfg.samplingRate
+        || pConfig->inputCfg.format != pConfig->outputCfg.format
+        || pConfig->outputCfg.channels != DOWNMIX_OUTPUT_CHANNELS
+        || ( (pConfig->inputCfg.format != AUDIO_FORMAT_PCM_16_BIT)
+             && (pConfig->inputCfg.format != AUDIO_FORMAT_PCM_8_24_BIT)
+             && (pConfig->inputCfg.format != AUDIO_FORMAT_PCM_32_BIT) )) {
+        ALOGE("Downmix_Configure error: invalid config");
+        return -EINVAL;
+    }
+#else
     if (pConfig->inputCfg.samplingRate != pConfig->outputCfg.samplingRate
         || pConfig->outputCfg.channels != DOWNMIX_OUTPUT_CHANNELS
         || pConfig->inputCfg.format != AUDIO_FORMAT_PCM_16_BIT
@@ -614,6 +705,7 @@ int Downmix_Configure(downmix_module_t *pDwmModule, effect_config_t *pConfig, bo
         ALOGE("Downmix_Configure error: invalid config");
         return -EINVAL;
     }
+#endif
 
     if (&pDwmModule->config != pConfig) {
         memcpy(&pDwmModule->config, pConfig, sizeof(effect_config_t));

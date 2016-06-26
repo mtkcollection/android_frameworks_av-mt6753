@@ -16,6 +16,9 @@
 
 #define LOG_TAG "APM::AudioOutputDescriptor"
 //#define LOG_NDEBUG 0
+#ifdef MTK_AUDIO
+#define LOG_NDEBUG 0
+#endif
 
 #include <AudioPolicyInterface.h>
 #include "AudioOutputDescriptor.h"
@@ -36,12 +39,18 @@ AudioOutputDescriptor::AudioOutputDescriptor(const sp<AudioPort>& port,
     : mPort(port), mDevice(AUDIO_DEVICE_NONE),
       mPatchHandle(0), mClientInterface(clientInterface), mId(0)
 {
+#ifdef MTK_AUDIO
+    mMutePrevDevice = AUDIO_DEVICE_NONE;
+#endif
     // clear usage count for all stream types
     for (int i = 0; i < AUDIO_STREAM_CNT; i++) {
         mRefCount[i] = 0;
         mCurVolume[i] = -1.0;
         mMuteCount[i] = 0;
         mStopTime[i] = 0;
+#ifdef MTK_AUDIO
+        mMuteTid[i] = 0;
+#endif
     }
     for (int i = 0; i < NUM_STRATEGIES; i++) {
         mStrategyMutedByDevice[i] = false;
@@ -374,6 +383,9 @@ bool SwAudioOutputDescriptor::setVolume(float volume,
                                         bool force)
 {
     bool changed = AudioOutputDescriptor::setVolume(volume, stream, device, delayMs, force);
+#ifdef MTK_AUDIO
+    ALOGD("SwAudioOutputDescriptor::%s mIoHandle %d change %d volume %f stream %d device 0x%x delayMs %d force %d", __FUNCTION__,mIoHandle ,changed, volume, stream, device, delayMs, force);
+#endif
 
     if (changed) {
         // Force VOICE_CALL to track BLUETOOTH_SCO stream volume when bluetooth audio is

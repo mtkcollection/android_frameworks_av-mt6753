@@ -1,4 +1,10 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -129,7 +135,11 @@ ARTPAssembler::AssemblyStatus AAMRAssembler::addPacket(
     } else if ((uint32_t)buffer->int32Data() != mNextExpectedSeqNo) {
         ALOGV("Not the sequence number I expected");
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        return getAssembleStatus(queue, mNextExpectedSeqNo);
+#else
         return WRONG_SEQUENCE_NUMBER;
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
     }
 
     // hexdump(buffer->data(), buffer->size());
@@ -143,8 +153,19 @@ ARTPAssembler::AssemblyStatus AAMRAssembler::addPacket(
         return MALFORMED_PACKET;
     }
 
+
     unsigned payloadHeader __unused = buffer->data()[0];
     unsigned CMR __unused = payloadHeader >> 4;
+#ifdef MTK_AOSP_ENHANCEMENT
+    if ((payloadHeader & 0x0f) != 0u) {
+        queue->erase(queue->begin());
+        ++mNextExpectedSeqNo;
+        ALOGV("Bad RR.");
+        return MALFORMED_PACKET;
+    }
+#else
+    CHECK_EQ(payloadHeader & 0x0f, 0u);  // RR
+#endif
 
     Vector<uint8_t> tableOfContents;
 
@@ -230,4 +251,27 @@ void AAMRAssembler::onByeReceived() {
     msg->post();
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+void AAMRAssembler::evaluateDuration(const sp<ARTPSource>& source,
+        const sp<ABuffer>& buffer) {
+    size_t size = buffer->size();
+    if (size < 1)
+        return;
+
+    unsigned payloadHeader = buffer->data()[0];
+    if ((payloadHeader & 0x0f) != 0)
+        return;
+
+    uint8_t *ptr = buffer->data() + 1;
+    size_t num = 0;
+    size--;
+
+    while(num < size && (ptr[num++] & 0x80));
+    if (num == size)
+        return;
+
+    source->updateExpectedTimeoutUs((int64_t)(20000ll * num));
+    return;
+}
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
 }  // namespace android

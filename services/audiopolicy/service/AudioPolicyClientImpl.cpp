@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -222,6 +227,15 @@ void AudioPolicyService::AudioPolicyClient::onDynamicPolicyMixStateUpdate(
 audio_unique_id_t AudioPolicyService::AudioPolicyClient::newAudioUniqueId()
 {
     return AudioSystem::newAudioUniqueId();
+}
+
+status_t AudioPolicyService::AudioPolicyClient::getCustomAudioVolume(void* pCustomVol)
+{
+#ifdef MTK_AUDIO
+    return mAudioPolicyService->getCustomAudioVolume(pCustomVol);
+#else
+    return INVALID_OPERATION;
+#endif
 }
 
 }; // namespace android

@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright 2012, The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -34,6 +39,10 @@ struct MediaSource;
 struct MediaSender;
 struct NuMediaExtractor;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+struct Serializer;
+struct MediaCodec;
+#endif
 // Encapsulates the state of an RTP/RTCP session in the context of wifi
 // display.
 struct WifiDisplaySource::PlaybackSession : public AHandler {
@@ -168,6 +177,27 @@ private:
     void onSinkFeedback(const sp<AMessage> &msg);
 
     DISALLOW_EVIL_CONSTRUCTORS(PlaybackSession);
+#ifdef MTK_AOSP_ENHANCEMENT
+public:
+    status_t setWfdLevel(int32_t level);
+    int  getWfdParam(int paramType);
+    void setSliceMode(int32_t useSliceMode);
+    status_t forceBlackScreen(bool blackNow);
+    void setMiracastMode(bool MiracastEnable = false);
+
+private:
+    int32_t mUseSliceMode;
+
+    VideoFormats::ResolutionType mVideoResolutionType;
+    size_t mVideoResolutionIndex;
+    int32_t mTestFakeVideoPath;
+    bool mMiracastEnable;
+    bool drop_dummy;
+    void init_pre(bool* enableAudio,bool* enableVideo);
+    void delete_pro();
+    void addSource_video_ext(sp<AMessage> format,int32_t profileIdc,int32_t levelIdc);
+
+#endif
 };
 
 }  // namespace android

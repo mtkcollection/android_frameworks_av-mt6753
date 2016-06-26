@@ -35,7 +35,11 @@ namespace android {
 StreamDescriptor::StreamDescriptor()
     :   mIndexMin(0), mIndexMax(1), mCanBeMuted(true)
 {
+#ifdef MTK_AUDIO
+    mIndexCur.add(AUDIO_DEVICE_OUT_DEFAULT, 1);
+#else
     mIndexCur.add(AUDIO_DEVICE_OUT_DEFAULT, 0);
+#endif
 }
 
 int StreamDescriptor::getVolumeIndex(audio_devices_t device) const

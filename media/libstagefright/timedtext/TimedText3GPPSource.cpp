@@ -1,3 +1,8 @@
+/*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
  /*
  * Copyright (C) 2012 The Android Open Source Project
  *
@@ -49,6 +54,11 @@ status_t TimedText3GPPSource::read(
     CHECK(textBuffer != NULL);
     textBuffer->meta_data()->findInt64(kKeyTime, startTimeUs);
     CHECK_GE(*startTimeUs, 0);
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (options != NULL) {
+       ALOGI("seek done, startTimeUs:%lld", (long long)(*startTimeUs));
+    }
+#endif
     extractAndAppendLocalDescriptions(*startTimeUs, textBuffer, parcel);
     textBuffer->release();
     // endTimeUs is a dummy parameter for 3gpp timed text format.
@@ -115,5 +125,17 @@ status_t TimedText3GPPSource::extractGlobalDescriptions(Parcel *parcel) {
 sp<MetaData> TimedText3GPPSource::getFormat() {
     return mSource->getFormat();
 }
+
+
+#ifdef MTK_AOSP_ENHANCEMENT
+status_t TimedText3GPPSource::parse(
+              uint8_t* /* text */,
+              size_t /* size */,
+              int64_t /* startTimeUs */,
+              int64_t /* endTimeUs */,
+              Parcel * /* parcel */) {
+    return OK;
+}
+#endif
 
 }  // namespace android

@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
 **
 ** Copyright 2008, The Android Open Source Project
 **
@@ -44,6 +49,9 @@ class IOMX;
 class IRemoteDisplay;
 class IRemoteDisplayClient;
 class MediaRecorderClient;
+#ifdef MTK_AOSP_ENHANCEMENT
+struct RemoteDisplay;
+#endif
 
 #define CALLBACK_ANTAGONIZER 0
 #if CALLBACK_ANTAGONIZER
@@ -396,7 +404,16 @@ private:
 #if CALLBACK_ANTAGONIZER
                     Antagonizer*                mAntagonizer;
 #endif
+#ifdef MTK_AOSP_ENHANCEMENT
+private:
+    bool mIsOMADrm;
+    String8 mDrmProc;
+    status_t setDataSource_drm_preCheck(bool isFdMode,int fd,const char *url);
+    status_t setDataSource_drm_proHandle();
+#endif
     }; // Client
+
+
 
 // ----------------------------------------------------------------------------
 
@@ -409,6 +426,20 @@ private:
                 int32_t                     mNextConnId;
                 sp<IOMX>                    mOMX;
                 sp<ICrypto>                 mCrypto;
+#ifdef MTK_AOSP_ENHANCEMENT
+public:
+
+    virtual status_t            enableRemoteDisplay(const char *iface);
+    virtual sp<IRemoteDisplay> listenForRemoteDisplay(
+        const String16 &opPackageName, const sp<IRemoteDisplayClient>& client,
+        const String8& iface, const uint32_t wfdFlags);
+    virtual sp<IRemoteDisplay> connectForRemoteDisplay(const sp<IRemoteDisplayClient>& client,
+            const String8& iface, const sp<IGraphicBufferProducer> &bufferProducer);
+    virtual status_t            enableRemoteDisplay(const char *iface, const uint32_t wfdFlags);
+
+private:
+    sp<RemoteDisplay>           mRemoteDisplay;
+#endif
 };
 
 // ----------------------------------------------------------------------------

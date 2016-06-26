@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2012 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -45,6 +50,14 @@ public:
         kDisplayErrorConnectionDropped = 2,
     };
 
+    ///M: add for rtsp generic message define RTSP
+    enum{
+        kDisplayRtspPlayEvent=0,
+        kDisplayRtspPauseEvent=1,
+        kDisplayRtspTeardownEvent=2,
+    };
+
+
     // Indicates that the remote display has been connected successfully.
     // Provides a surface texture that the client should use to stream buffers to
     // the remote display.
@@ -60,6 +73,13 @@ public:
     // Indicates that a connection could not be established to the remote display
     // or an unrecoverable error occurred and the connection was severed.
     virtual void onDisplayError(int32_t error) = 0; // one-way
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    // Indicates that a key event from UIBC channel is received and pass this key event to hanlde in framework layer.
+    virtual void onDisplayKeyEvent(uint32_t uniCode, uint32_t flags) = 0;
+
+    virtual void onDisplayGenericMsgEvent(uint32_t event) =0;
+#endif
 };
 
 

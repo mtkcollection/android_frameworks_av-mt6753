@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
 **
 ** Copyright 2008, The Android Open Source Project
 **
@@ -20,6 +25,7 @@
 //#define LOG_NDEBUG 0
 #define LOG_TAG "MediaPlayerService"
 #include <utils/Log.h>
+#include <cutils/log.h>
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -84,6 +90,23 @@
 #include "HTTPBase.h"
 #include "RemoteDisplay.h"
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#ifdef NOTIFYSENDER_ENABLE
+#include "NotifySender.h"
+#endif
+#ifdef MTK_DRM_APP
+#include <drm/DrmManagerClient.h> // OMA DRM v1 implementation
+#include <drm/DrmMtkUtil.h>
+#endif
+#include <media/stagefright/DataSource.h>
+#include <media/stagefright/FileSource.h>
+#include <media/AudioTrackCenter.h>
+#define MM_LOGI(x, ...) ALOGI("[%s] " x, __FUNCTION__, ##__VA_ARGS__)
+#else
+#define MM_LOGI(x, ...)
+#endif
+
+#include <media/MtkMMLog.h>
 namespace {
 using android::media::Metadata;
 using android::status_t;
@@ -248,6 +271,220 @@ void unmarshallAudioAttributes(const Parcel& parcel, audio_attributes_t *attribu
 
 
 namespace android {
+#ifdef MTK_AOSP_ENHANCEMENT
+
+//notify sender
+
+#ifdef NOTIFYSENDER_ENABLE
+static  sp<NotifySender> GetNotifySender(){
+  static sp<NotifySender> gNotifySender = new NotifySender();
+    if(gNotifySender.get()==0)
+      SLOGE("Create NotifySender fail");
+    return gNotifySender;
+}
+#endif
+
+void notify_optimize(
+        sp<IMediaPlayerClient> c, int msg, int ext1, int ext2, const Parcel *obj){
+    if(c == NULL){
+        return;
+    }
+
+#ifdef NOTIFYSENDER_ENABLE
+    // NotifySender used for camera. if not use notifySender, it would casue problem
+    if (IInterface::asBinder(c)->localBinder() != NULL)
+        {
+        sp<NotifySender>  p = GetNotifySender();
+        if(p.get()){
+            p->sendMessage(c,msg,ext1,ext2,obj);
+        }else{
+            c->notify(msg, ext1, ext2,obj);
+        }
+    }else{
+        c->notify(msg, ext1, ext2,obj);
+    }
+#else
+    c->notify(msg, ext1, ext2,obj);
+#endif
+
+}
+
+
+
+//wfd
+//add the declaration of checkPermission to avoid the using error
+static bool checkPermission(const char* permissionString);
+sp<IRemoteDisplay> MediaPlayerService::listenForRemoteDisplay(
+        const String16 &opPackageName,
+        const sp<IRemoteDisplayClient>& client,
+        const String8& iface,
+        const uint32_t wfdFlags) {
+    //if (!checkPermission("android.permission.CONTROL_WIFI_DISPLAY")) {
+    //    return NULL;
+    //}
+
+        return new RemoteDisplay(opPackageName, client, iface.string(), wfdFlags);
+
+}
+
+sp<IRemoteDisplay> MediaPlayerService::connectForRemoteDisplay(
+        const sp<IRemoteDisplayClient>& client, const String8& iface, const sp<IGraphicBufferProducer> &bufferProducer) {
+#ifdef MTK_WFD_SINK_SUPPORT
+    if (!checkPermission("android.permission.CONTROL_WIFI_DISPLAY")) {
+        return NULL;
+    }
+    ALOGD("connectForRemoteDisplay");
+
+        return new RemoteDisplay(client, iface.string(), bufferProducer);
+#else
+    (void)client;
+    (void)iface;
+    (void)bufferProducer;
+
+    return NULL;
+#endif
+}
+
+status_t MediaPlayerService::enableRemoteDisplay(const char *iface) {
+
+        if (!checkPermission("android.permission.CONTROL_WIFI_DISPLAY")) {
+            return PERMISSION_DENIED;
+        }
+
+
+        Mutex::Autolock autoLock(mLock);
+
+        if (iface != NULL) {
+            if (mRemoteDisplay != NULL) {
+                return INVALID_OPERATION;
+            }
+
+            mRemoteDisplay = new RemoteDisplay(String16(""), NULL /* client */, iface);
+            return OK;
+        }
+
+        if (mRemoteDisplay != NULL) {
+            mRemoteDisplay->dispose();
+            mRemoteDisplay.clear();
+        }
+
+
+    return OK;
+}
+
+status_t MediaPlayerService::enableRemoteDisplay(const char *iface, const uint32_t wfdFlags) {
+
+        if (!checkPermission("android.permission.CONTROL_WIFI_DISPLAY")) {
+            return PERMISSION_DENIED;
+        }
+
+        Mutex::Autolock autoLock(mLock);
+
+        if (iface != NULL) {
+            if (mRemoteDisplay != NULL) {
+                return INVALID_OPERATION;
+            }
+
+        #ifdef MTK_WFD_SINK_SUPPORT
+            if (wfdFlags == WifiDisplaySink::FLAG_SIGMA_TEST_MODE) {
+                mRemoteDisplay = new RemoteDisplay(
+                    NULL /* client*/, iface, (const sp<IGraphicBufferProducer> &)NULL);
+            }
+            else
+        #endif /* MTK_WFD_SINK_SUPPORT */
+            {
+                mRemoteDisplay = new RemoteDisplay(
+                    String16(""), NULL /* client */, iface, wfdFlags);
+            }
+            return OK;
+        }
+
+        if (mRemoteDisplay != NULL) {
+            mRemoteDisplay->dispose();
+            mRemoteDisplay.clear();
+        }
+
+    return OK;
+}
+
+
+//drm
+
+//0 fd,1 url
+status_t MediaPlayerService::Client::setDataSource_drm_preCheck(bool isFdMode,int fd,const char *url){
+    if(isFdMode && fd >= 0){
+
+        char buffer[256];
+        char linkto[256];
+        memset(buffer, 0, 256);
+        memset(linkto, 0, 256);
+        sprintf(buffer, "/proc/%d/fd/%d", gettid(), fd);
+        int len = 0;
+        len = readlink(buffer, linkto, sizeof(linkto)-1);
+        if(len >= 5)
+        {
+            linkto[len]=0;
+            MM_LOGI("fd=%d,path=%s",fd,linkto);
+        }
+    }
+
+    ALOGW("setDataSource_drm_preCheck: isFDDrm %d fd %d url %p",isFdMode, fd,url);
+
+#ifdef MTK_DRM_APP
+    mIsOMADrm = false;
+    if(isFdMode){
+        CHECK(url == NULL);
+    // file descriptor case, check if it's a DCF file
+    // and check if it's a trusted audio / video playback client for drm
+        mIsOMADrm = DrmMtkUtil::isDcf(fd);
+        if (mIsOMADrm) {
+            mDrmProc  = DrmMtkUtil::getProcessName(mPid); // current client process
+            if (!DrmMtkUtil::isTrustedClient(mDrmProc)) {
+                ALOGW("setDataSource with fd: untrusted client [%d][%s], denied to access drm fd [%d]",
+                        mPid, mDrmProc.string(), fd);
+                return UNKNOWN_ERROR;
+            }
+        }
+
+    }else{//url mode
+        // the url is "file://" case, check if it is a DCF file.
+        // and check if it's a trusted audio / video playback client for drm
+        CHECK(url != NULL);
+        String8 path(url);
+        mIsOMADrm = DrmMtkUtil::isDcf(path);
+        if (mIsOMADrm) {
+            mDrmProc = DrmMtkUtil::getProcessName(mPid); // current client process
+            if (!DrmMtkUtil::isTrustedClient(mDrmProc)) {
+                ALOGW("setDataSource with url: untrusted client [%d][%s], denied to access drm source [%s]",
+                    mPid, mDrmProc.string(), path.string());
+                return UNKNOWN_ERROR;
+            }
+        }
+    }
+#endif
+    return OK;
+
+}
+
+status_t MediaPlayerService::Client::setDataSource_drm_proHandle(){
+#ifdef MTK_DRM_APP
+    if (mIsOMADrm && mStatus == NO_ERROR) {
+        ALOGD("setDataSource with fd: save process info: [%s]", mDrmProc.string());
+        Parcel request;
+        request.writeString8(mDrmProc);
+        request.setDataPosition(0);
+
+        setParameter(KEY_PARAMETER_DRM_CLIENT_PROC, request);
+    }
+
+#endif
+    return OK;
+
+}
+
+
+#endif
+
 
 extern ALooperRoster gLooperRoster;
 
@@ -274,6 +511,8 @@ void MediaPlayerService::instantiate() {
 MediaPlayerService::MediaPlayerService()
 {
     ALOGV("MediaPlayerService created");
+    MM_LOGI("created");
+
     mNextConnId = 1;
 
     mBatteryAudio.refCount = 0;
@@ -337,6 +576,8 @@ sp<IMediaPlayer> MediaPlayerService::create(const sp<IMediaPlayerClient>& client
             IPCThreadState::self()->getCallingUid());
 
     ALOGV("Create new client(%d) from pid %d, uid %d, ", connId, pid,
+         IPCThreadState::self()->getCallingUid());
+    MM_LOGI("Create new client(%d) from pid %d, uid %d, ", connId, pid,
          IPCThreadState::self()->getCallingUid());
 
     wp<Client> w = c;
@@ -588,6 +829,9 @@ MediaPlayerService::Client::~Client()
     wp<Client> client(this);
     disconnect();
     mService->removeClient(client);
+
+    MM_LOGI("[%d]~Client", mConnId);
+
     if (mAudioAttributes != NULL) {
         free(mAudioAttributes);
     }
@@ -596,15 +840,21 @@ MediaPlayerService::Client::~Client()
 void MediaPlayerService::Client::disconnect()
 {
     ALOGV("disconnect(%d) from pid %d", mConnId, mPid);
+
+    MM_LOGI("disconnect(%d) from pid %d", mConnId, mPid);
+
     // grab local reference and clear main reference to prevent future
     // access to object
     sp<MediaPlayerBase> p;
     {
         Mutex::Autolock l(mLock);
         p = mPlayer;
+#ifndef MTK_AOSP_ENHANCEMENT
+/**ALPS00266733, mClient maybe is used by Notify() function such as **
+**OnBufferingUpdate event when being cleared **/
         mClient.clear();
+#endif
     }
-
     mPlayer.clear();
 
     // clear the notification to prevent callbacks to dead client
@@ -618,7 +868,9 @@ void MediaPlayerService::Client::disconnect()
 #endif
         p->reset();
     }
-
+#ifdef MTK_AOSP_ENHANCEMENT
+    mClient.clear();
+#endif
     disconnectNativeWindow();
 
     IPCThreadState::self()->flushCommands();
@@ -694,6 +946,10 @@ status_t MediaPlayerService::Client::setDataSource(
         const KeyedVector<String8, String8> *headers)
 {
     ALOGV("setDataSource(%s)", url);
+
+    MM_LOGI("[%d] setDataSource(%s)", mConnId, url);
+
+
     if (url == NULL)
         return UNKNOWN_ERROR;
 
@@ -704,6 +960,11 @@ status_t MediaPlayerService::Client::setDataSource(
             return PERMISSION_DENIED;
         }
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (strncmp(url, "rtsp://file://", 14) == 0) {
+        url = url + 14;
+    }
+#endif
 
     if (strncmp(url, "content://", 10) == 0) {
         // get a filedescriptor for the content Uri and
@@ -721,19 +982,35 @@ status_t MediaPlayerService::Client::setDataSource(
         return mStatus;
     } else {
         player_type playerType = MediaPlayerFactory::getPlayerType(this, url);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+        SLOGD("player type = %d", playerType);
+        if(setDataSource_drm_preCheck(false, -1,  url) != OK ){
+            return UNKNOWN_ERROR;
+        }
+
+#endif
         sp<MediaPlayerBase> p = setDataSource_pre(playerType);
         if (p == NULL) {
             return NO_INIT;
         }
 
         setDataSource_post(p, p->setDataSource(httpService, url, headers));
+#ifdef MTK_AOSP_ENHANCEMENT
+        setDataSource_drm_proHandle();
+        MM_LOGI("setDataSource(%s) done", url);
+#endif
         return mStatus;
     }
 }
 
+
+
 status_t MediaPlayerService::Client::setDataSource(int fd, int64_t offset, int64_t length)
 {
     ALOGV("setDataSource fd=%d, offset=%lld, length=%lld", fd, offset, length);
+    MM_LOGI("[%d] setDataSource fd=%d, offset=%lld, length=%lld", mConnId, fd, offset, length);
+
     struct stat sb;
     int ret = fstat(fd, &sb);
     if (ret != 0) {
@@ -757,10 +1034,22 @@ status_t MediaPlayerService::Client::setDataSource(int fd, int64_t offset, int64
         ALOGV("calculated length = %lld", length);
     }
 
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    //MTK_DRM_APP option is in function inside
+    if(setDataSource_drm_preCheck(true, fd,  NULL) != OK ){
+        return UNKNOWN_ERROR;
+    }
+
+#endif
+
     player_type playerType = MediaPlayerFactory::getPlayerType(this,
                                                                fd,
                                                                offset,
                                                                length);
+
+    MM_LOGI("player type = %d", playerType);
+
     sp<MediaPlayerBase> p = setDataSource_pre(playerType);
     if (p == NULL) {
         return NO_INIT;
@@ -768,11 +1057,17 @@ status_t MediaPlayerService::Client::setDataSource(int fd, int64_t offset, int64
 
     // now set data source
     setDataSource_post(p, p->setDataSource(fd, offset, length));
+#ifdef MTK_AOSP_ENHANCEMENT
+    setDataSource_drm_proHandle();
+    MM_LOGI("setDataSource fd=%d, offset=%lld, length=%lld done", fd, offset, length);
+#endif
+
     return mStatus;
 }
 
 status_t MediaPlayerService::Client::setDataSource(
         const sp<IStreamSource> &source) {
+    MM_LOGI("[%d]", mConnId);
     // create the right type of player
     player_type playerType = MediaPlayerFactory::getPlayerType(this, source);
     sp<MediaPlayerBase> p = setDataSource_pre(playerType);
@@ -787,6 +1082,7 @@ status_t MediaPlayerService::Client::setDataSource(
 
 status_t MediaPlayerService::Client::setDataSource(
         const sp<IDataSource> &source) {
+    MM_LOGI("[%d]", mConnId);
     sp<DataSource> dataSource = DataSource::CreateFromIDataSource(source);
     player_type playerType = MediaPlayerFactory::getPlayerType(this, dataSource);
     sp<MediaPlayerBase> p = setDataSource_pre(playerType);
@@ -815,6 +1111,9 @@ status_t MediaPlayerService::Client::setVideoSurfaceTexture(
         const sp<IGraphicBufferProducer>& bufferProducer)
 {
     ALOGV("[%d] setVideoSurfaceTexture(%p)", mConnId, bufferProducer.get());
+    // do not print bufferProducer, care for null pointer, check
+    // bufferProducer null or not, should in NuPlayer.cpp
+    MM_LOGI("[%d] ", mConnId);
     sp<MediaPlayerBase> p = getPlayer();
     if (p == 0) return UNKNOWN_ERROR;
 
@@ -828,7 +1127,14 @@ status_t MediaPlayerService::Client::setVideoSurfaceTexture(
         anw = new Surface(bufferProducer, true /* controlledByApp */);
         status_t err = native_window_api_connect(anw.get(),
                 NATIVE_WINDOW_API_MEDIA);
-
+#ifdef MTK_AOSP_ENHANCEMENT
+        if(err == -EEXIST || err == -EINVAL)
+        {
+          ALOGD("[%d] setVideoSurfaceTexture error handle", mConnId);
+          native_window_api_disconnect(anw.get(),NATIVE_WINDOW_API_MEDIA);
+          err = native_window_api_connect(anw.get(),NATIVE_WINDOW_API_MEDIA);
+        }
+#endif
         if (err != OK) {
             ALOGE("setVideoSurfaceTexture failed: %d", err);
             // Note that we must do the reset before disconnecting from the ANW.
@@ -930,6 +1236,9 @@ status_t MediaPlayerService::Client::getMetadata(
 status_t MediaPlayerService::Client::prepareAsync()
 {
     ALOGV("[%d] prepareAsync", mConnId);
+
+    MM_LOGI("[%d] prepareAsync", mConnId);
+
     sp<MediaPlayerBase> p = getPlayer();
     if (p == 0) return UNKNOWN_ERROR;
     status_t ret = p->prepareAsync();
@@ -946,6 +1255,8 @@ status_t MediaPlayerService::Client::start()
     sp<MediaPlayerBase> p = getPlayer();
     if (p == 0) return UNKNOWN_ERROR;
     p->setLooping(mLoop);
+    MM_LOGI("[%d] start", mConnId);
+
     return p->start();
 }
 
@@ -954,6 +1265,9 @@ status_t MediaPlayerService::Client::stop()
     ALOGV("[%d] stop", mConnId);
     sp<MediaPlayerBase> p = getPlayer();
     if (p == 0) return UNKNOWN_ERROR;
+
+    MM_LOGI("[%d] stop", mConnId);
+
     return p->stop();
 }
 
@@ -962,6 +1276,9 @@ status_t MediaPlayerService::Client::pause()
     ALOGV("[%d] pause", mConnId);
     sp<MediaPlayerBase> p = getPlayer();
     if (p == 0) return UNKNOWN_ERROR;
+
+    MM_LOGI("[%d] pause", mConnId);
+
     return p->pause();
 }
 
@@ -1030,7 +1347,7 @@ status_t MediaPlayerService::Client::getCurrentPosition(int *msec)
     if (p == 0) return UNKNOWN_ERROR;
     status_t ret = p->getCurrentPosition(msec);
     if (ret == NO_ERROR) {
-        ALOGV("[%d] getCurrentPosition = %d", mConnId, *msec);
+        ALOGI("[%d] getCurrentPosition = %d", mConnId, *msec);
     } else {
         ALOGE("getCurrentPosition returned %d", ret);
     }
@@ -1045,6 +1362,9 @@ status_t MediaPlayerService::Client::getDuration(int *msec)
     status_t ret = p->getDuration(msec);
     if (ret == NO_ERROR) {
         ALOGV("[%d] getDuration = %d", mConnId, *msec);
+
+        MM_LOGI("[%d] getDuration = %d", mConnId, *msec);
+
     } else {
         ALOGE("getDuration returned %d", ret);
     }
@@ -1058,6 +1378,9 @@ status_t MediaPlayerService::Client::setNextPlayer(const sp<IMediaPlayer>& playe
     mNextClient = c;
 
     if (c != NULL) {
+
+        MM_LOGI("[%d]setNextPlayer:[%d]",mConnId,mNextClient->mConnId);
+
         if (mAudioOutput != NULL) {
             mAudioOutput->setNextOutput(c->mAudioOutput);
         } else if ((mPlayer != NULL) && !mPlayer->hardwareOutput()) {
@@ -1075,6 +1398,9 @@ status_t MediaPlayerService::Client::setNextPlayer(const sp<IMediaPlayer>& playe
 status_t MediaPlayerService::Client::seekTo(int msec)
 {
     ALOGV("[%d] seekTo(%d)", mConnId, msec);
+
+    MM_LOGI("[%d] seekTo(%d)", mConnId, msec);
+
     sp<MediaPlayerBase> p = getPlayer();
     if (p == 0) return UNKNOWN_ERROR;
     return p->seekTo(msec);
@@ -1086,6 +1412,9 @@ status_t MediaPlayerService::Client::reset()
     mRetransmitEndpointValid = false;
     sp<MediaPlayerBase> p = getPlayer();
     if (p == 0) return UNKNOWN_ERROR;
+
+    MM_LOGI("[%d] reset", mConnId);
+
     return p->reset();
 }
 
@@ -1266,11 +1595,17 @@ void MediaPlayerService::Client::notify(
         // also access mMetadataUpdated and clears it.
         client->addNewMetadataUpdate(metadata_type);
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+    MM_LOGI("[%d] notify (%p, %d, %d, %d, %p)", client->mConnId, cookie, msg, ext1, ext2, obj);
+    notify_optimize(c, msg, ext1,  ext2, obj);
+    return;
+#endif
 
     if (c != NULL) {
         ALOGV("[%d] notify (%p, %d, %d, %d)", client->mConnId, cookie, msg, ext1, ext2);
         c->notify(msg, ext1, ext2, obj);
     }
+
 }
 
 
@@ -1332,6 +1667,7 @@ int Antagonizer::callbackThread(void* user)
 }
 #endif
 
+
 #undef LOG_TAG
 #define LOG_TAG "AudioSink"
 MediaPlayerService::AudioOutput::AudioOutput(int sessionId, int uid, int pid,
@@ -1355,6 +1691,7 @@ MediaPlayerService::AudioOutput::AudioOutput(int sessionId, int uid, int pid,
       mFlags(AUDIO_OUTPUT_FLAG_NONE)
 {
     ALOGV("AudioOutput(%d)", sessionId);
+
     if (attr != NULL) {
         mAttributes = (audio_attributes_t *) calloc(1, sizeof(audio_attributes_t));
         if (mAttributes != NULL) {
@@ -1370,6 +1707,14 @@ MediaPlayerService::AudioOutput::AudioOutput(int sessionId, int uid, int pid,
 
 MediaPlayerService::AudioOutput::~AudioOutput()
 {
+#ifdef MTK_AOSP_ENHANCEMENT
+    //for audioflinger ramp down when apk send reset
+    if(mTrack!=0)
+    {
+        //ALOGD("~AudioOutput(), mTrack->pause()");
+        mTrack->pause();
+    }
+#endif
     close();
     free(mAttributes);
     delete mCallbackData;
@@ -1539,7 +1884,7 @@ status_t MediaPlayerService::AudioOutput::open(
         bool doNotReconnect,
         uint32_t suggestedFrameCount)
 {
-    ALOGV("open(%u, %d, 0x%x, 0x%x, %d, %d 0x%x)", sampleRate, channelCount, channelMask,
+    ALOGD("open(%u, %d, 0x%x, 0x%x, %d, %d 0x%x)", sampleRate, channelCount, channelMask,
                 format, bufferCount, mSessionId, flags);
 
     // offloading is only supported in callback mode for now.
@@ -1581,6 +1926,9 @@ status_t MediaPlayerService::AudioOutput::open(
         frameCount = bufferCount * framesPerBuffer;
     }
 
+    MM_LOGI("open(%u, %d, %d, %d, %d)", sampleRate, channelCount, format, bufferCount,mSessionId);
+
+
     if (channelMask == CHANNEL_MASK_USE_CHANNEL_ORDER) {
         channelMask = audio_channel_out_mask_from_count(channelCount);
         if (0 == channelMask) {
@@ -1588,6 +1936,37 @@ status_t MediaPlayerService::AudioOutput::open(
             return NO_INIT;
         }
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+
+    if(mRecycledTrack != 0  &&  mRecycledTrack->channelCount() > 2)
+
+    {
+
+         SLOGD("delete mRecycledTrack for hdmi multichannel");
+      // if we're not going to reuse the track, unblock and flush it
+
+        if (mCallbackData != NULL)
+        {
+
+            mCallbackData->setOutput(NULL);
+
+            mCallbackData->endTrackSwitch();
+
+        }
+
+            mRecycledTrack->flush();
+
+             mRecycledTrack.clear();
+            mRecycledTrack = NULL;
+
+            delete mCallbackData;
+
+            mCallbackData = NULL;
+
+            close();
+
+    }
+#endif
 
     Mutex::Autolock lock(mLock);
     mCallback = cb;
@@ -1704,7 +2083,7 @@ status_t MediaPlayerService::AudioOutput::open(
             if (mRecycledTrack->frameCount() != t->frameCount()) {
                 ALOGV("framecount differs: %u/%u frames",
                       mRecycledTrack->frameCount(), t->frameCount());
-                reuse = false;
+                   reuse = false;
             }
         }
 
@@ -1717,6 +2096,16 @@ status_t MediaPlayerService::AudioOutput::open(
                 mCallbackData->setOutput(this);
             }
             delete newcbd;
+#ifdef MTK_AOSP_ENHANCEMENT
+            extern AudioTrackCenter gAudioTrackCenter;
+
+            intptr_t trackId = gAudioTrackCenter.getTrackId((void*)mTrack.get());
+            if (trackId) {
+                status_t res = gAudioTrackCenter.reset(trackId);
+                if (res != OK) ALOGI("Reset trackId: %p fail in Audio Track Center", (void*)trackId);
+            }
+            gAudioTrackCenter.updateTrackMaps((void*)mTrack.get(), (void*)this);
+#endif
             return OK;
         }
     }
@@ -1734,7 +2123,7 @@ status_t MediaPlayerService::AudioOutput::open(
     t->setVolume(mLeftVolume, mRightVolume);
 
     mSampleRateHz = sampleRate;
-    mFlags = flags;
+    mFlags = t->getFlags(); // we suggest the flags above, but new AudioTrack() may not grant it.
     mMsecsPerFrame = 1E3f / (mPlaybackRate.mSpeed * sampleRate);
     mFrameSize = t->frameSize();
     uint32_t pos;
@@ -1746,13 +2135,21 @@ status_t MediaPlayerService::AudioOutput::open(
     status_t res = NO_ERROR;
     // Note some output devices may give us a direct track even though we don't specify it.
     // Example: Line application b/17459982.
-    if ((t->getFlags() & (AUDIO_OUTPUT_FLAG_COMPRESS_OFFLOAD | AUDIO_OUTPUT_FLAG_DIRECT)) == 0) {
+    if ((mFlags & (AUDIO_OUTPUT_FLAG_COMPRESS_OFFLOAD | AUDIO_OUTPUT_FLAG_DIRECT)) == 0) {
         res = t->setPlaybackRate(mPlaybackRate);
         if (res == NO_ERROR) {
             t->setAuxEffectSendLevel(mSendLevel);
+#ifdef MTK_AOSP_ENHANCEMENT
+            t->attachAuxEffect(mAuxEffectId);
+#else
             res = t->attachAuxEffect(mAuxEffectId);
+#endif
         }
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+    extern AudioTrackCenter gAudioTrackCenter;
+    gAudioTrackCenter.updateTrackMaps((void*)mTrack.get(), (void*)this);
+#endif
     ALOGV("open() DONE status %d", res);
     return res;
 }
@@ -1760,7 +2157,9 @@ status_t MediaPlayerService::AudioOutput::open(
 status_t MediaPlayerService::AudioOutput::start()
 {
     ALOGV("start");
+
     Mutex::Autolock lock(mLock);
+
     if (mCallbackData != NULL) {
         mCallbackData->endTrackSwitch();
     }
@@ -1871,29 +2270,40 @@ ssize_t MediaPlayerService::AudioOutput::write(const void* buffer, size_t size, 
 void MediaPlayerService::AudioOutput::stop()
 {
     ALOGV("stop");
+
     Mutex::Autolock lock(mLock);
     mBytesWritten = 0;
+    MM_LOGI("stop");
+
     if (mTrack != 0) mTrack->stop();
 }
 
 void MediaPlayerService::AudioOutput::flush()
 {
     ALOGV("flush");
+
     Mutex::Autolock lock(mLock);
     mBytesWritten = 0;
+    MM_LOGI("flush");
+
     if (mTrack != 0) mTrack->flush();
 }
 
 void MediaPlayerService::AudioOutput::pause()
 {
     ALOGV("pause");
+
     Mutex::Autolock lock(mLock);
+#ifdef MTK_AOSP_ENHANCEMENT
+    MM_LOGI("pause");
+#endif
     if (mTrack != 0) mTrack->pause();
 }
 
 void MediaPlayerService::AudioOutput::close()
 {
     ALOGV("close");
+
     Mutex::Autolock lock(mLock);
     close_l();
 }
@@ -1901,6 +2311,7 @@ void MediaPlayerService::AudioOutput::close()
 void MediaPlayerService::AudioOutput::setVolume(float left, float right)
 {
     ALOGV("setVolume(%f, %f)", left, right);
+
     Mutex::Autolock lock(mLock);
     mLeftVolume = left;
     mRightVolume = right;

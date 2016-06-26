@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -128,6 +133,7 @@ bool Metadata::appendInt32(int key, int32_t val)
     return ok;
 }
 
+
 // Check the key (i.e metadata id) is valid if it is a system one.
 // Loop over all the exiting ones in the Parcel to check for duplicate
 // (not allowed).
@@ -163,5 +169,57 @@ bool Metadata::checkKey(int key)
     return !error;
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+bool Metadata::appendString(int key, const char* val) {
+    if (!checkKey(key)) {
+        return false;
+    }
+
+    const size_t begin = mData->dataPosition();
+    bool ok = true;
+
+    String16 string = String16(val);
+
+    ok = ok && mData->writeInt32(0) == OK;
+    ok = ok && mData->writeInt32(key) == OK;
+    ok = ok && mData->writeInt32(STRING_VAL) == OK;
+    ok = ok && mData->writeString16(string) == OK;
+    if (!ok) {
+        mData->setDataPosition(begin);
+    } else {
+        // rewrite size because Parcel may do a padding to align 4x
+        const size_t end = mData->dataPosition();
+        mData->setDataPosition(begin);
+        mData->writeInt32(end - begin);
+        mData->setDataPosition(end);
+    }
+    return ok;
+}
+
+bool Metadata::appendByteArray(int key, const char* val, size_t len) {
+    if (!checkKey(key)) {
+        return false;
+    }
+
+    const size_t begin = mData->dataPosition();
+    bool ok = true;
+
+    ok = ok && mData->writeInt32(0) == OK;
+    ok = ok && mData->writeInt32(key) == OK;
+    ok = ok && mData->writeInt32(BYTE_ARRAY_VAL) == OK;
+    ok = ok && mData->writeInt32(len) == OK;
+    ok = ok && mData->write(val, len) == OK;
+    if (!ok) {
+        mData->setDataPosition(begin);
+    } else {
+        // rewrite size because Parcel may do a padding to align 4x
+        const size_t end = mData->dataPosition();
+        mData->setDataPosition(begin);
+        mData->writeInt32(end - begin);
+        mData->setDataPosition(end);
+    }
+    return ok;
+}
+#endif
 }  // namespace android::media
 }  // namespace android

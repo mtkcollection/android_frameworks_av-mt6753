@@ -57,7 +57,7 @@ public:
     virtual ~Camera2ClientBase();
 
     virtual status_t      initialize(CameraModule *module);
-    virtual status_t      dumpClient(int fd, const Vector<String16>& args);
+    virtual status_t      dump(int fd, const Vector<String16>& args);
 
     /**
      * CameraDeviceBase::NotificationListener implementation
@@ -136,8 +136,6 @@ protected:
     status_t              checkPid(const char *checkLocation) const;
 
     virtual void          detachDevice();
-
-    bool                  mDeviceActive;
 };
 
 }; // namespace android

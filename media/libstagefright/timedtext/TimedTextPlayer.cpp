@@ -1,3 +1,8 @@
+/*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
  /*
  * Copyright (C) 2012 The Android Open Source Project
  *
@@ -30,6 +35,9 @@
 
 #include "TimedTextSource.h"
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <cutils/log.h>
+#endif
 namespace android {
 
 // Event should be fired a bit earlier considering the processing time till
@@ -103,12 +111,23 @@ void TimedTextPlayer::onMessageReceived(const sp<AMessage> &msg) {
             }
             mPaused = false;
             mPendingSeekTimeUs = kInvalidTimeUs;
+#ifdef MTK_AOSP_ENHANCEMENT
+            notifyListener();
+#endif
             int32_t positionMs = 0;
+#ifdef MTK_AOSP_ENHANCEMENT
+            ALOGI("kWhatStart ");
+#endif
             listener->getCurrentPosition(&positionMs);
             int64_t seekTimeUs = positionMs * 1000ll;
-
+#ifndef MTK_AOSP_ENHANCEMENT
+// here notifyListerner is not nice, because notifyListener would cost some time. so seekTimeUs is not accurate
             notifyListener();
+#endif
             mSendSubtitleGeneration++;
+#ifdef MTK_AOSP_ENHANCEMENT
+            ALOGI("seektimeUs:%lld Us", (long long)seekTimeUs);
+#endif
             doSeekAndRead(seekTimeUs);
             break;
         }
@@ -167,6 +186,9 @@ void TimedTextPlayer::onMessageReceived(const sp<AMessage> &msg) {
             if (msg->findInt64("fireTimeUs", &fireTimeUs)) {
                 // TODO: check if fireTimeUs is not kInvalidTimeUs.
                 int64_t delayUs = delayUsFromCurrentTime(fireTimeUs);
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGV("%s() delayUs:%lld,line:%d, fireTimeUs:%lld", __FUNCTION__, (long long)delayUs, __LINE__, (long long)fireTimeUs);
+#endif
                 if (delayUs > 0) {
                     msg->post(delayUs);
                     break;
@@ -259,6 +281,9 @@ void TimedTextPlayer::doRead(MediaSource::ReadOptions* options) {
 
 void TimedTextPlayer::postTextEvent(const sp<ParcelEvent>& parcel, int64_t timeUs) {
     int64_t delayUs = delayUsFromCurrentTime(timeUs);
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGV("%s() delayUs:%lld,line:%d, timeUs:%lld", __FUNCTION__, (long long)delayUs, __LINE__, (long long)timeUs);
+#endif
     sp<AMessage> msg = new AMessage(kWhatSendSubtitle, this);
     msg->setInt32("generation", mSendSubtitleGeneration);
     if (parcel != NULL) {
@@ -281,10 +306,16 @@ int64_t TimedTextPlayer::delayUsFromCurrentTime(int64_t fireTimeUs) {
     int64_t positionUs = positionMs * 1000ll;
 
     if (fireTimeUs <= positionUs + kAdjustmentProcessingTimeUs) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGI("fireTimeUs:%lld < positionUs:%lld +100ms ", (long long)fireTimeUs, (long long)positionUs);
+#endif
         return 0;
     } else {
         int64_t delayUs = fireTimeUs - positionUs - kAdjustmentProcessingTimeUs;
         if (delayUs > kMaxDelayUs) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGI("delayUs > kMaxDelayUs,fireTimeUs:%lld, positionUs:%lld", (long long)fireTimeUs, (long long)positionUs);
+#endif
             return kMaxDelayUs;
         }
         return delayUs;
@@ -307,6 +338,16 @@ void TimedTextPlayer::notifyListener(const Parcel *parcel) {
         return;
     }
     if (parcel != NULL && (parcel->dataSize() > 0)) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    // debug for check send string content, include properties and timedtext .etc.
+    int num = parcel->dataSize();
+        const uint8_t *tmp = (uint8_t *)parcel->data();
+        ALOGV("^^^^^^^^^^^^^^");
+    for (int i=0; i<num; i++) {
+         ALOGV("zxy:0x%x", *(tmp+i));
+    }
+    ALOGV("$$$$$$$$$$$$$");
+#endif
         listener->sendEvent(MEDIA_TIMED_TEXT, 0, 0, parcel);
     } else {  // send an empty timed text to clear the screen
         listener->sendEvent(MEDIA_TIMED_TEXT);

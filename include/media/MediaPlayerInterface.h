@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2007 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -52,6 +57,12 @@ enum player_type {
     // The shared library with the test player is passed passed as an
     // argument to the 'test:' url in the setDataSource call.
     TEST_PLAYER = 5,
+#ifdef MTK_AOSP_ENHANCEMENT
+#ifdef MTK_CMMB_ENABLE
+    CMMB_PLAYER = 8,
+#endif
+    UNKNOWN_PLAYER,
+#endif
 };
 
 
@@ -97,6 +108,9 @@ public:
         virtual ssize_t     frameSize() const = 0;
         virtual uint32_t    latency() const = 0;
         virtual float       msecsPerFrame() const = 0;
+#ifdef MTK_AOSP_ENHANCEMENT
+        virtual void    setVolume(float leftVolume, float rightVolume) = 0;
+#endif
         virtual status_t    getPosition(uint32_t *position) const = 0;
         virtual status_t    getTimestamp(AudioTimestamp &ts) const = 0;
         virtual status_t    getFramesWritten(uint32_t *frameswritten) const = 0;
@@ -249,7 +263,12 @@ public:
         Mutex::Autolock autoLock(mNotifyLock);
         mCookie = cookie; mNotify = notifyFunc;
     }
-
+    //MTK_OP01_PROTECT_START
+#ifdef MTK_AOSP_ENHANCEMENT
+    //CMMB
+    virtual status_t capture(const char* /*uri*/){return INVALID_OPERATION;}
+#endif
+   //MTK_OP01_PROTECT_END
     void        sendEvent(int msg, int ext1=0, int ext2=0,
                           const Parcel *obj=NULL) {
         notify_callback_f notifyCB;

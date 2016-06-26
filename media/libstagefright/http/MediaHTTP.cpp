@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2013 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -27,6 +32,13 @@
 
 #include <media/IMediaHTTPConnection.h>
 
+#include <media/MtkMMLog.h>
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <cutils/properties.h>
+#ifdef CUSTOM_UASTRING_FROM_PROPERTY
+#include "custom_prop.h"
+#endif
+#endif
 namespace android {
 
 MediaHTTP::MediaHTTP(const sp<IMediaHTTPConnection> &conn)
@@ -38,6 +50,7 @@ MediaHTTP::MediaHTTP(const sp<IMediaHTTPConnection> &conn)
 }
 
 MediaHTTP::~MediaHTTP() {
+    MM_LOGI("");
     clearDRMState_l();
 }
 
@@ -55,7 +68,34 @@ status_t MediaHTTP::connect(
     }
 
     if (extHeaders.indexOfKey(String8("User-Agent")) < 0) {
+#ifdef CUSTOM_UASTRING_FROM_PROPERTY
+        String8 userAgent;
+        String8 wapProfile;
+
+        char value[MAX_VALUE_LEN];
+        if (0 < custom_get_string(MODULE_HTTP_STREAMING, USER_AGENT, value, NULL)) {
+            userAgent = String8(value);
+        } else {
+            // use google default
+            userAgent.append("stagefright/1.2 (Linux;Android ");
+
+            char prop[PROPERTY_VALUE_MAX];
+            property_get("ro.build.version.release", prop, "Unknown");
+            userAgent.append(prop);
+            userAgent.append(")");
+        }
+        extHeaders.add(String8("User-Agent"), userAgent);
+        ALOGI("user-agent:%s", userAgent.string());
+
+        memset(value, 0, sizeof(value));
+        if (0 < custom_get_string(MODULE_HTTP_STREAMING, UAPROF_URL, value, NULL)) {
+            wapProfile = String8(value);
+            extHeaders.add(String8("x-wap-profile"), wapProfile);
+            ALOGI("wapProfile:%s", wapProfile.string());
+        }
+#else
         extHeaders.add(String8("User-Agent"), String8(MakeUserAgent().c_str()));
+#endif
     }
 
     bool success = mHTTPConnection->connect(uri, &extHeaders);
@@ -69,11 +109,21 @@ status_t MediaHTTP::connect(
 }
 
 void MediaHTTP::disconnect() {
+    MM_LOGI("mInitCheck:%d", mInitCheck);
     if (mInitCheck != OK) {
         return;
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (mHTTPConnection != NULL) {
+        mHTTPConnection->disconnect();
+        MM_LOGI("disconnect done");
+    } else {
+        ALOGW("mHTTPConnection NULL, not disconnect");
+    }
+#else
     mHTTPConnection->disconnect();
+#endif
 }
 
 status_t MediaHTTP::initCheck() const {

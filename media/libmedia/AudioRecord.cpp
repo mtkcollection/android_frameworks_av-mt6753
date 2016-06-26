@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
 **
 ** Copyright 2008, The Android Open Source Project
 **
@@ -29,9 +34,21 @@
 
 #define WAIT_PERIOD_MS          10
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <cutils/log.h>
+#include <utils/KeyedVector.h>
+
+// BASIC don't have the patch
+#include <audio_utils/pulse.h>
+#endif
+
 namespace android {
 // ---------------------------------------------------------------------------
-
+#ifdef MTK_AOSP_ENHANCEMENT
+    static KeyedVector<int, AudioEffect*> mvpAEC;
+    static KeyedVector<int, AudioEffect*> mvpAGC;
+    static KeyedVector<int, AudioEffect*> mvpNS;
+#endif
 // static
 status_t AudioRecord::getMinFrameCount(
         size_t* frameCount,
@@ -59,7 +76,7 @@ status_t AudioRecord::getMinFrameCount(
             sampleRate, format, channelMask);
         return BAD_VALUE;
     }
-
+    ALOGD("%s %zu", __FUNCTION__ , * frameCount);
     return NO_ERROR;
 }
 
@@ -101,6 +118,130 @@ AudioRecord::AudioRecord(
             uid, pid, pAttributes);
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+AudioRecord::AudioRecord(
+        audio_source_t inputSource,
+        String8 Params,
+        uint32_t sampleRate,
+        audio_format_t format,
+        audio_channel_mask_t channelMask,
+        const String16& opPackageName,
+        int frameCount,
+        callback_t cbf,
+        void* user,
+        int notificationFrames,
+        int sessionId,
+        transfer_type transferType,
+        audio_input_flags_t flags,
+        int uid,
+        pid_t pid,
+        const audio_attributes_t* pAttributes)
+    : mStatus(NO_INIT),
+      mOpPackageName(opPackageName),
+      mSessionId(0),
+      mPreviousPriority(ANDROID_PRIORITY_NORMAL),
+      mPreviousSchedulingGroup(SP_DEFAULT),
+      mProxy(NULL),
+      mSelectedDeviceId(AUDIO_PORT_HANDLE_NONE)
+
+{
+
+    if (Params.find("HDREC_SET_VOICE_MODE") > -1 || Params.find("HDREC_SET_VIDEO_MODE") > -1
+        || Params.find("LRChannelSwitch") > -1) {
+        const sp<IAudioFlinger>& audioFlinger = AudioSystem::get_audio_flinger();
+
+        ALOGD("audioFlinger->setParameters,%s+",Params.string());
+        status_t sResult = audioFlinger->setParameters(0, Params);
+        ALOGD("audioFlinger->setParameters:%s-,result=%d",Params.string(),sResult);
+    }
+
+    mStatus = set(inputSource, sampleRate, format, channelMask, frameCount, cbf, user,
+            notificationFrames, false /*threadCanCallJava*/, sessionId, transferType, flags,
+            uid, pid, pAttributes);
+
+
+    ssize_t effectpos = Params.find("PREPROCESS_EFFECT") ;
+    if (effectpos > -1) {
+        const char *cparams = Params.string();
+        const char *key_start = cparams + effectpos;
+        const char *equal_pos = strchr(key_start, '=');
+        if (equal_pos == NULL) {
+            ALOGE("Preprocess effect miss a value");
+        } else {
+            const char *value_start = equal_pos + 1;
+            const char *semicolon_pos = strchr(value_start, ';');
+            String8 value = String8("0");
+            value.setTo(value_start, semicolon_pos - value_start);
+            int ieffect = atoi(value.string());
+            char pUUID[37] = "";
+            // ref: Record.java: initAndStartMediaRecorder
+            int iAEC=1, iNS = iAEC << 1, iAGC = iAEC << 2;
+            // AudioEffect.java: AEC/NS/AGC
+            if ((ieffect & iAEC) > 0) {
+                strcpy(pUUID, "7b491460-8d4d-11e0-bd61-0002a5d5c51b");
+                ALOGD("create AEC effect");
+                AudioEffect *pAEC = new AudioEffect(pUUID, opPackageName, NULL, 0, NULL, NULL, mSessionId, 0);
+                if (pAEC != NULL) {
+                    mvpAEC.add(mSessionId, pAEC);
+                    ALOGD("AEC effect:%p setEnable", pAEC);
+                    pAEC->setEnabled(true);
+                } else {
+                    ALOGD("can't create effect:AEC");
+                }
+            }
+            if ((ieffect & iNS) > 0) {
+                strcpy(pUUID, "58b4b260-8e06-11e0-aa8e-0002a5d5c51b");
+                ALOGD("create NS effect");
+                AudioEffect *pNS = new AudioEffect(pUUID, opPackageName, NULL, 0, NULL, NULL, mSessionId, 0);
+                if (pNS != NULL) {
+                    mvpNS.add(mSessionId, pNS);
+                    ALOGD("NS effect:%p setEnable", pNS);
+                    pNS->setEnabled(true);
+                } else {
+                    ALOGD("can't create effect:NS");
+                }
+            }
+            if ((ieffect & iAGC) > 0) {
+                strcpy(pUUID, "0a8abfe0-654c-11e0-ba26-0002a5d5c51b");
+                ALOGD("create AGC effect");
+                AudioEffect *pAGC = new AudioEffect(pUUID, opPackageName, NULL, 0, NULL, NULL, mSessionId, 0);
+                if (pAGC != NULL) {
+                    mvpAGC.add(mSessionId, pAGC);
+                    ALOGD("AGC effect:%p setEnable", pAGC);
+                    pAGC->setEnabled(true);
+                } else {
+                    ALOGD("can't create effect AGC");
+                }
+            }
+        }
+    }
+}
+
+//void AudioRecord::fn_ReleaseEffect(AudioEffect *&pEffect)
+void AudioRecord::fn_ReleaseEffect()
+{
+
+    int iagc = mvpAGC.indexOfKey(mSessionId);
+    if (iagc >= 0) {
+        AudioEffect *pAGC=mvpAGC.valueFor(mSessionId);
+        ALOGD("delete AGC:%p",pAGC);
+        mvpAGC.removeItem(mSessionId);
+    }
+    int iaec = mvpAEC.indexOfKey(mSessionId);
+    if (iaec >= 0) {
+        AudioEffect *pAEC=mvpAEC.valueFor(mSessionId);
+        ALOGD("delete AEC:%p",pAEC);
+        mvpAEC.removeItem(mSessionId);
+    }
+    int ins = mvpNS.indexOfKey(mSessionId);
+    if (ins >= 0) {
+        AudioEffect *pNS=mvpNS.valueFor(mSessionId);
+        ALOGD("delete NS:%p",pNS);
+        mvpNS.removeItem(mSessionId);
+    }
+}
+#endif
+
 AudioRecord::~AudioRecord()
 {
     if (mStatus == NO_ERROR) {
@@ -125,6 +266,9 @@ AudioRecord::~AudioRecord()
         IPCThreadState::self()->flushCommands();
         ALOGV("~AudioRecord, releasing session id %d",
                 mSessionId);
+#ifdef MTK_AOSP_ENHANCEMENT
+        fn_ReleaseEffect();
+#endif
         AudioSystem::releaseAudioSessionId(mSessionId, -1 /*pid*/);
     }
 }
@@ -146,7 +290,7 @@ status_t AudioRecord::set(
         pid_t pid,
         const audio_attributes_t* pAttributes)
 {
-    ALOGV("set(): inputSource %d, sampleRate %u, format %#x, channelMask %#x, frameCount %zu, "
+    ALOGD("set(): inputSource %d, sampleRate %u, format %#x, channelMask %#x, frameCount %zu, "
           "notificationFrames %u, sessionId %d, transferType %d, flags %#x, opPackageName %s "
           "uid %d, pid %d",
           inputSource, sampleRate, format, channelMask, frameCount, notificationFrames,
@@ -254,6 +398,7 @@ status_t AudioRecord::set(
     mCbf = cbf;
 
     if (cbf != NULL) {
+        ALOGD("set: Create AudioRecordThread");
         mAudioRecordThread = new AudioRecordThread(*this, threadCanCallJava);
         mAudioRecordThread->run("AudioRecord", ANDROID_PRIORITY_AUDIO);
         // thread begins in paused state, and will not reference us until start()
@@ -292,7 +437,7 @@ status_t AudioRecord::set(
 
 status_t AudioRecord::start(AudioSystem::sync_event_t event, int triggerSession)
 {
-    ALOGV("start, sync event %d trigger session %d", event, triggerSession);
+    ALOGD("start, sync event %d trigger session %d", event, triggerSession);
 
     AutoMutex lock(mLock);
     if (mActive) {
@@ -334,12 +479,13 @@ status_t AudioRecord::start(AudioSystem::sync_event_t event, int triggerSession)
             androidSetThreadPriority(0, ANDROID_PRIORITY_AUDIO);
         }
     }
-
+    ALOGD("return status %d", status);
     return status;
 }
 
 void AudioRecord::stop()
 {
+    ALOGD("%s", __FUNCTION__);
     AutoMutex lock(mLock);
     if (!mActive) {
         return;
@@ -358,11 +504,15 @@ void AudioRecord::stop()
         setpriority(PRIO_PROCESS, 0, mPreviousPriority);
         set_sched_policy(0, mPreviousSchedulingGroup);
     }
+
+    ALOGD("-%s", __FUNCTION__);
 }
 
 bool AudioRecord::stopped() const
 {
+    ALOGD("%s", __FUNCTION__);
     AutoMutex lock(mLock);
+    ALOGD("-%s", __FUNCTION__);
     return !mActive;
 }
 
@@ -477,6 +627,7 @@ audio_port_handle_t AudioRecord::getRoutedDeviceId() {
 // must be called with mLock held
 status_t AudioRecord::openRecord_l(size_t epoch, const String16& opPackageName)
 {
+    ALOGD("%s", __FUNCTION__);
     const sp<IAudioFlinger>& audioFlinger = AudioSystem::get_audio_flinger();
     if (audioFlinger == 0) {
         ALOGE("Could not get audioflinger");
@@ -515,6 +666,14 @@ status_t AudioRecord::openRecord_l(size_t epoch, const String16& opPackageName)
         }
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    // Only one recordhandle is supported in AudioFlinger.
+    // For giving more time to let last recordhandle release, we add retry 3 times.
+    int err_try = 0;
+
+INPUT_LOOP:
+#endif
+
     if (mDeviceCallback != 0 && mInput != AUDIO_IO_HANDLE_NONE) {
         AudioSystem::removeAudioDeviceCallback(mDeviceCallback, mInput);
     }
@@ -526,6 +685,16 @@ status_t AudioRecord::openRecord_l(size_t epoch, const String16& opPackageName)
                                         mSampleRate, mFormat, mChannelMask,
                                         mFlags, mSelectedDeviceId);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    // Only one recordhandle is supported in AudioFlinger.
+    // For giving more time to let last recordhandle release, we add retry 3 times.
+    if ((input == 0) && (err_try < 3)) {
+        usleep(5000);
+        ALOGD("getInput(): fail retry %d", err_try);
+        err_try++;
+        goto INPUT_LOOP;
+    }
+#endif
     if (status != NO_ERROR) {
         ALOGE("Could not get audio input for record source %d, sample rate %u, format %#x, "
               "channel mask %#x, session %d, flags %#x",
@@ -781,6 +950,10 @@ void AudioRecord::releaseBuffer(const Buffer* audioBuffer)
     buffer.mFrameCount = stepCount;
     buffer.mRaw = audioBuffer->raw;
 
+#ifdef MTK_LATENCY_DETECT_PULSE
+    detectPulse(2, 800, 0, (void *)buffer.mRaw, buffer.mFrameCount, mFormat, mChannelCount, mSampleRate);
+#endif
+
     AutoMutex lock(mLock);
     mInOverrun = false;
     mProxy->releaseBuffer(&buffer);
@@ -891,7 +1064,12 @@ nsecs_t AudioRecord::processAudioBuffer()
     bool markerReached = false;
     size_t markerPosition = mMarkerPosition;
     // FIXME fails for wraparound, need 64 bits
-    if (!mMarkerReached && (markerPosition > 0) && (position >= markerPosition)) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (!mMarkerReached && (markerPosition > 0) && (position >= markerPosition) && mActive)
+#else
+    if (!mMarkerReached && (markerPosition > 0) && (position >= markerPosition))
+#endif
+   {
         mMarkerReached = markerReached = true;
     }
 
@@ -900,6 +1078,7 @@ nsecs_t AudioRecord::processAudioBuffer()
     size_t newPosition = mNewPosition;
     uint32_t updatePeriod = mUpdatePeriod;
     // FIXME fails for wraparound, need 64 bits
+    ALOGV("updatePeriod %d, position %zu >= newPosition %zu", updatePeriod, position ,  newPosition);
     if (updatePeriod > 0 && position >= newPosition) {
         newPosCount = ((position - newPosition) / updatePeriod) + 1;
         mNewPosition += updatePeriod * newPosCount;
@@ -929,6 +1108,7 @@ nsecs_t AudioRecord::processAudioBuffer()
     }
     while (newPosCount > 0) {
         size_t temp = newPosition;
+        ALOGV("EVENT_NEW_POS");
         mCbf(EVENT_NEW_POS, mUserData, &temp);
         newPosition += updatePeriod;
         newPosCount--;
@@ -966,7 +1146,24 @@ nsecs_t AudioRecord::processAudioBuffer()
     if (minFrames != (uint32_t) ~0) {
         // This "fudge factor" avoids soaking CPU, and compensates for late progress by server
         static const nsecs_t kFudgeNs = 10000000LL; // 10 ms
+        #ifdef MTK_AOSP_ENHANCEMENT
+        // remove kFudgeNs for (mTransfer != TRANSFER_CALLBACK)
+        // to let position update in time for CTS test
+        if(mTransfer != TRANSFER_CALLBACK)
+        {
+             ns = ((minFrames * 1000000000LL) / mSampleRate) ;
+             if(ns <= kFudgeNs)
+             {
+                 ns += kFudgeNs;
+             }
+        }
+        else
+        {
+             ns = ((minFrames * 1000000000LL) / mSampleRate) + kFudgeNs;
+        }
+        #else
         ns = ((minFrames * 1000000000LL) / mSampleRate) + kFudgeNs;
+        #endif
     }
 
     // If not supplying data by EVENT_MORE_DATA, then we're done

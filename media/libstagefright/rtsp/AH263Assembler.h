@@ -1,4 +1,10 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -43,6 +49,9 @@ private:
     uint32_t mAccessUnitRTPTime;
     bool mNextExpectedSeqNoValid;
     uint32_t mNextExpectedSeqNo;
+#ifdef MTK_AOSP_ENHANCEMENT
+    bool mPReceived;
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
     bool mAccessUnitDamaged;
     List<sp<ABuffer> > mPackets;
 
@@ -50,6 +59,13 @@ private:
     void submitAccessUnit();
 
     DISALLOW_EVIL_CONSTRUCTORS(AH263Assembler);
+#ifdef MTK_AOSP_ENHANCEMENT
+public:
+    virtual void setNextExpectedSeqNo(uint32_t rtpSeq) {
+        mNextExpectedSeqNo = rtpSeq;
+        mNextExpectedSeqNoValid = true;
+    }
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
 };
 
 }  // namespace android

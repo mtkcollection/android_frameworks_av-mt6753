@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -426,6 +431,10 @@ private:
     static sp<IDrmManagerService> sDrmManagerService;
     static const sp<IDrmManagerService>& getDrmManagerService();
     static const String8 EMPTY_STRING;
+
+    // M: add for OMA DRM v1.0 implementation
+private:
+    static KeyedVector<int, DrmManagerClientImpl*> sClientVector;
 };
 
 };

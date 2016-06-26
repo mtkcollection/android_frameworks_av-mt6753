@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  ** Copyright 2008, The Android Open Source Project
  **
  ** Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,6 +22,11 @@
 //#define LOG_NDEBUG 0
 #define LOG_TAG "MediaRecorderService"
 #include <utils/Log.h>
+
+#ifdef MTK_AOSP_ENHANCEMENT
+#undef ALOGV
+#define ALOGV   ALOGD
+#endif
 
 #include <sys/types.h>
 #include <sys/stat.h>

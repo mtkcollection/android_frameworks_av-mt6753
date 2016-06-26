@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -39,6 +44,22 @@
 #define UNUSED_UNLESS_VERBOSE(x)
 #endif
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <camera/MtkCamera.h>
+#include <camera/MtkCameraParameters.h>
+#ifdef HAVE_AEE_FEATURE
+#include "aee.h"
+#endif
+#ifdef MTK_AOSP_ENHANCEMENT
+#define ATRACE_TAG ATRACE_TAG_CAMERA
+#define CAMERA_EVENT_START_TRIGGER 0
+#define CAMERA_EVENT_END_TRIGGER 1
+#include <utils/Trace.h>
+#endif
+#undef ALOGV
+#define ALOGV ALOGD
+#define LOG_INTERVAL 10
+#endif  //#ifdef MTK_AOSP_ENHANCEMENT
 namespace android {
 
 static const int64_t CAMERA_SOURCE_TIMEOUT_NS = 3000000000LL;
@@ -98,6 +119,12 @@ void CameraSourceListener::postDataTimestamp(
 }
 
 static int32_t getColorFormat(const char* colorFormat) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    int32_t result = getColorFormatByMTK(colorFormat);
+    if(result != -1){
+        return result;
+    }
+#endif
     if (!strcmp(colorFormat, CameraParameters::PIXEL_FORMAT_YUV420P)) {
        return OMX_COLOR_FormatYUV420Planar;
     }
@@ -188,6 +215,9 @@ CameraSource::CameraSource(
       mCollectStats(false) {
     mVideoSize.width  = -1;
     mVideoSize.height = -1;
+#ifdef MTK_AOSP_ENHANCEMENT
+    preInit();
+#endif
 
     mInitCheck = init(camera, proxy, cameraId,
                     clientName, clientUid,
@@ -318,6 +348,10 @@ status_t CameraSource::configureCamera(
         int32_t width, int32_t height,
         int32_t frameRate) {
     ALOGV("configureCamera");
+#ifdef MTK_AOSP_ENHANCEMENT
+    mCameraBufferCount = params->getInt(MtkCameraParameters::KEY_VR_BUFFER_COUNT);
+    ALOGV("mCameraBufferCount= %d", mCameraBufferCount);
+#endif
     Vector<Size> sizes;
     bool isSetVideoSizeSupportedByCamera = true;
     getSupportedVideoSizes(*params, &isSetVideoSizeSupportedByCamera, sizes);
@@ -345,7 +379,11 @@ status_t CameraSource::configureCamera(
     }
 
     if (frameRate != -1) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        CHECK(frameRate > 0);
+#else
         CHECK(frameRate > 0 && frameRate <= 120);
+#endif
         const char* supportedFrameRates =
                 params->get(CameraParameters::KEY_SUPPORTED_PREVIEW_FRAME_RATES);
         CHECK(supportedFrameRates != NULL);
@@ -533,6 +571,15 @@ status_t CameraSource::initWithCameraAccess(
         return err;
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#ifdef MTK_SLOW_MOTION_VIDEO_SUPPORT
+    ALOGI("recheck color format for slow motion (direct link).");
+    CameraParameters params_(mCamera->getParameters());
+    if ((err = isCameraColorFormatSupported(params_)) != OK) {
+        return err;
+    }
+#endif
+#endif
     // Check on video frame size and frame rate.
     CameraParameters newCameraParams(mCamera->getParameters());
     if ((err = checkVideoSize(newCameraParams,
@@ -669,6 +716,12 @@ status_t CameraSource::start(MetaData *meta) {
             CHECK_GT(nBuffers, 0);
             mNumInputBuffers = nBuffers;
         }
+#ifdef MTK_AOSP_ENHANCEMENT//do not drop frame after start
+        mIsViLTEMode = 0;
+        if (meta->findInt32('vLTE', &mIsViLTEMode) && mIsViLTEMode == 1) {
+            ALOGI("VILTE MODE now,mStartTimeUs should be zero %" PRId64 " us",mStartTimeUs);
+        }
+#endif
 
         // apply encoder color format if specified
         if (meta->findInt32(kKeyPixelFormat, &mEncoderFormat)) {
@@ -683,6 +736,9 @@ status_t CameraSource::start(MetaData *meta) {
     if ((err = startCameraRecording()) == OK) {
         mStarted = true;
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGI("startCameraRecording return=%d",err);
+#endif
 
     return err;
 }
@@ -767,8 +823,15 @@ status_t CameraSource::reset() {
         if (mNumGlitches > 0) {
             ALOGW("%d long delays between neighboring video frames", mNumGlitches);
         }
-
+#ifndef MTK_SLOW_MOTION_VIDEO_SUPPORT
         CHECK_EQ(mNumFramesReceived, mNumFramesEncoded + mNumFramesDropped);
+#else
+        if(mColorFormat !=OMX_MTK_COLOR_FormatBitStream /*0x7F000300*/){
+            //not check only if directlink, because datacallback not drop frame when direct link even mStarted has been seted to false after reset.
+            //this will cause mNumFramesReceived increasing after reset
+            CHECK_EQ(mNumFramesReceived, mNumFramesEncoded + mNumFramesDropped);
+        }
+#endif
     }
 
     releaseCamera();
@@ -778,7 +841,13 @@ status_t CameraSource::reset() {
 }
 
 void CameraSource::releaseRecordingFrame(const sp<IMemory>& frame) {
+#ifndef MTK_AOSP_ENHANCEMENT
     ALOGV("releaseRecordingFrame");
+#endif
+#ifdef MTK_AOSP_ENHANCEMENT
+    ATRACE_INT("releaseRecordingFrame",CAMERA_EVENT_START_TRIGGER);
+    ATRACE_INT("releaseRecordingFrame",CAMERA_EVENT_END_TRIGGER);
+#endif
     if (mCameraRecordingProxy != NULL) {
         mCameraRecordingProxy->releaseRecordingFrame(frame);
     } else if (mCamera != NULL) {
@@ -789,6 +858,9 @@ void CameraSource::releaseRecordingFrame(const sp<IMemory>& frame) {
 }
 
 void CameraSource::releaseQueuedFrames() {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("releaseQueuedFrames");
+#endif
     List<sp<IMemory> >::iterator it;
     while (!mFramesReceived.empty()) {
         it = mFramesReceived.begin();
@@ -796,6 +868,9 @@ void CameraSource::releaseQueuedFrames() {
         mFramesReceived.erase(it);
         ++mNumFramesDropped;
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("releaseQueuedFrames done");
+#endif
 }
 
 sp<MetaData> CameraSource::getFormat() {
@@ -807,8 +882,13 @@ void CameraSource::releaseOneRecordingFrame(const sp<IMemory>& frame) {
 }
 
 void CameraSource::signalBufferReturned(MediaBuffer *buffer) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    Mutex::Autolock autoLock(mLock);
+    ALOGV("signalBufferReturned: %p,mFramesBeingEncoded.size() = %zu",buffer->data(),mFramesBeingEncoded.size());
+#else
     ALOGV("signalBufferReturned: %p", buffer->data());
     Mutex::Autolock autoLock(mLock);
+#endif
     for (List<sp<IMemory> >::iterator it = mFramesBeingEncoded.begin();
          it != mFramesBeingEncoded.end(); ++it) {
         if ((*it)->pointer() ==  buffer->data()) {
@@ -826,7 +906,9 @@ void CameraSource::signalBufferReturned(MediaBuffer *buffer) {
 
 status_t CameraSource::read(
         MediaBuffer **buffer, const ReadOptions *options) {
+#ifndef MTK_AOSP_ENHANCEMENT
     ALOGV("read");
+#endif
 
     *buffer = NULL;
 
@@ -852,8 +934,15 @@ status_t CameraSource::read(
                 }
                 ALOGW("Timed out waiting for incoming camera video frames: %" PRId64 " us",
                     mLastFrameTimestampUs);
+#ifdef HAVE_AEE_FEATURE
+                CheckAEEWarningType();
+#endif
             }
         }
+#ifdef MTK_AOSP_ENHANCEMENT
+        ATRACE_INT("omxReadData", CAMERA_EVENT_START_TRIGGER);
+        ATRACE_INT("omxReadData", CAMERA_EVENT_END_TRIGGER);
+#endif
         if (!mStarted) {
             return OK;
         }
@@ -867,6 +956,14 @@ status_t CameraSource::read(
         (*buffer)->setObserver(this);
         (*buffer)->add_ref();
         (*buffer)->meta_data()->setInt64(kKeyTime, frameTime);
+#ifdef MTK_SLOW_MOTION_VIDEO_SUPPORT
+//for directlink, set codecconfig flags when read the first frame
+        if(mColorFormat ==OMX_MTK_COLOR_FormatBitStream /*0x7F000300*/ && (!mCodecConfigReceived)){
+            (*buffer)->meta_data()->setInt32(
+                kKeyIsCodecConfig, true);
+            mCodecConfigReceived = true;
+        }
+#endif
     }
     return OK;
 }
@@ -875,11 +972,18 @@ void CameraSource::dataCallbackTimestamp(int64_t timestampUs,
         int32_t msgType __unused, const sp<IMemory> &data) {
     ALOGV("dataCallbackTimestamp: timestamp %lld us", (long long)timestampUs);
     Mutex::Autolock autoLock(mLock);
+#ifdef MTK_AOSP_ENHANCEMENT
+    int32_t result = checktimestampincallback(timestampUs,data);
+    if(result == -1){
+        return;
+    }
+#else
     if (!mStarted || (mNumFramesReceived == 0 && timestampUs < mStartTimeUs)) {
         ALOGV("Drop frame at %lld/%lld us", (long long)timestampUs, (long long)mStartTimeUs);
         releaseOneRecordingFrame(data);
         return;
     }
+#endif
 
     // May need to skip frame or modify timestamp. Currently implemented
     // by the subclass CameraSourceTimeLapse.
@@ -889,12 +993,22 @@ void CameraSource::dataCallbackTimestamp(int64_t timestampUs,
     }
 
     if (mNumFramesReceived > 0) {
+#ifdef MTK_AOSP_ENHANCEMENT
+#ifdef MTK_SLOW_MOTION_VIDEO_SUPPORT
+        int32_t result = CheckTimeStampByMtk(timestampUs,data);
+#else
+        int32_t result = CheckTimeStampByMtk(timestampUs);
+#endif
+        if(result == -1)
+            return;
+#else
         if (timestampUs <= mLastFrameTimestampUs) {
             ALOGW("Dropping frame with backward timestamp %lld (last %lld)",
                     (long long)timestampUs, (long long)mLastFrameTimestampUs);
             releaseOneRecordingFrame(data);
             return;
         }
+#endif
         if (timestampUs - mLastFrameTimestampUs > mGlitchDurationThresholdUs) {
             ++mNumGlitches;
         }
@@ -905,23 +1019,58 @@ void CameraSource::dataCallbackTimestamp(int64_t timestampUs,
         mFirstFrameTimeUs = timestampUs;
         // Initial delay
         if (mStartTimeUs > 0) {
+#ifdef MTK_SLOW_MOTION_VIDEO_SUPPORT
+            checkTimestampForSlowMotion(timestampUs);
+#endif
             if (timestampUs < mStartTimeUs) {
                 // Frame was captured before recording was started
                 // Drop it without updating the statistical data.
                 releaseOneRecordingFrame(data);
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGW("timestampUs=%" PRId64 " < mStartTimeUs=%" PRId64 " drop frame",timestampUs,mStartTimeUs);
+#endif
                 return;
             }
             mStartTimeUs = timestampUs - mStartTimeUs;
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGI("the first video frame,time offset to mStartTimeUs=%" PRId64 "",mStartTimeUs);
+#endif
         }
     }
     ++mNumFramesReceived;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    //if ((mDropRate != 0) && (mNumFramesReceived % mDropRate != 0)) {
+    if ((mDropRate > 0) && (mNumFramesReceived != int(mLastNumFramesReceived + mDropRate * mNumRemainFrameReceived  + 0.5))) {
+        releaseOneRecordingFrame(data);
+        ++mNumFramesDropped;
+        ALOGD("Quality adjust drop frame = %d",mNumFramesReceived);
+        return;
+    }
+    //real received frame num
+    ++mNumRemainFrameReceived;
+#endif
+#ifdef HAVE_AEE_FEATURE
+    if(data == NULL || data->size() <= 0)
+        aee_system_exception("CRDISPATCH_KEY:Camera issue",NULL,DB_OPT_DEFAULT,"\nCameraSource:dataCallbackTimestamp data error 0x%x",data.get());
+#endif
     CHECK(data != NULL && data->size() > 0);
     mFramesReceived.push_back(data);
     int64_t timeUs = mStartTimeUs + (timestampUs - mFirstFrameTimeUs);
+#ifdef MTK_AOSP_ENHANCEMENT//do not drop frame after start
+    if (mIsViLTEMode == 1){
+        timeUs = timestampUs;//directy use timestampUs from camera
+    }
+#endif
     mFrameTimes.push_back(timeUs);
+#ifdef MTK_AOSP_ENHANCEMENT
+    if(mNumFramesReceived % LOG_INTERVAL == 1)
+        ALOGI("initial delay: %" PRId64 ", current time stamp: %" PRId64",mFramesReceived.size()= %zu,mNumFramesReceived= %d",
+        mStartTimeUs, timeUs,mFramesReceived.size(),mNumFramesReceived);
+#else
     ALOGV("initial delay: %" PRId64 ", current time stamp: %" PRId64,
         mStartTimeUs, timeUs);
+#endif
     mFrameAvailableCondition.signal();
 }
 
@@ -943,4 +1092,121 @@ void CameraSource::DeathNotifier::binderDied(const wp<IBinder>& who __unused) {
     ALOGI("Camera recording proxy died");
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+void CameraSource::preInit() {
+    mDropRate = -1;
+    mNumRemainFrameReceived = 1;
+    mLastNumFramesReceived = 1;
+
+    //memset(&mCamRecSetting,0,sizeof(CameraRecSetting));
+    mNeedUnlock = false;
+    mStartTimeOffsetUs = 0;
+    mCodecConfigReceived = false;
+}
+
+status_t CameraSource::setFrameRate(int32_t fps)
+{
+    Mutex::Autolock autoLock(mLock);
+
+    if(fps < 0 || fps >= mVideoFrameRate)
+    {
+        ALOGE("changeCameraFrameRate,wrong target fps =%d", fps);
+        mDropRate = -1;
+        return BAD_VALUE;
+    }
+
+    mDropRate = ((float)mVideoFrameRate)/fps;
+    ALOGD("changeCameraFrameRate,target_fps=%d,mDropRate = %f", fps,mDropRate);
+    mLastNumFramesReceived = mNumFramesReceived;
+    mNumRemainFrameReceived = 1;
+
+    return OK;
+}
+int32_t getColorFormatByMTK(const char* colorFormat) {
+    ALOGD("getColorFormat(%s)", colorFormat);
+    if (!strcmp(colorFormat, MtkCameraParameters::PIXEL_FORMAT_YUV420I)) {
+       return OMX_COLOR_FormatYUV420Planar; // i420
+    }
+    if (!strcmp(colorFormat, CameraParameters::PIXEL_FORMAT_YUV420P) ) {
+       return OMX_MTK_COLOR_FormatYV12;// YV12
+    }
+#ifdef MTK_SLOW_MOTION_VIDEO_SUPPORT
+    if (!strcmp(colorFormat, MtkCameraParameters::PIXEL_FORMAT_BITSTREAM)) {
+       // BitStream
+       return OMX_MTK_COLOR_FormatBitStream;
+       //return 0x7F000300;
+    }
+#endif
+    return -1;
+}
+int32_t CameraSource::CheckTimeStampByMtk(int64_t &timestampUs){
+        if (timestampUs <= mLastFrameTimestampUs){
+            ALOGW("[CameraSource][dataCallbackTimestamp][Warning] current frame timestamp: %" PRId64 " <= previous frame timestamp: %" PRId64 "",
+                timestampUs, mLastFrameTimestampUs);
+#ifdef HAVE_AEE_FEATURE
+        if(timestampUs < mLastFrameTimestampUs)
+            aee_system_exception("CRDISPATCH_KEY:Camera issue",NULL,DB_OPT_DEFAULT,"\nCameraSource:current frame timestamp: %" PRId64 " < previous frame timestamp: %" PRId64 "!",timestampUs, mLastFrameTimestampUs);
+#endif
+        }
+        return 0;
+}
+
+int32_t CameraSource::CheckTimeStampByMtk(int64_t &timestampUs,const sp<IMemory> &data){
+        if (timestampUs <= mLastFrameTimestampUs){
+            ALOGW("[CameraSource][dataCallbackTimestamp][Warning] current frame timestamp: %" PRId64 " <= previous frame timestamp: %" PRId64 "",
+                timestampUs, mLastFrameTimestampUs);
+#ifdef HAVE_AEE_FEATURE
+        if(timestampUs < mLastFrameTimestampUs)
+            aee_system_exception("CRDISPATCH_KEY:Camera issue",NULL,DB_OPT_DEFAULT,"\nCameraSource:current frame timestamp: %" PRId64 " < previous frame timestamp: %" PRId64 "!",timestampUs, mLastFrameTimestampUs);
+#endif
+        }
+        if(timestampUs <= mFirstFrameTimeUs+mStartTimeOffsetUs) {
+            ALOGI("drop frame for directlink, timestampUs(%" PRId64 " us),mFirstFrameTimeUs(%" PRId64 " us),mStartTimeOffsetUs(%" PRId64 " us)",
+                timestampUs, mFirstFrameTimeUs, mStartTimeOffsetUs);
+            releaseOneRecordingFrame(data);
+            return -1;
+        }
+        else{
+            timestampUs -= mStartTimeOffsetUs;
+        }
+        return 0;
+}
+
+int32_t CameraSource::checktimestampincallback(int64_t timestampUs,const sp<IMemory> &data){
+    ATRACE_INT("dataCallbackTimestamp", CAMERA_EVENT_START_TRIGGER);
+    ATRACE_INT("dataCallbackTimestamp", CAMERA_EVENT_END_TRIGGER);
+    if ((!mStarted || (mNumFramesReceived == 0 && timestampUs < mStartTimeUs))
+#ifdef MTK_SLOW_MOTION_VIDEO_SUPPORT
+        && (mColorFormat !=OMX_MTK_COLOR_FormatBitStream /*0x7F000300*/)
+#endif
+        ) {
+        ALOGW("Drop frame at %" PRId64 "/%" PRId64 " us", timestampUs, mStartTimeUs);
+        ATRACE_INT("dropCameraFrame", CAMERA_EVENT_START_TRIGGER);
+        ATRACE_INT("dropCameraFrame", CAMERA_EVENT_END_TRIGGER);
+        releaseOneRecordingFrame(data);
+        return -1;
+    }
+    return 0;
+}
+void CameraSource::checkTimestampForSlowMotion(int64_t timestampUs){
+    if ( mColorFormat == OMX_MTK_COLOR_FormatBitStream /*0x7F000300*/) {
+        ALOGI("not drop frame for directlink, reset mStartTimeUs as first frame timestamp");
+        if(timestampUs < mStartTimeUs) {
+            mStartTimeOffsetUs = mStartTimeUs - timestampUs;
+            ALOGI("mStartTimeOffsetUs = %" PRId64 "", mStartTimeOffsetUs);
+        }
+        mStartTimeUs = timestampUs;
+    }
+}
+#ifdef HAVE_AEE_FEATURE
+void CameraSource::CheckAEEWarningType(){
+    ALOGW("mFramesBeingEncoded.size()= %zu, and camera buffers count is %d", mFramesBeingEncoded.size(), mCameraBufferCount);
+    if(mFramesBeingEncoded.size() == (size_t)mCameraBufferCount){
+        aee_system_warning("CRDISPATCH_KEY:Encoder issue",NULL,DB_OPT_FTRACE,"\nCameraSource:Timed out waiting for encoder return buffer!");
+    }else{
+        aee_system_warning("CRDISPATCH_KEY:Camera issue",NULL,DB_OPT_FTRACE,"\nCameraSource:Timed out waiting for incoming camera video frames!");
+    }
+}
+#endif
+#endif
 }  // namespace android

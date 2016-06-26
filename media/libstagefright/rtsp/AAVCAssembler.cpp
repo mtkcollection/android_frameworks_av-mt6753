@@ -1,4 +1,10 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -72,9 +78,14 @@ ARTPAssembler::AssemblyStatus AAVCAssembler::addNALUnit(
         mNextExpectedSeqNoValid = true;
         mNextExpectedSeqNo = (uint32_t)buffer->int32Data();
     } else if ((uint32_t)buffer->int32Data() != mNextExpectedSeqNo) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGV("%d is not the sequence number %d I expected",
+        buffer->int32Data(), mNextExpectedSeqNo);
+        return getAssembleStatus(queue, mNextExpectedSeqNo);
+#else
         ALOGV("Not the sequence number I expected");
-
         return WRONG_SEQUENCE_NUMBER;
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
     }
 
     const uint8_t *data = buffer->data();
@@ -128,6 +139,13 @@ void AAVCAssembler::addSingleNALUnit(const sp<ABuffer> &buffer) {
 #if !LOG_NDEBUG
     hexdump(buffer->data(), buffer->size());
 #endif
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    // always send nal fragment to APacketSource which will
+    // combine access units
+    sendNalFragment(buffer);
+    return;
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
 
     uint32_t rtpTime;
     CHECK(buffer->meta()->findInt32("rtp-time", (int32_t *)&rtpTime));
@@ -236,7 +254,11 @@ ARTPAssembler::AssemblyStatus AAVCAssembler::addFragmentedNALUnit(
                 ALOGV("sequence not complete, expected seqNo %d, got %d",
                      expectedSeqNo, (uint32_t)buffer->int32Data());
 
+#ifdef MTK_AOSP_ENHANCEMENT
+                return getAssembleStatus(queue, expectedSeqNo);
+#else
                 return WRONG_SEQUENCE_NUMBER;
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
             }
 
             if (size < 2
@@ -379,5 +401,19 @@ void AAVCAssembler::onByeReceived() {
     msg->setInt32("eos", true);
     msg->post();
 }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+void AAVCAssembler::sendNalFragment(const sp<ABuffer> &buffer) {
+    if (mAccessUnitDamaged) {
+        buffer->meta()->setInt32("damaged", true);
+    }
+
+    mAccessUnitDamaged = false;
+
+    sp<AMessage> msg = mNotifyMsg->dup();
+    msg->setBuffer("access-unit", buffer);
+    msg->post();
+}
+#endif
 
 }  // namespace android

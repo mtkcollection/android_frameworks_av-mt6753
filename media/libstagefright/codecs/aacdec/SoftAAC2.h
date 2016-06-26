@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2012 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -92,6 +97,17 @@ private:
     int32_t outputDelayRingBufferSpaceLeft();
 
     DISALLOW_EVIL_CONSTRUCTORS(SoftAAC2);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    UINT mDecoderInternelBufferSize;
+    int getBytesInDecoder();
+    void handleAviWithRawAAC();
+
+    UCHAR mAACConfigSpecificData[2];
+    bool  mIsErrorCsdHandled;
+    bool  mIsRawAac;
+    size_t mInputBufferCountAnchor;
+#endif
 };
 
 }  // namespace android

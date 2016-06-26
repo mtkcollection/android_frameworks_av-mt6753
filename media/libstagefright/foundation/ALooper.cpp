@@ -151,10 +151,6 @@ status_t ALooper::stop() {
     }
 
     mQueueChangedCondition.signal();
-    {
-        Mutex::Autolock autoLock(mRepliesLock);
-        mRepliesCondition.broadcast();
-    }
 
     if (!runningLocally && !thread->isCurrentThread()) {
         // If not running locally and this thread _is_ the looper thread,
@@ -238,12 +234,6 @@ status_t ALooper::awaitResponse(const sp<AReplyToken> &replyToken, sp<AMessage> 
     Mutex::Autolock autoLock(mRepliesLock);
     CHECK(replyToken != NULL);
     while (!replyToken->retrieveReply(response)) {
-        {
-            Mutex::Autolock autoLock(mLock);
-            if (mThread == NULL) {
-                return -ENOENT;
-            }
-        }
         mRepliesCondition.wait(mRepliesLock);
     }
     return OK;

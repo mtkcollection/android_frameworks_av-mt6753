@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -45,12 +50,16 @@ public:
     // type can be 'stsz' or 'stz2'.
     status_t setSampleSizeParams(
             uint32_t type, off64_t data_offset, size_t data_size);
-
+#ifndef MTK_AOSP_ENHANCEMENT
     status_t setTimeToSampleParams(off64_t data_offset, size_t data_size);
 
     status_t setCompositionTimeToSampleParams(
             off64_t data_offset, size_t data_size);
-
+#else
+status_t setTimeToSampleParams(off64_t data_offset, size_t data_size, uint32_t timescaleFactor = 0);
+status_t setCompositionTimeToSampleParams(
+         off64_t data_offset, size_t data_size, uint32_t timescaleFactor = 0);
+#endif
     status_t setSyncSampleParams(off64_t data_offset, size_t data_size);
 
     ////////////////////////////////////////////////////////////////////////////
@@ -122,7 +131,6 @@ private:
     uint32_t *mCompositionTimeDeltaEntries;
     size_t mNumCompositionTimeDeltaEntries;
     CompositionDeltaLookup *mCompositionDeltaLookup;
-
     off64_t mSyncSampleOffset;
     uint32_t mNumSyncSamples;
     uint32_t *mSyncSamples;
@@ -156,6 +164,32 @@ private:
 
     SampleTable(const SampleTable &);
     SampleTable &operator=(const SampleTable &);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+public:
+    status_t setStartTimeOffset(uint32_t time_offset);//added by hai.li to support track time offset
+
+    status_t setPredictSampleSize(uint32_t sampleSize)
+    {
+        mDefaultSampleSize = sampleSize;
+        return OK;
+    }
+
+    uint32_t getStartTimeOffset();
+    uint32_t getSampleCount();//added by hai.li to check unsupport video
+    int32_t getSkipSample();
+    void setSkipSample(int32_t skipSample);
+    uint32_t getSkipOff();
+    void setSkipOff(uint32_t skipOff);
+    uint32_t getTimeToSampleCount();
+    uint32_t* getTimeToSample();
+
+private:
+        uint32_t mStartTimeOffset;//added by hai.li to support track time offset
+        int32_t mSkipSample;
+        uint32_t mSkipOff;
+
+#endif  //#ifdef MTK_AOSP_ENHANCEMENT
 };
 
 }  // namespace android

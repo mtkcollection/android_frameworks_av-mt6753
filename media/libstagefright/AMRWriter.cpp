@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -29,6 +34,13 @@
 #include <media/stagefright/MetaData.h>
 #include <media/mediarecorder.h>
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <linux/rtpm_prio.h>
+#undef  LOG_TAG
+#define LOG_TAG "AMRWriter"
+#include <utils/Log.h>
+#endif
+
 namespace android {
 
 AMRWriter::AMRWriter(int fd)
@@ -37,9 +49,15 @@ AMRWriter::AMRWriter(int fd)
       mStarted(false),
       mPaused(false),
       mResumed(false) {
+#ifdef MTK_AOSP_ENHANCEMENT
+ALOGI("AMRWriter Constructor,file fd(%d)",mFd);
+#endif
 }
 
 AMRWriter::~AMRWriter() {
+#ifdef MTK_AOSP_ENHANCEMENT
+ALOGI("~AMRWriter destructor");
+#endif
     if (mStarted) {
         reset();
     }
@@ -82,7 +100,9 @@ status_t AMRWriter::addSource(const sp<MediaSource> &source) {
     CHECK_EQ(channelCount, 1);
     CHECK(meta->findInt32(kKeySampleRate, &sampleRate));
     CHECK_EQ(sampleRate, (isWide ? 16000 : 8000));
-
+#ifdef MTK_AOSP_ENHANCEMENT
+ALOGI("addSource,channelCount=%d,sampleRate=%d",channelCount,sampleRate);
+#endif
     mSource = source;
 
     const char *kHeader = isWide ? "#!AMR-WB\n" : "#!AMR\n";
@@ -111,9 +131,13 @@ status_t AMRWriter::start(MetaData * /* params */) {
         // Already started, does nothing
         return OK;
     }
-
+#ifdef MTK_AOSP_ENHANCEMENT
+ALOGI("start,call source start+++");
+#endif
     status_t err = mSource->start();
-
+#ifdef MTK_AOSP_ENHANCEMENT
+ALOGI("start,call source start---,err = %d",err);
+#endif
     if (err != OK) {
         return err;
     }
@@ -134,6 +158,10 @@ status_t AMRWriter::start(MetaData * /* params */) {
 }
 
 status_t AMRWriter::pause() {
+#ifdef MTK_AOSP_ENHANCEMENT
+//no lock protected
+ALOGI("pause");
+#endif
     if (!mStarted) {
         return OK;
     }
@@ -142,6 +170,9 @@ status_t AMRWriter::pause() {
 }
 
 status_t AMRWriter::reset() {
+#ifdef MTK_AOSP_ENHANCEMENT
+ALOGI("reset");
+#endif
     if (!mStarted) {
         return OK;
     }
@@ -151,13 +182,21 @@ status_t AMRWriter::reset() {
     void *dummy;
     pthread_join(mThread, &dummy);
 
+
+
     status_t err = static_cast<status_t>(reinterpret_cast<uintptr_t>(dummy));
+#ifdef MTK_AOSP_ENHANCEMENT
+ALOGD("reset,writer thread exit,return %d",err);
+#endif
     {
         status_t status = mSource->stop();
         if (err == OK &&
             (status != OK && status != ERROR_END_OF_STREAM)) {
             err = status;
         }
+#ifdef MTK_AOSP_ENHANCEMENT
+ALOGI("reset,call source stop---,status=%d",status);
+#endif
     }
 
     mStarted = false;
@@ -192,7 +231,12 @@ status_t AMRWriter::threadFunc() {
     status_t err = OK;
 
     prctl(PR_SET_NAME, (unsigned long)"AMRWriter", 0, 0, 0);
+#ifdef MTK_AOSP_ENHANCEMENT
+androidSetThreadPriority(0, ANDROID_PRIORITY_AUDIO);
+while (!mDone || mEstimatedSizeBytes == 0) {
+#else
     while (!mDone) {
+#endif
         MediaBuffer *buffer;
         err = mSource->read(&buffer);
 
@@ -203,6 +247,17 @@ status_t AMRWriter::threadFunc() {
         if (mPaused) {
             buffer->release();
             buffer = NULL;
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (stoppedPrematurely) {
+        ALOGD("pause set stoppedPrematurely false");
+            stoppedPrematurely = false;
+            }
+            if (mDone)
+            {
+                ALOGD("in pause state but stop,mEstimatedSizeBytes=%lld",(long long)mEstimatedSizeBytes);
+                break;
+            }
+#endif
             continue;
         }
 
@@ -210,6 +265,9 @@ status_t AMRWriter::threadFunc() {
         if (exceedsFileSizeLimit()) {
             buffer->release();
             buffer = NULL;
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGW("reach max file size limit,mMaxFileSizeLimitBytes=%lld",(long long)mMaxFileSizeLimitBytes);
+#endif
             notify(MEDIA_RECORDER_EVENT_INFO, MEDIA_RECORDER_INFO_MAX_FILESIZE_REACHED, 0);
             break;
         }
@@ -233,6 +291,9 @@ status_t AMRWriter::threadFunc() {
         if (exceedsFileDurationLimit()) {
             buffer->release();
             buffer = NULL;
+#ifdef MTK_AOSP_ENHANCEMENT
+            ALOGW("reach max file duration limit,mMaxFileDurationLimitUs=%lld",(long long)mMaxFileDurationLimitUs);
+#endif
             notify(MEDIA_RECORDER_EVENT_INFO, MEDIA_RECORDER_INFO_MAX_DURATION_REACHED, 0);
             break;
         }
@@ -260,6 +321,9 @@ status_t AMRWriter::threadFunc() {
     }
 
     if ((err == OK || err == ERROR_END_OF_STREAM) && stoppedPrematurely) {
+#ifdef MTK_AOSP_ENHANCEMENT
+ALOGE("threadFunc,no frame writen to file");
+#endif
         err = ERROR_MALFORMED;
     }
 

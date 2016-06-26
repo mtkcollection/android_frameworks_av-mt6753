@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright 2012, The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -47,7 +52,24 @@
 
 #include <OMX_IVCommon.h>
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <cutils/properties.h>
+#include <OMX_Video.h>
+#include "DataPathTrace.h"
+
+#ifdef USE_MTK_BWC
+#include "bandwidth_control.h"
+#endif
+
+#define WFD_LOGI(fmt,arg...) ALOGI(fmt,##arg)
+
+#else
+#define WFD_LOGI(fmt,arg...)
+#endif
 namespace android {
+#ifdef MTK_AOSP_ENHANCEMENT
+void calcFrameRate(bool isVideo,sp<ABuffer> accessUnit);//declare
+#endif
 
 struct WifiDisplaySource::PlaybackSession::Track : public AHandler {
     enum {
@@ -122,6 +144,10 @@ private:
     static bool IsAudioFormat(const sp<AMessage> &format);
 
     DISALLOW_EVIL_CONSTRUCTORS(Track);
+#ifdef MTK_AOSP_ENHANCEMENT
+public:
+    bool isStopped() const{return !mStarted;}
+#endif
 };
 
 WifiDisplaySource::PlaybackSession::Track::Track(
@@ -150,7 +176,13 @@ WifiDisplaySource::PlaybackSession::Track::Track(
 }
 
 WifiDisplaySource::PlaybackSession::Track::~Track() {
+#ifndef MTK_AOSP_ENHANCEMENT
     CHECK(!mStarted);
+#else
+    WFD_LOGI("delete %s track while it is %s now",
+        mIsAudio?"audio":"video",
+        mStarted?"start":"stop");
+#endif
 }
 
 // static
@@ -190,8 +222,11 @@ void WifiDisplaySource::PlaybackSession::Track::setMediaSenderTrackIndex(
 }
 
 status_t WifiDisplaySource::PlaybackSession::Track::start() {
+#ifndef MTK_AOSP_ENHANCEMENT
     ALOGV("Track::start isAudio=%d", mIsAudio);
-
+#else
+    WFD_LOGI("Track::start isAudio=%d", mIsAudio);
+#endif
     CHECK(!mStarted);
 
     status_t err = OK;
@@ -208,8 +243,11 @@ status_t WifiDisplaySource::PlaybackSession::Track::start() {
 }
 
 void WifiDisplaySource::PlaybackSession::Track::stopAsync() {
+#ifndef MTK_AOSP_ENHANCEMENT
     ALOGV("Track::stopAsync isAudio=%d", mIsAudio);
-
+#else
+    ALOGD("Track::stopAsync isAudio=%d +", mIsAudio);
+#endif
     if (mConverter != NULL) {
         mConverter->shutdownAsync();
     }
@@ -219,7 +257,12 @@ void WifiDisplaySource::PlaybackSession::Track::stopAsync() {
     if (mStarted && mMediaPuller != NULL) {
         if (mRepeaterSource != NULL) {
             // Let's unblock MediaPuller's MediaSource::read().
+            ALOGD("wake up repeaterSource with true");
+#ifdef MTK_AOSP_ENHANCEMENT
+            mRepeaterSource->wakeUp(true);
+#else
             mRepeaterSource->wakeUp();
+#endif
         }
 
         mMediaPuller->stopAsync(msg);
@@ -227,6 +270,7 @@ void WifiDisplaySource::PlaybackSession::Track::stopAsync() {
         mStarted = false;
         msg->post();
     }
+    ALOGD("Track::stopAsync isAudio=%d +", mIsAudio);
 }
 
 void WifiDisplaySource::PlaybackSession::Track::pause() {
@@ -283,6 +327,12 @@ void WifiDisplaySource::PlaybackSession::Track::setRepeaterSource(
 }
 
 void WifiDisplaySource::PlaybackSession::Track::requestIDRFrame() {
+#ifdef MTK_AOSP_ENHANCEMENT
+     if( !mStarted)  {
+        WFD_LOGI("error request in stop state");
+        return;
+     }
+#endif
     if (mIsAudio) {
         return;
     }
@@ -384,6 +434,28 @@ status_t WifiDisplaySource::PlaybackSession::init(
         size_t videoResolutionIndex,
         VideoFormats::ProfileType videoProfileType,
         VideoFormats::LevelType videoLevelType) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        mVideoResolutionType  =videoResolutionType ;
+        mVideoResolutionIndex  = videoResolutionIndex;
+        init_pre(&enableAudio,&enableVideo);
+        ALOGD("clear miracast flag");
+        mMiracastEnable = false;
+        drop_dummy = true;
+
+        char drop_du[PROPERTY_VALUE_MAX];
+        if (property_get("media.wfd.drop.dummynal", drop_du, NULL)){
+            if(!strcmp(drop_du, "1")){
+                drop_dummy = true;
+            }
+            else if(!strcmp(drop_du, "0")){
+                drop_dummy = false;
+            }
+        } else {
+            property_set("media.wfd.drop.dummynal", "1");
+        }
+
+        ALOGI("WFD_property drop_dummy=%d", drop_dummy);
+#endif
     sp<AMessage> notify = new AMessage(kWhatMediaSenderNotify, this);
     mMediaSender = new MediaSender(mNetSession, notify);
     looper()->registerHandler(mMediaSender);
@@ -400,6 +472,8 @@ status_t WifiDisplaySource::PlaybackSession::init(
             videoLevelType);
 
     if (err == OK) {
+// if mTestFakeVideoPath ==2, should setup a  rtpSender for each track,now this path can not be used"MODE_ELEMENTARY_STREAMS"
+// mTestFakeVideoPath == 1, send ts directly is also use the MODE_TRANSPORT_STREAM
         err = mMediaSender->initAsync(
                 -1 /* trackIndex */,
                 clientIP,
@@ -420,11 +494,15 @@ status_t WifiDisplaySource::PlaybackSession::init(
     }
 
     updateLiveness();
-
+    WFD_LOGI("[profile]init done");
     return OK;
 }
 
 WifiDisplaySource::PlaybackSession::~PlaybackSession() {
+#ifdef MTK_AOSP_ENHANCEMENT
+    delete_pro();
+#endif
+    ALOGD("~PlaybackSession");
 }
 
 int32_t WifiDisplaySource::PlaybackSession::getRTPPort() const {
@@ -440,6 +518,7 @@ void WifiDisplaySource::PlaybackSession::updateLiveness() {
 }
 
 status_t WifiDisplaySource::PlaybackSession::play() {
+    WFD_LOGI("[profile]play +++");
     updateLiveness();
 
     (new AMessage(kWhatResume, this))->post();
@@ -460,6 +539,7 @@ status_t WifiDisplaySource::PlaybackSession::onMediaSenderInitialized() {
 }
 
 status_t WifiDisplaySource::PlaybackSession::pause() {
+    WFD_LOGI("[profile]pause +++");
     updateLiveness();
 
     (new AMessage(kWhatPause, this))->post();
@@ -468,11 +548,15 @@ status_t WifiDisplaySource::PlaybackSession::pause() {
 }
 
 void WifiDisplaySource::PlaybackSession::destroyAsync() {
+#ifndef MTK_AOSP_ENHANCEMENT
     ALOGI("destroyAsync");
-
+#else
+    ALOGI("destroyAsync +");
+#endif
     for (size_t i = 0; i < mTracks.size(); ++i) {
         mTracks.valueAt(i)->stopAsync();
     }
+    ALOGI("destroyAsync -");
 }
 
 void WifiDisplaySource::PlaybackSession::onMessageReceived(
@@ -481,9 +565,13 @@ void WifiDisplaySource::PlaybackSession::onMessageReceived(
         case kWhatConverterNotify:
         {
             if (mWeAreDead) {
+#ifndef MTK_AOSP_ENHANCEMENT
                 ALOGV("dropping msg '%s' because we're dead",
                       msg->debugString().c_str());
-
+#else
+                WFD_LOGI("dropping msg '%s' because we're dead",
+                      msg->debugString().c_str());
+#endif
                 break;
             }
 
@@ -497,6 +585,25 @@ void WifiDisplaySource::PlaybackSession::onMessageReceived(
                 sp<ABuffer> accessUnit;
                 CHECK(msg->findBuffer("accessUnit", &accessUnit));
 
+#ifdef MTK_AOSP_ENHANCEMENT
+                if(mMiracastEnable || drop_dummy){
+                    int32_t dummy;
+                    if(accessUnit->meta()->findInt32("dummy-nal", &dummy)){
+                        native_handle_t* handle;
+                        if (accessUnit->meta()->findPointer("handle", (void**)&handle)) {
+                            sp<AMessage> notify;
+                            if (accessUnit->meta()->findMessage("notify", &notify) && notify != NULL){
+                                ALOGV("drop dummy-nal and release");
+                                notify->post();
+                            }else{
+                                ALOGE("handle but not notify!!");
+                            }
+                        }
+                        ALOGV("miracast enable, drop dummy nal");
+                        break;
+                    }
+                }
+#endif
                 const sp<Track> &track = mTracks.valueFor(trackIndex);
 
                 status_t err = mMediaSender->queueAccessUnit(
@@ -504,8 +611,12 @@ void WifiDisplaySource::PlaybackSession::onMessageReceived(
                         accessUnit);
 
                 if (err != OK) {
+                    WFD_LOGI("MediaSender queueAccessUnit signaled error %d ", err);
                     notifySessionDead();
                 }
+#ifdef MTK_AOSP_ENHANCEMENT
+                calcFrameRate((mVideoTrackIndex == (ssize_t)trackIndex),accessUnit);
+#endif
                 break;
             } else if (what == Converter::kWhatEOS) {
                 CHECK_EQ(what, Converter::kWhatEOS);
@@ -549,15 +660,21 @@ void WifiDisplaySource::PlaybackSession::onMessageReceived(
                 if (err == OK) {
                     onMediaSenderInitialized();
                 } else {
+                    WFD_LOGI("MediaSender kWhatInitDone signaled error %d ", err);
                     notifySessionDead();
                 }
             } else if (what == MediaSender::kWhatError) {
+                WFD_LOGI("MediaSender kWhatError " );
                 notifySessionDead();
             } else if (what == MediaSender::kWhatNetworkStall) {
                 size_t numBytesQueued;
                 CHECK(msg->findSize("numBytesQueued", &numBytesQueued));
+#ifndef MTK_AOSP_ENHANCEMENT
 
                 if (mVideoTrackIndex >= 0) {
+#else
+                if (mVideoTrackIndex >= 0 && mTracks.indexOfKey(mVideoTrackIndex) >= 0) {
+#endif
                     const sp<Track> &videoTrack =
                         mTracks.valueFor(mVideoTrackIndex);
 
@@ -956,6 +1073,9 @@ status_t WifiDisplaySource::PlaybackSession::addSource(
         format->setInt32("profile-idc", profileIdc);
         format->setInt32("level-idc", levelIdc);
         format->setInt32("constraint-set", constraintSet);
+#ifdef MTK_AOSP_ENHANCEMENT
+        addSource_video_ext(format, profileIdc, levelIdc);
+#endif
     } else {
         format->setString(
                 "mime",
@@ -986,6 +1106,7 @@ status_t WifiDisplaySource::PlaybackSession::addSource(
 
     if (numInputBuffers != NULL) {
         *numInputBuffers = converter->getInputBufferCount();
+         WFD_LOGI("encoder max buffer count=%zu",*numInputBuffers);
     }
 
     notify = new AMessage(kWhatTrackNotify, this);
@@ -1005,6 +1126,7 @@ status_t WifiDisplaySource::PlaybackSession::addSource(
     if (isVideo) {
         mVideoTrackIndex = trackIndex;
     }
+    WFD_LOGI("addSource: isVideo=%d  TrackIndex=%zu",isVideo,trackIndex);
 
     uint32_t flags = 0;
     if (converter->needToManuallyPrependSPSPPS()) {
@@ -1069,11 +1191,21 @@ status_t WifiDisplaySource::PlaybackSession::addVideoSource(
 }
 
 status_t WifiDisplaySource::PlaybackSession::addAudioSource(bool usePCMAudio) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    String8 param;
+    sp<AudioSource> audioSource = new AudioSource(
+            AUDIO_SOURCE_REMOTE_SUBMIX,
+            mOpPackageName,
+            48000 /* sampleRate */,
+            param,
+            2 /* channelCount */);
+#else
     sp<AudioSource> audioSource = new AudioSource(
             AUDIO_SOURCE_REMOTE_SUBMIX,
             mOpPackageName,
             48000 /* sampleRate */,
             2 /* channelCount */);
+#endif
 
     if (audioSource->initCheck() == OK) {
         return addSource(
@@ -1092,6 +1224,11 @@ sp<IGraphicBufferProducer> WifiDisplaySource::PlaybackSession::getSurfaceTexture
 }
 
 void WifiDisplaySource::PlaybackSession::requestIDRFrame() {
+#ifdef MTK_AOSP_ENHANCEMENT
+    if(mTestFakeVideoPath != 0) {
+        return;
+    }
+#endif
     for (size_t i = 0; i < mTracks.size(); ++i) {
         const sp<Track> &track = mTracks.valueAt(i);
 
@@ -1107,6 +1244,209 @@ void WifiDisplaySource::PlaybackSession::notifySessionDead() {
 
     mWeAreDead = true;
 }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+void WifiDisplaySource::PlaybackSession::init_pre(bool* enableAudio,bool* enableVideo){
+
+    mTestFakeVideoPath= 0;
+    mUseSliceMode  = 0;
+    ALOGI("[config]mVideoResolutionType %d mVideoResolutionIndex %zu",
+                mVideoResolutionType,mVideoResolutionIndex);
+
+    char value[PROPERTY_VALUE_MAX];
+    //
+    if(property_get("wfd.fake.path", value, NULL) ){
+        mTestFakeVideoPath = atoi(value);
+        ALOGI("fake video is enable=%d",mTestFakeVideoPath);
+        if(mTestFakeVideoPath  == 1){  //test the sent ts file directly
+            mMediaPath.setTo("/sdcard/test.ts");
+
+            *enableAudio = true;
+            *enableVideo = true;
+        }
+        if(mTestFakeVideoPath  == 2){//test the sent any file with h264 and aac  throught 2 sender
+            //mMediaPath.setTo("/sdcard/test.ts");
+            //enableAudio = true;
+            //enableVideo = true;
+        }
+    }
+
+
+#ifdef USE_MTK_BWC
+   BWC bwc;
+   bwc.Profile_Change(BWCPT_VIDEO_WIFI_DISPLAY, true);
+   ALOGI("enter WFD BWCPT_VIDEO_WIFI_DISPLAY");
+#endif
+
+}
+void WifiDisplaySource::PlaybackSession::delete_pro(){
+
+  ALOGI("delete_pro");
+  bool shouldDeleteNow= true;
+   for (size_t i = 0; i < mTracks.size(); ++i) {
+        if (!mTracks.valueAt(i)->isStopped()) {
+              shouldDeleteNow = false;
+          ALOGI("[error flow]TrackIndex %zu is not stopped now",i);
+        }
+  }
+  if(shouldDeleteNow){
+     deleteWfdDebugInfo();
+  }
+#ifdef USE_MTK_BWC
+    BWC bwc;
+    bwc.Profile_Change(BWCPT_VIDEO_WIFI_DISPLAY, false);
+    ALOGI("leave WFD BWCPT_VIDEO_WIFI_DISPLAY  !");
+#endif
+}
+
+void WifiDisplaySource::PlaybackSession::addSource_video_ext
+             (sp<AMessage> format,int32_t profileIdc,int32_t levelIdc){
+/*
+#ifdef MTK_VIDEO_HEVC_SUPPORT
+    char value[PROPERTY_VALUE_MAX];
+     bool isHEVC = false;
+    if(property_get("wfd.video.hevc", value, NULL) ){
+        isHEVC = atoi(value);
+    }
+
+    bool choseHEVC=false;
+    choseHEVC =  (mVideoResolutionType ==  VideoFormats::RESOLUTION_CEA )
+                && (mVideoResolutionIndex  == 17);
+
+
+    if(isHEVC || choseHEVC){
+        ALOGI("reconfig to hevc");
+        format->setString("mime", MEDIA_MIMETYPE_VIDEO_HEVC);
+    }
+#endif
+*/
+
+
+     ALOGI("[config]format is '%s'", format->debugString(0).c_str());
+
+     if( profileIdc ==  66 ){
+        format->setInt32("profile", OMX_VIDEO_AVCProfileBaseline);
+     }else if(profileIdc == 100 ){
+         format->setInt32("profile", OMX_VIDEO_AVCProfileHigh);
+     }
+     if(levelIdc == 31){
+        format->setInt32("level", OMX_VIDEO_AVCLevel31);
+     }else if(levelIdc == 32){
+        format->setInt32("level", OMX_VIDEO_AVCLevel32);
+     }else if(levelIdc == 40){
+        format->setInt32("level", OMX_VIDEO_AVCLevel4);
+     }else if(levelIdc == 41){
+        format->setInt32("level", OMX_VIDEO_AVCLevel41);
+     }else if(levelIdc == 42){
+        format->setInt32("level", OMX_VIDEO_AVCLevel42);
+     }
+    size_t width, height, framesPerSecond;
+    bool interlaced;
+    CHECK(VideoFormats::GetConfiguration(
+                mVideoResolutionType,
+                mVideoResolutionIndex,
+                &width,
+                &height,
+                &framesPerSecond,
+                &interlaced));
+
+     format->setInt32("slice-mode",mUseSliceMode);
+     format->setInt32("frame-rate",framesPerSecond);
+}
+
+
+status_t WifiDisplaySource::PlaybackSession::setWfdLevel(int32_t level){
+    if(mVideoTrackIndex>=0){
+         ssize_t index = mTracks.indexOfKey(mVideoTrackIndex);
+            CHECK_GE(index, 0);
+
+                const sp<Converter> &converter =
+                    mTracks.valueAt(index)->converter();
+           status_t err = converter->setWfdLevel(level);
+           return err;
+
+    }else{
+           ALOGE("video track is not ready, set level is error now");
+        return ERROR;
+    }
+
+ }
+int  WifiDisplaySource::PlaybackSession::getWfdParam(int paramType){
+    if(mVideoTrackIndex>=0){
+         ssize_t index = mTracks.indexOfKey(mVideoTrackIndex);
+            CHECK_GE(index, 0);
+
+                const sp<Converter> &converter =
+                    mTracks.valueAt(index)->converter();
+           int paramValue = converter->getWfdParam(paramType);
+           return paramValue;
+
+    }else{
+           ALOGE("video track is not ready, set level is error now");
+        return -1;
+
+    }
+
+
+}
+
+void WifiDisplaySource::PlaybackSession::setSliceMode(int32_t useSliceMode){
+
+       mUseSliceMode = useSliceMode;
+          ALOGI("mUseSliceMode =%d",mUseSliceMode);
+}
+
+status_t WifiDisplaySource::PlaybackSession::forceBlackScreen(bool blackNow) {
+
+       if(mVideoTrackIndex>=0){
+         ssize_t index = mTracks.indexOfKey(mVideoTrackIndex);
+            CHECK_GE(index, 0);
+
+                const sp<Converter> &converter =
+                    mTracks.valueAt(index)->converter();
+           converter->forceBlackScreen(blackNow);
+           return OK;
+
+    }else{
+           ALOGE("video track is not ready,forceBlackScreen is error now");
+        return ERROR;
+
+    }
+
+}
+
+void WifiDisplaySource::PlaybackSession::setMiracastMode(bool MiracastEnable)
+{
+    ALOGD("setMiracastMode %d", MiracastEnable);
+    mMiracastEnable = MiracastEnable;
+}
+
+void calcFrameRate(bool isVideo,sp<ABuffer> accessUnit){
+    if(!isVideo){
+        return;
+    }
+    int64_t nowUs;
+    static int64_t mStartSysTime = 0;
+    static int mCountFrames = 0;
+    int mCountFramerate;
+
+    //count framerate.
+    if(((mCountFrames % 60) == 0) && (mCountFrames != 0))
+    {
+        nowUs = ALooper::GetNowUs();
+        mCountFramerate = (mCountFrames * 1000 * 1000) / (nowUs - mStartSysTime);
+        WFD_LOGI("framerate = %d ", mCountFramerate);
+        mCountFrames = 0;
+        mStartSysTime = ALooper::GetNowUs();
+    }
+    int32_t dummy;
+    if(accessUnit.get() != NULL && !accessUnit->meta()->findInt32("dummy-nal", &dummy)){
+        mCountFrames ++;
+    }
+
+}
+
+#endif
 
 }  // namespace android
 

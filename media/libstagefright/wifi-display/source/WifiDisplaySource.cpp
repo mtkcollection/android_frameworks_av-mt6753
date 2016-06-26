@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright 2012, The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -40,7 +45,43 @@
 
 #include <ctype.h>
 
+
+///M: Support Miracast Testing @{
+#include <media/stagefright/foundation/hexdump.h>
+#include <string.h>
+#include <unistd.h>
+#include <gui/SurfaceComposerClient.h>
+#include <gui/ISurfaceComposer.h>
+#include <ui/DisplayInfo.h>
+/// @}
+
+///M: add for rtsp generic message{@
+#include <media/IRemoteDisplay.h>
+///@}
+
+#ifdef MTK_AOSP_ENHANCEMENT
+///M: @{
+#include <system/audio.h>
+#include <system/audio_policy.h>
+#include <media/AudioSystem.h>
+#include <media/IAudioPolicyService.h>
+#include "DataPathTrace.h"
+/// @}
+#endif
+
+
 namespace android {
+
+
+static const char *hdcp_notify_str[] =
+{
+    "HDCP_INITIALIZATION_COMPLETE",
+    "HDCP_INITIALIZATION_FAILED",
+    "HDCP_SHUTDOWN_COMPLETE",
+    "HDCP_SHUTDOWN_FAILED"
+};
+
+#define HDCP_ENABLE_CONTROL   1
 
 // static
 const int64_t WifiDisplaySource::kReaperIntervalUs;
@@ -63,6 +104,22 @@ WifiDisplaySource::WifiDisplaySource(
       mChosenRTPPort(-1),
       mUsingPCMAudio(false),
       mClientSessionID(0),
+///M: @{
+      mPlaybackSessionIniting(false), ///M: Add by MTK Start
+      mPlaybackSessionDestroyDeferred(false),
+      mPlayRequestReceived(false),
+      mTestSessionID(0),
+      mTestClientSessionID(0),
+#ifdef UIBC_SOURCE_SUPPORT
+      mUibcSessionID(0),
+      mUibcClientSessionID(0),
+      mUibcServerHandler(NULL),
+#endif
+      mWfdFlags(0),
+      mTestSessionStopped(false),
+///M: Add by MTK End
+///@}
+
       mReaperPending(false),
       mNextCSeq(1),
       mUsingHDCP(false),
@@ -70,22 +127,152 @@ WifiDisplaySource::WifiDisplaySource(
       mHDCPPort(0),
       mHDCPInitializationComplete(false),
       mSetupTriggerDeferred(false),
-      mPlaybackSessionEstablished(false) {
+      mPlaybackSessionEstablished(false),
+      mPromoted(false)
+{
     if (path != NULL) {
         mMediaPath.setTo(path);
     }
 
     mSupportedSourceVideoFormats.disableAll();
 
+    //Mandatory support resolution
     mSupportedSourceVideoFormats.setNativeResolution(
-            VideoFormats::RESOLUTION_CEA, 5);  // 1280x720 p30
+            VideoFormats::RESOLUTION_CEA, 0);
+    mSupportedSourceVideoFormats.setNativeResolution(
+            VideoFormats::RESOLUTION_CEA, 5);
 
     // Enable all resolutions up to 1280x720p30
     mSupportedSourceVideoFormats.enableResolutionUpto(
             VideoFormats::RESOLUTION_CEA, 5,
             VideoFormats::PROFILE_CHP,  // Constrained High Profile
             VideoFormats::LEVEL_32);    // Level 3.2
+
+///M: export default configuration for WFD
+    char val[PROPERTY_VALUE_MAX];
+    if (property_get("media.wfd.video-format", val, NULL)) {
+        ALOGI("media.wfd.video-format:%s", val);
+        int videoFormat = atoi(val);
+        if(videoFormat >=0 && videoFormat <= 16){
+            mSupportedSourceVideoFormats.setNativeResolution(VideoFormats::RESOLUTION_CEA, videoFormat);
+            mSupportedSourceVideoFormats.setProfileLevel(
+                VideoFormats::RESOLUTION_CEA, videoFormat, VideoFormats::PROFILE_CHP, VideoFormats::LEVEL_32);
+        }
+    }
+
+    ///M: Support portrait-resolution
+    char portrait[PROPERTY_VALUE_MAX];
+    if (property_get("media.wfd.portrait", portrait, NULL)) {
+        int value = atoi(portrait);
+        if(value == 1){
+            ALOGI("media.wfd.portrait:%s", portrait);
+            if (mSupportedSourceVideoFormats.isResolutionEnabled(
+                VideoFormats::RESOLUTION_CEA, 5)){
+                mSupportedSourceVideoFormats.setNativeResolution(
+                    VideoFormats::RESOLUTION_CEA, 17);
+            }
+
+            if (mSupportedSourceVideoFormats.isResolutionEnabled(
+                VideoFormats::RESOLUTION_CEA, 7)){
+                mSupportedSourceVideoFormats.setNativeResolution(
+                    VideoFormats::RESOLUTION_CEA, 18);
+            }
+        }
+    }
 }
+
+///M: @{
+WifiDisplaySource::WifiDisplaySource(
+        const String16 &opPackageName,
+        const sp<ANetworkSession> &netSession,
+        const sp<IRemoteDisplayClient> &client,
+        uint32_t  wfdFlags,
+        const char *path
+        )
+    : mOpPackageName(opPackageName),
+      mState(INITIALIZED),
+      mNetSession(netSession),
+      mClient(client),
+      mSessionID(0),
+      mStopReplyID(NULL),
+      mChosenRTPPort(-1),
+      mUsingPCMAudio(false),
+      mClientSessionID(0),
+///M: @{
+      mPlaybackSessionIniting(false), ///M: Add by MTK Start
+      mPlaybackSessionDestroyDeferred(false),
+      mPlayRequestReceived(false),
+      mTestSessionID(0),
+      mTestClientSessionID(0),
+#ifdef UIBC_SOURCE_SUPPORT
+      mUibcSessionID(0),
+      mUibcClientSessionID(0),
+      mUibcServerHandler(NULL),
+#endif
+      mWfdFlags(wfdFlags),
+      mTestSessionStopped(false),
+///M: Add by MTK End
+///@}
+
+      mReaperPending(false),
+      mNextCSeq(1),
+      mUsingHDCP(false),
+      mIsHDCP2_0(false),
+      mHDCPPort(0),
+      mHDCPInitializationComplete(false),
+      mSetupTriggerDeferred(false),
+      mPlaybackSessionEstablished(false),
+      mPromoted(false)
+{
+    if (path != NULL) {
+        mMediaPath.setTo(path);
+    }
+
+    mSupportedSourceVideoFormats.disableAll();
+
+    //Mandatory support resolution
+    mSupportedSourceVideoFormats.setNativeResolution(
+            VideoFormats::RESOLUTION_CEA, 0);
+    mSupportedSourceVideoFormats.setNativeResolution(
+            VideoFormats::RESOLUTION_CEA, 5);
+
+    // Enable all resolutions up to 1280x720p30
+    mSupportedSourceVideoFormats.enableResolutionUpto(
+            VideoFormats::RESOLUTION_CEA, 5,
+            VideoFormats::PROFILE_CHP,  // Constrained High Profile
+            VideoFormats::LEVEL_32);    // Level 3.2
+
+///M: export default configuration for WFD
+    char val[PROPERTY_VALUE_MAX];
+    if (property_get("media.wfd.video-format", val, NULL)) {
+        ALOGI("media.wfd.video-format:%s", val);
+        int videoFormat = atoi(val);
+        if(videoFormat >=0 && videoFormat <= 16){
+            mSupportedSourceVideoFormats.setNativeResolution(VideoFormats::RESOLUTION_CEA, videoFormat);
+        }
+    }
+
+    ///M: Support portrait-resolution
+    char portrait[PROPERTY_VALUE_MAX];
+    if (property_get("media.wfd.portrait", portrait, NULL)) {
+        int value = atoi(portrait);
+        if(value == 1){
+            ALOGI("media.wfd.portrait:%s", portrait);
+            if (mSupportedSourceVideoFormats.isResolutionEnabled(
+                VideoFormats::RESOLUTION_CEA, 5)){
+                mSupportedSourceVideoFormats.setNativeResolution(
+                    VideoFormats::RESOLUTION_CEA, 17);
+            }
+
+            if (mSupportedSourceVideoFormats.isResolutionEnabled(
+                VideoFormats::RESOLUTION_CEA, 7)){
+                mSupportedSourceVideoFormats.setNativeResolution(
+                    VideoFormats::RESOLUTION_CEA, 18);
+            }
+        }
+    }
+}
+
 
 WifiDisplaySource::~WifiDisplaySource() {
 }
@@ -111,6 +298,36 @@ status_t WifiDisplaySource::start(const char *iface) {
     sp<AMessage> msg = new AMessage(kWhatStart, this);
     msg->setString("iface", iface);
 
+///M: @{
+#ifdef MTK_AOSP_ENHANCEMENT
+    if((mWfdFlags & kTestModeFlag) == kTestModeFlag){
+        ALOGI("Run test mode and init audio device");
+        setAudioPath(true);
+        if(mComposerClient == NULL){
+            mComposerClient = new SurfaceComposerClient;
+            CHECK_EQ(mComposerClient->initCheck(), (status_t)OK);
+        }
+
+    }
+#endif
+///@}
+
+#ifdef UIBC_SOURCE_SUPPORT
+///M: Support UIBC@{
+    if (mUibcServerHandler == NULL) {
+        mUibcServerHandler = new UibcServerHandler(mClient);
+    }
+///@}
+#endif
+
+///M: Avoid wifi throttle@{
+    notifyThermal(true);
+///@}
+
+// M: Notify GPU driver@{
+    notifyGPUDriver(true);
+// @}
+
     sp<AMessage> response;
     return PostAndAwaitResponse(msg, &response);
 }
@@ -118,7 +335,36 @@ status_t WifiDisplaySource::start(const char *iface) {
 status_t WifiDisplaySource::stop() {
     sp<AMessage> msg = new AMessage(kWhatStop, this);
 
+    ALOGI("WifiDisplaySource::stop kWhatStop=%d",kWhatStop);
     sp<AMessage> response;
+
+    ///M:@{
+#ifdef UIBC_SOURCE_SUPPORT
+    if (mUibcServerHandler != NULL) {
+        mUibcServerHandler->destroy();
+        mUibcServerHandler.clear();
+        mUibcServerHandler = NULL;
+    }
+#endif
+    ///@}
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    ///M: Notify Audio driver @{
+    if((mWfdFlags & kTestModeFlag) == kTestModeFlag){
+        ALOGI("un-init audio device");
+        setAudioPath(false);
+    }
+    ///M: @}
+#endif
+
+///M: Avoid wifi throttle@{
+    notifyThermal(false);
+///@}
+
+// M: Notify GPU driver@{
+    notifyGPUDriver(false);
+// @}
+
     return PostAndAwaitResponse(msg, &response);
 }
 
@@ -137,6 +383,33 @@ status_t WifiDisplaySource::resume() {
 }
 
 void WifiDisplaySource::onMessageReceived(const sp<AMessage> &msg) {
+
+    ///M: Add debug inform. @{
+    if(msg->what() != kWhatReapDeadClients){
+        ALOGI("what:%d", msg->what());
+    }
+    ///@}
+
+#ifdef MTK_AOSP_ENHANCEMENT
+   if(!mPromoted)
+   {
+       struct sched_param sched_p;
+       mPromoted = true;
+       // Change the scheduling policy to SCHED_RR
+       sched_getparam(0, &sched_p);
+       sched_p.sched_priority = 1;
+
+       if (0 != sched_setscheduler(0, SCHED_RR, &sched_p)) {
+           ALOGE("@@[WFD_PROPERTY]sched_setscheduler fail...");
+       }
+       else {
+           sched_p.sched_priority = 0;
+           sched_getparam(0, &sched_p);
+           ALOGD("@@[WFD_PROPERTY]sched_setscheduler ok..., priority:%d", sched_p.sched_priority);
+       }
+   }
+#endif
+
     switch (msg->what()) {
         case kWhatStart:
         {
@@ -167,15 +440,38 @@ void WifiDisplaySource::onMessageReceived(const sp<AMessage> &msg) {
                 port = kWifiDisplayDefaultPort;
             }
 
+            ALOGI("Bind to IP-port==>%s:%d", iface.c_str(), (int) port);
+
+
+            ///M: Add debug inform. @{
+            if((mWfdFlags & kFastRtpFlag) == kFastRtpFlag){
+                ALOGI("Run Fast RTP");
+                startRtpClient(iface.c_str(), port);
+                return;
+            }
+            ///@}
+
             if (err == OK) {
                 if (inet_aton(iface.c_str(), &mInterfaceAddr) != 0) {
                     sp<AMessage> notify = new AMessage(kWhatRTSPNotify, this);
 
                     err = mNetSession->createRTSPServer(
                             mInterfaceAddr, port, notify, &mSessionID);
+
+
+                    //Enable for Mircast testing
+                    sp<AMessage> testNotify = new AMessage(kWhatTestNotify, this);
+                        mNetSession->createTCPTextDataSession(
+                            mInterfaceAddr, WFD_TESTMODE_PORT, testNotify, &mTestSessionID);
+
                 } else {
+                    ALOGE("Error in inet_aton:%d", errno);
                     err = -EINVAL;
                 }
+
+
+            }else{
+                ALOGE("Parse Error in iface: %d", err);
             }
 
             mState = AWAITING_CLIENT_CONNECTION;
@@ -190,6 +486,7 @@ void WifiDisplaySource::onMessageReceived(const sp<AMessage> &msg) {
         {
             int32_t reason;
             CHECK(msg->findInt32("reason", &reason));
+            ALOGI("reason:%d", reason);
 
             switch (reason) {
                 case ANetworkSession::kWhatError:
@@ -214,8 +511,15 @@ void WifiDisplaySource::onMessageReceived(const sp<AMessage> &msg) {
                     if (sessionID == mClientSessionID) {
                         mClientSessionID = 0;
 
-                        mClient->onDisplayError(
-                                IRemoteDisplayClient::kDisplayErrorUnknown);
+                        ///M: Don't report error event for test program
+                        if(mClient != NULL){
+                            if (mState < STOPPING){
+                                mClient->onDisplayError(
+                                    IRemoteDisplayClient::kDisplayErrorUnknown);
+                            }
+                        }else{ //test mode
+                            stopTestSession();
+                        }
                     }
                     break;
                 }
@@ -233,17 +537,31 @@ void WifiDisplaySource::onMessageReceived(const sp<AMessage> &msg) {
                         break;
                     }
 
-                    CHECK_EQ(mState, AWAITING_CLIENT_CONNECTION);
+                    ///M: Don't check the RTSP state here.
+                    //CHECK_EQ(mState, AWAITING_CLIENT_CONNECTION);
+///M:@{
+                    if (mState != AWAITING_CLIENT_CONNECTION &&
+                        mState != STOPPED) {
+                        ALOGI("A client tried to connect, but the state is wrong. mState: %d", mState);
+
+
+                        mNetSession->destroySession(sessionID);
+                        break;
+                    }
+///@}
 
                     CHECK(msg->findString("client-ip", &mClientInfo.mRemoteIP));
                     CHECK(msg->findString("server-ip", &mClientInfo.mLocalIP));
 
+                    ///M: Disable below local IP checking for testing
+#if 0
                     if (mClientInfo.mRemoteIP == mClientInfo.mLocalIP) {
                         // Disallow connections from the local interface
                         // for security reasons.
                         mNetSession->destroySession(sessionID);
                         break;
                     }
+#endif
 
                     CHECK(msg->findInt32(
                                 "server-port", &mClientInfo.mLocalPort));
@@ -255,8 +573,14 @@ void WifiDisplaySource::onMessageReceived(const sp<AMessage> &msg) {
 
                     mState = AWAITING_CLIENT_SETUP;
 
-                    status_t err = sendM1(sessionID);
-                    CHECK_EQ(err, (status_t)OK);
+///M:@{
+                    ALOGD("Run fast setup:%d", mWfdFlags);
+                    if((mWfdFlags & kFastSetupFlag) == 0){
+                        status_t err = sendM1(sessionID);
+                        CHECK_EQ(err, (status_t)OK);
+                    }
+///@}
+
                     break;
                 }
 
@@ -265,11 +589,15 @@ void WifiDisplaySource::onMessageReceived(const sp<AMessage> &msg) {
                     status_t err = onReceiveClientData(msg);
 
                     if (err != OK) {
-                        mClient->onDisplayError(
-                                IRemoteDisplayClient::kDisplayErrorUnknown);
+                        if(mClient != NULL){
+                               mClient->onDisplayError(
+                                       IRemoteDisplayClient::kDisplayErrorUnknown);
+                        }else{
+                              stopTestSession();
+                           }
                     }
 
-#if 0
+ #if 0
                     // testing only.
                     char val[PROPERTY_VALUE_MAX];
                     if (property_get("media.wfd.trigger", val, NULL)) {
@@ -300,6 +628,11 @@ void WifiDisplaySource::onMessageReceived(const sp<AMessage> &msg) {
         case kWhatStop:
         {
             CHECK(msg->senderAwaitsResponse(&mStopReplyID));
+
+            if(mState >= AWAITING_CLIENT_TEARDOWN){
+                ALOGD("Already in stop procedure");
+                return;
+            }
 
             CHECK_LT(mState, AWAITING_CLIENT_TEARDOWN);
 
@@ -374,6 +707,12 @@ void WifiDisplaySource::onMessageReceived(const sp<AMessage> &msg) {
                 break;
             }
 
+            ///For Miracast testing issue
+            if(mState == PAUSED){
+               scheduleReaper();
+               break;
+            }
+
             if (mClientInfo.mPlaybackSession->getLastLifesignUs()
                     + kPlaybackSessionTimeoutUs < ALooper::GetNowUs()) {
                 ALOGI("playback session timed out, reaping.");
@@ -381,8 +720,12 @@ void WifiDisplaySource::onMessageReceived(const sp<AMessage> &msg) {
                 mNetSession->destroySession(mClientSessionID);
                 mClientSessionID = 0;
 
-                mClient->onDisplayError(
-                        IRemoteDisplayClient::kDisplayErrorUnknown);
+                    if(mClient != NULL){
+                        mClient->onDisplayError(
+                                IRemoteDisplayClient::kDisplayErrorUnknown);
+                    }else{
+                        stopTestSession();
+                    }
             } else {
                 scheduleReaper();
             }
@@ -400,12 +743,46 @@ void WifiDisplaySource::onMessageReceived(const sp<AMessage> &msg) {
             if (what == PlaybackSession::kWhatSessionDead) {
                 ALOGI("playback session wants to quit.");
 
-                mClient->onDisplayError(
-                        IRemoteDisplayClient::kDisplayErrorUnknown);
+                // M: {{{ To avoid playbacksessoin init() is interrupted by destroyAsync()
+                mPlaybackSessionIniting = false;
+
+                if (mPlaybackSessionDestroyDeferred) {
+                    mPlaybackSessionDestroyDeferred = false;
+
+                    ALOGI("Do Deferred Destroy PlaybackSession ");
+                    mClientInfo.mPlaybackSession->destroyAsync();
+                    return;
+                }
+                // M: }}}
+
+
+                if(mClient != NULL){
+                    if (mState < STOPPING){
+                        mClient->onDisplayError(
+                                IRemoteDisplayClient::kDisplayErrorUnknown);
+                    }
+                }else{
+                    stopTestSession();
+                }
             } else if (what == PlaybackSession::kWhatSessionEstablished) {
+                ALOGI("playback session established");
+
                 mPlaybackSessionEstablished = true;
 
+                // M: {{{ To avoid playbacksessoin init() is interrupted by destroyAsync()
+                mPlaybackSessionIniting = false;
+
+                if (mPlaybackSessionDestroyDeferred) {
+                    mPlaybackSessionDestroyDeferred = false;
+
+                    ALOGI("Do Deferred Destroy PlaybackSession ");
+                    mClientInfo.mPlaybackSession->destroyAsync();
+                    return;
+                }
+                // M: }}}
+
                 if (mClient != NULL) {
+                    ALOGD("PlaybackSession::kWhatSessionEstablished HDCP = %d\n", mUsingHDCP);
                     if (!mSinkSupportsVideo) {
                         mClient->onDisplayConnected(
                                 NULL,  // SurfaceTexture
@@ -437,12 +814,108 @@ void WifiDisplaySource::onMessageReceived(const sp<AMessage> &msg) {
                                 playbackSessionID);
                     }
                 }
+#if 1
+                else{
+                    DisplayInfo displayInfo;
+                    uint32_t physWidth = 1280;
+                    uint32_t physHeight = 720;
+                    int layerWidth = 1280;
+                    int layerHeight = 720;
+                    size_t displayRectWidth, displayRectHeight;
+                    CHECK(VideoFormats::GetConfiguration(
+                                    mChosenVideoResolutionType,
+                                    mChosenVideoResolutionIndex,
+                                    &displayRectWidth,
+                                    &displayRectHeight,
+                                    NULL /* framesPerSecond */,
+                                    NULL /* interlaced */));
 
-                finishPlay();
+                    ALOGI("[test] onDisplayConnected width=%u, height=%u, flags = 0x%08x",
+                            (uint32_t)displayRectWidth, (uint32_t)displayRectHeight, mUsingHDCP);
 
-                if (mState == ABOUT_TO_PLAY) {
-                    mState = PLAYING;
+                    sp<IBinder> dtoken(SurfaceComposerClient::getBuiltInDisplay(ISurfaceComposer::eDisplayIdMain));
+
+                    if (SurfaceComposerClient::getDisplayInfo(dtoken, &displayInfo) < 0) {
+                        ALOGE("Can't get display info");
+                        displayInfo.w = 1280;
+                        displayInfo.h = 720;
+                        displayInfo.orientation = DISPLAY_ORIENTATION_0;
+                    }else{
+                        ALOGI("Built-in display info: %d:%d:%d", displayInfo.w, displayInfo.h, displayInfo.orientation);
+                    }
+
+                    if(displayInfo.orientation == DISPLAY_ORIENTATION_90 || displayInfo.orientation == DISPLAY_ORIENTATION_270){
+                         layerWidth = displayInfo.h;
+                         layerHeight = displayInfo.w;
+                    }else{
+                         layerWidth = displayInfo.w;
+                         layerHeight = displayInfo.h;
+                    }
+
+                    physWidth = displayRectWidth;
+                    physHeight = displayRectHeight;
+
+                    //The built-in display resolution
+                    Rect layerStackRect(0, 0, layerWidth, layerHeight);  // XXX fix this.
+                    ALOGI("layerStackRect: %d:%d:%d", layerWidth, layerHeight, displayInfo.orientation);
+
+                    mBufferProducer = mClientInfo.mPlaybackSession->getSurfaceTexture();
+                    mDisplayBinder = mComposerClient->createDisplay(
+                            String8("foo"), mUsingHDCP /*true*/ /* secure */);
+
+                    if (physWidth * layerHeight
+                                < physHeight * layerWidth) {
+                        // Letter box.
+                        displayRectWidth = physWidth;
+                        displayRectHeight = layerHeight * physWidth / layerWidth;
+                    } else {
+                        // Pillar box.
+                        displayRectWidth = layerWidth * physHeight / layerHeight;
+                        displayRectHeight = physHeight;
+                    }
+
+                    int displayRectTop = (physHeight - displayRectHeight) / 2;
+                    int displayRectLeft = (physWidth - displayRectWidth) / 2;
+
+                    Rect displayRect(displayRectLeft, displayRectTop,
+                            displayRectLeft + displayRectWidth, displayRectTop + displayRectHeight);
+
+                    ALOGI("displayRect: %d:%d:%d:%d", displayRectLeft, displayRectTop,
+                            displayRectLeft + (int)displayRectWidth, displayRectTop + (int)displayRectHeight);
+
+                    //Rect displayRect(0, 60, 640, 60 + 360);
+                    //Rect displayRect(185, 0, 185 + 270, 480);
+
+                    SurfaceComposerClient::openGlobalTransaction();
+                    mComposerClient->setDisplaySurface(mDisplayBinder, mBufferProducer);
+                    mComposerClient->setDisplayProjection(
+                            mDisplayBinder, 0 /* 0 degree rotation */,
+                            layerStackRect,
+                            displayRect);
+                    SurfaceComposerClient::setDisplayLayerStack(mDisplayBinder, 0);    // default stack
+                    SurfaceComposerClient::closeGlobalTransaction();
                 }
+#endif
+
+                ///M:@{
+                if ((mWfdFlags & kSigmaTest) == kSigmaTest) {
+                    if (mPlayRequestReceived) {
+                        finishPlay();
+                        if (mState == ABOUT_TO_PLAY) {
+                            mState = PLAYING;
+                        }
+                    } else {
+                        ALOGI("[For Miracast MTK test bed]deferring finishPlay() until play request");
+                    }
+                ///}}}
+                } else {
+                    finishPlay();
+                    if (mState == ABOUT_TO_PLAY) {
+                        mState = PLAYING;
+                    }
+                }
+
+
             } else if (what == PlaybackSession::kWhatSessionDestroyed) {
                 disconnectClient2();
             } else {
@@ -508,8 +981,8 @@ void WifiDisplaySource::onMessageReceived(const sp<AMessage> &msg) {
             CHECK(msg->findInt32("ext1", &ext1));
             CHECK(msg->findInt32("ext2", &ext2));
 
-            ALOGI("Saw HDCP notification code %d, ext1 %d, ext2 %d",
-                    msgCode, ext1, ext2);
+            ALOGD("Saw HDCP notification code %d=[%s], ext1 %d, ext2 %d",
+                    msgCode, hdcp_notify_str[msgCode], ext1, ext2);
 
             switch (msgCode) {
                 case HDCPModule::HDCP_INITIALIZATION_COMPLETE:
@@ -524,6 +997,25 @@ void WifiDisplaySource::onMessageReceived(const sp<AMessage> &msg) {
                     break;
                 }
 
+                // if HDCP authentication failed, disable HDCP
+#ifdef MTK_AOSP_ENHANCEMENT
+                case HDCPModule::HDCP_INITIALIZATION_FAILED:
+                {
+                    mHDCPInitializationComplete = true;
+                    mUsingHDCP = false;
+
+                    ALOGE("HDCP init failure, disable HDCP.");
+
+                    if (mSetupTriggerDeferred) {
+                        mSetupTriggerDeferred = false;
+
+                        ALOGI("sendTrigger");
+
+                        sendTrigger(mClientSessionID, TRIGGER_SETUP);
+                    }
+                    break;
+                }
+#endif
                 case HDCPModule::HDCP_SHUTDOWN_COMPLETE:
                 case HDCPModule::HDCP_SHUTDOWN_FAILED:
                 {
@@ -539,8 +1031,12 @@ void WifiDisplaySource::onMessageReceived(const sp<AMessage> &msg) {
                 {
                     ALOGE("HDCP failure, shutting down.");
 
-                    mClient->onDisplayError(
-                            IRemoteDisplayClient::kDisplayErrorUnknown);
+                    if(mClient != NULL){
+                        mClient->onDisplayError(
+                                IRemoteDisplayClient::kDisplayErrorUnknown);
+                    }else{
+                        stopTestSession();
+                    }
                     break;
                 }
             }
@@ -553,6 +1049,178 @@ void WifiDisplaySource::onMessageReceived(const sp<AMessage> &msg) {
             break;
         }
 
+        ///M: Add by MTK @{
+        case kWhatTestNotify:
+        {
+            int32_t reason;
+            CHECK(msg->findInt32("reason", &reason));
+
+            ALOGI("reason:%d", reason);
+
+            switch (reason) {
+                case ANetworkSession::kWhatClientConnected:
+                {
+                     int32_t sessionID;
+                     CHECK(msg->findInt32("sessionID", &sessionID));
+
+                     if (mTestClientSessionID > 0) {
+                         ALOGW("A test client tried to connect, but we already "
+                               "have one.");
+
+                         mNetSession->destroySession(sessionID);
+                         break;
+                     }
+
+                     mTestClientSessionID = sessionID;
+
+                     ALOGI("We now have a test client (%d) connected.", sessionID);
+                     break;
+                }
+                case ANetworkSession::kWhatError:
+                {
+                     int32_t sessionID;
+                     CHECK(msg->findInt32("sessionID", &sessionID));
+                     int32_t err;
+                     CHECK(msg->findInt32("err", &err));
+
+                     AString detail;
+                     CHECK(msg->findString("detail", &detail));
+
+                     ALOGE("An error occurred in test session %d (%d, '%s/%s').",
+                       sessionID,
+                       err,
+                       detail.c_str(),
+                       strerror(-err));
+
+                     mNetSession->destroySession(sessionID);
+                     if (sessionID == mTestClientSessionID) {
+                         mTestClientSessionID = 0;
+                     }
+                     break;
+                }
+                case ANetworkSession::kWhatTextData:
+                {
+                     onReceiveTestData(msg);
+                     break;
+                }
+                default:
+                     TRESPASS();
+                     break;
+            }
+            break;
+        }
+#ifdef UIBC_SOURCE_SUPPORT
+        case kWhatUibcNotify:
+        {
+            int32_t reason;
+            CHECK(msg->findInt32("reason", &reason));
+
+            ALOGI("reason:%d", reason);
+
+            switch (reason) {
+                case ANetworkSession::kWhatClientConnected:
+                {
+                     int32_t sessionID;
+                     CHECK(msg->findInt32("sessionID", &sessionID));
+                     if (mUibcClientSessionID > 0) {
+                         ALOGW("A test client tried to connect, but we already "
+                               "have one.");
+
+                         mNetSession->destroySession(sessionID);
+                         break;
+                     }
+
+                     mUibcClientSessionID = sessionID;
+                     ALOGI("We now have a uibc client (%d) connected.", sessionID);
+                     break;
+                }
+                case ANetworkSession::kWhatError:
+                {
+                     int32_t sessionID;
+                     CHECK(msg->findInt32("sessionID", &sessionID));
+                     int32_t err;
+                     CHECK(msg->findInt32("err", &err));
+
+                     AString detail;
+                     CHECK(msg->findString("detail", &detail));
+
+                     ALOGE("An error occurred in session %d (%d, '%s/%s').",
+                       sessionID,
+                       err,
+                       detail.c_str(),
+                       strerror(-err));
+
+                     mNetSession->destroySession(sessionID);
+                     if (sessionID == mUibcClientSessionID) {
+                         mUibcClientSessionID = 0;
+                     }
+                     break;
+                }
+                case ANetworkSession::kWhatUibcData:
+                {
+                     onReceiveUIBCData(msg);
+                     break;
+                }
+                default:
+                     TRESPASS();
+                     break;
+            }
+            break;
+        }
+#endif
+        case kWhatRtpNotify:
+        {
+            ALOGI("Fast RTP is running");
+            break;
+        }
+        case kWhatSendGenericMsg:
+        {
+            int32_t cmd;
+            CHECK(msg->findInt32("cmd", &cmd));
+            ALOGI("cmd:%d", cmd);
+
+            status_t err = OK;
+
+            if(mClientInfo.mPlaybackSessionID == -1){
+                ALOGE("No Client");
+                return;
+            }
+
+            switch (cmd){
+                case IRemoteDisplay::kGenericMessagePlay:
+                {
+                    ALOGI("IRemoteDisplay::kGenericMessagePlay");
+                    if(mState == ABOUT_TO_PLAY){
+                        sendGenericMsgByMethod (TRIGGER_PLAY);
+                    }else{
+                        ALOGE("Wrong state in PLAY");
+                    }
+                    break;
+                }
+                case IRemoteDisplay::kGenericMessagePause:
+                {
+                    ALOGI("IRemoteDisplay::kGenericMessagePause");
+                    if(mState == PLAYING){
+                        sendGenericMsgByMethod (TRIGGER_PAUSE);
+                    }else{
+                        ALOGE("Wrong state in PAUSE");
+                    }
+                    break;
+                }
+                case IRemoteDisplay::kGenericMessageTeardown:
+                {
+                    ALOGI("IRemoteDisplay::kGenericMessageTeardown");
+                    sendGenericMsgByMethod (TRIGGER_TEARDOWN);
+                    break;
+                }
+                default:
+                {
+                    err = BAD_VALUE;
+                }
+            };
+            break;
+        }
+        ///@}
         default:
             TRESPASS();
     }
@@ -568,6 +1236,9 @@ void WifiDisplaySource::registerResponseHandler(
 
 status_t WifiDisplaySource::sendM1(int32_t sessionID) {
     AString request = "OPTIONS * RTSP/1.0\r\n";
+    ///M: mircast testing
+    mNextCSeq = 1;
+
     AppendCommonResponse(&request, mNextCSeq);
 
     request.append(
@@ -591,16 +1262,40 @@ status_t WifiDisplaySource::sendM1(int32_t sessionID) {
 
 status_t WifiDisplaySource::sendM3(int32_t sessionID) {
     AString body =
+
+#if defined(MTK_DX_HDCP_SUPPORT) || defined(WFD_HDCP_TX_SUPPORT)
         "wfd_content_protection\r\n"
+#endif
+
         "wfd_video_formats\r\n"
         "wfd_audio_codecs\r\n"
         "wfd_client_rtp_ports\r\n";
+
+#ifdef UIBC_SOURCE_SUPPORT
+///M:@{
+        mUibcGenSrcDisabled = false;
+        char val[PROPERTY_VALUE_MAX];
+        if (property_get("media.wfd.source.uibc-disbled", val, NULL)) {
+            ALOGI("media.wfd.source.uibc-disbled:%s", val);
+            if (val[0] == '1'){
+                mUibcGenSrcDisabled = true;
+            } else {
+                mUibcGenSrcDisabled = false;
+            }
+        }
+        if (!mUibcGenSrcDisabled) {
+            body.append("wfd_uibc_capability\r\n");
+        }
+///@}
+#endif
+    ALOGI("sendM3():%s", body.c_str());
 
     AString request = "GET_PARAMETER rtsp://localhost/wfd1.0 RTSP/1.0\r\n";
     AppendCommonResponse(&request, mNextCSeq);
 
     request.append("Content-Type: text/parameters\r\n");
     request.append(AStringPrintf("Content-Length: %d\r\n", body.size()));
+
     request.append("\r\n");
     request.append(body);
 
@@ -635,9 +1330,18 @@ status_t WifiDisplaySource::sendM4(int32_t sessionID) {
                 mChosenVideoResolutionType, mChosenVideoResolutionIndex,
                 mChosenVideoProfile, mChosenVideoLevel);
 
-        body.append(chosenVideoFormat.getFormatSpec(true /* forM4Message */));
+        if((mWfdFlags & kSigmaTest) == kSigmaTest){
+           ALOGI("test video codec");
+           body.append("00 00 01 01 00000001 00000000 00000000 00 0000 0000 01 none none");
+        }else{
+            body.append(chosenVideoFormat.getFormatSpec(true /* forM4Message */));
+        }
+
         body.append("\r\n");
+        ALOGI("videoFormatString:%s", body.c_str());
     }
+
+
 
     if (mSinkSupportsAudio) {
         body.append(
@@ -655,6 +1359,30 @@ status_t WifiDisplaySource::sendM4(int32_t sessionID) {
     body.append(
             AStringPrintf(
                 "wfd_client_rtp_ports: %s\r\n", mWfdClientRtpPorts.c_str()));
+
+///M:@{
+#ifdef UIBC_SOURCE_SUPPORT
+    AString uibc;
+    if (mUibcServerHandler != NULL &&
+        mUibcServerHandler->getUibcEnabled() &&
+        !mUibcGenSrcDisabled) {
+        const char* pUibcCapStr = mUibcServerHandler->getSupportedCapabilities();
+        uibc = AStringPrintf(
+                   "%s\r\n%s\r\n",
+                   pUibcCapStr,
+                   UIBC_ENABLE_COMMAND);
+
+        ALOGD("M4 uibc = %s ", uibc.c_str());
+        body.append(uibc);
+
+        ///Enable UIBC server for client
+        sp<AMessage> uibcNotify = new AMessage(kWhatUibcNotify, this);
+        mNetSession->createUIBCServer(
+        mInterfaceAddr, WFD_UIBC_SERVER_PORT, uibcNotify, &mUibcSessionID);
+        ALOGI("The UIBC server is started");
+    }
+#endif
+///@}
 
     AString request = "SET_PARAMETER rtsp://localhost/wfd1.0 RTSP/1.0\r\n";
     AppendCommonResponse(&request, mNextCSeq);
@@ -687,8 +1415,8 @@ status_t WifiDisplaySource::sendTrigger(
             body.append("SETUP");
             break;
         case TRIGGER_TEARDOWN:
-            ALOGI("Sending TEARDOWN trigger.");
-            body.append("TEARDOWN");
+        ALOGI("Sending TEARDOWN trigger.");
+        body.append("TEARDOWN");
             break;
         case TRIGGER_PAUSE:
             body.append("PAUSE");
@@ -736,6 +1464,13 @@ status_t WifiDisplaySource::sendM16(int32_t sessionID) {
 
     status_t err =
         mNetSession->sendRequest(sessionID, request.c_str(), request.size());
+
+    ///M: Increase timeout value for Keep alive message @{
+    if (mClientInfo.mPlaybackSession != NULL) {
+        mClientInfo.mPlaybackSession->updateLiveness();
+    }
+    ///@}
+
 
     if (err != OK) {
         return err;
@@ -810,6 +1545,7 @@ status_t WifiDisplaySource::onReceiveM3Response(
         Parameters::Parse(msg->getContent(), strlen(msg->getContent()));
 
     if (params == NULL) {
+        ALOGE("no content");
         return ERROR_MALFORMED;
     }
 
@@ -850,43 +1586,54 @@ status_t WifiDisplaySource::onReceiveM3Response(
     }
 
     mSinkSupportsVideo = false;
-
-    if  (!(value == "none")) {
+    if (!(value == "none")) {
+        ALOGI("Parse String:%s", value.c_str());
         mSinkSupportsVideo = true;
         if (!mSupportedSinkVideoFormats.parseFormatSpec(value.c_str())) {
-            ALOGE("Failed to parse sink provided wfd_video_formats (%s)",
-                  value.c_str());
+             ALOGE("Failed to parse sink provided wfd_video_formats (%s)",
+                   value.c_str());
 
-            return ERROR_MALFORMED;
+             return ERROR_MALFORMED;
+       }
+
+        ///Configure for test mode
+        if((mWfdFlags & kSigmaTest) == kSigmaTest){
+            mChosenVideoResolutionType = VideoFormats::RESOLUTION_CEA;
+            mChosenVideoResolutionIndex = 0;
+            mChosenVideoProfile = VideoFormats::PROFILE_CBP;
+            mChosenVideoLevel = VideoFormats::LEVEL_31;
+
+        } else {
+
+            if (!VideoFormats::PickBestFormat(
+                        mSupportedSinkVideoFormats,
+                        mSupportedSourceVideoFormats,
+                        &mChosenVideoResolutionType,
+                        &mChosenVideoResolutionIndex,
+                        &mChosenVideoProfile,
+                        &mChosenVideoLevel)) {
+                ALOGE("Sink and source share no commonly supported video "
+                      "formats.");
+
+                return ERROR_UNSUPPORTED;
+            }
         }
 
-        if (!VideoFormats::PickBestFormat(
-                    mSupportedSinkVideoFormats,
-                    mSupportedSourceVideoFormats,
-                    &mChosenVideoResolutionType,
-                    &mChosenVideoResolutionIndex,
-                    &mChosenVideoProfile,
-                    &mChosenVideoLevel)) {
-            ALOGE("Sink and source share no commonly supported video "
-                  "formats.");
+       size_t width, height, framesPerSecond;
+       bool interlaced;
+       CHECK(VideoFormats::GetConfiguration(
+                        mChosenVideoResolutionType,
+                        mChosenVideoResolutionIndex,
+                        &width,
+                        &height,
+                        &framesPerSecond,
+                        &interlaced));
 
-            return ERROR_UNSUPPORTED;
-        }
 
-        size_t width, height, framesPerSecond;
-        bool interlaced;
-        CHECK(VideoFormats::GetConfiguration(
-                    mChosenVideoResolutionType,
-                    mChosenVideoResolutionIndex,
-                    &width,
-                    &height,
-                    &framesPerSecond,
-                    &interlaced));
-
-        ALOGI("Picked video resolution %zu x %zu %c%zu",
+       ALOGI("Picked video resolution %zu x %zu %c%zu",
               width, height, interlaced ? 'i' : 'p', framesPerSecond);
 
-        ALOGI("Picked AVC profile %d, level %d",
+       ALOGI("Picked AVC profile %d, level %d",
               mChosenVideoProfile, mChosenVideoLevel);
     } else {
         ALOGI("Sink doesn't support video at all.");
@@ -942,36 +1689,74 @@ status_t WifiDisplaySource::onReceiveM3Response(
     } else if (value == "none") {
         ALOGI("Sink does not support content protection.");
     } else {
-        mUsingHDCP = true;
 
-        bool isHDCP2_0 = false;
-        if (value.startsWith("HDCP2.0 ")) {
-            isHDCP2_0 = true;
-        } else if (!value.startsWith("HDCP2.1 ")) {
-            ALOGE("malformed wfd_content_protection: '%s'", value.c_str());
-
-            return ERROR_MALFORMED;
+#if HDCP_ENABLE_CONTROL
+        char v[PROPERTY_VALUE_MAX];
+        if (property_get("media.stagefright_wfd.hdcp.off", v, NULL)
+                && (!strcmp(v, "1") ))
+        {
+            ALOGD("turn off HDCP !");
         }
+        else
+#endif
+        {
+            mUsingHDCP = true;
 
-        int32_t hdcpPort;
-        if (!ParsedMessage::GetInt32Attribute(
-                    value.c_str() + 8, "port", &hdcpPort)
-                || hdcpPort < 1 || hdcpPort > 65535) {
-            return ERROR_MALFORMED;
-        }
+            bool isHDCP2_0 = false;
+            if (value.startsWith("HDCP2.0 ")) {
+                isHDCP2_0 = true;
+            }
+#ifndef MTK_AOSP_ENHANCEMENT
+            else if (!value.startsWith("HDCP2.1 ")) {
+                ALOGE("malformed wfd_content_protection: '%s'", value.c_str());
 
-        mIsHDCP2_0 = isHDCP2_0;
-        mHDCPPort = hdcpPort;
+                return ERROR_MALFORMED;
+            }
+#else // add HDCP 2.2 check
+            else if ((value.startsWith("HDCP2.1 ")) || (value.startsWith("HDCP2.2 "))) {
+                isHDCP2_0 = true;
+            } else {
+               return ERROR_MALFORMED;
+            }
+#endif
+            int32_t hdcpPort;
+            if (!ParsedMessage::GetInt32Attribute(
+                        value.c_str() + 8, "port", &hdcpPort)
+                    || hdcpPort < 1 || hdcpPort > 65535) {
+                return ERROR_MALFORMED;
+            }
 
-        status_t err = makeHDCP();
-        if (err != OK) {
-            ALOGE("Unable to instantiate HDCP component. "
-                  "Not using HDCP after all.");
+            mIsHDCP2_0 = isHDCP2_0;
+            mHDCPPort = hdcpPort;
 
-            mUsingHDCP = false;
+            status_t err = makeHDCP();
+            if (err != OK) {
+                ALOGE("Unable to instantiate HDCP component. "
+                      "Not using HDCP after all.");
+
+                mUsingHDCP = false;
+            }
         }
     }
 
+        ///M: Support UIBC@{
+#ifdef UIBC_SOURCE_SUPPORT
+    AString uibcCapability;
+    if (params->findParameter(WFD_UIBC_CAPABILITY, &uibcCapability)) {
+        mUibcServerHandler->init((mWfdFlags & kTestModeFlag) == kTestModeFlag);
+        mUibcServerHandler->parseRemoteCapabilities(uibcCapability);
+        if (mUibcServerHandler->isUibcSupported() &&
+            !mUibcGenSrcDisabled) {
+            mUibcServerHandler->setUibcEnabled(UIBC_ENABLED);
+        } else {
+            mUibcServerHandler->setUibcEnabled(UIBC_DISABLED);
+        }
+    } else {
+        ALOGE("Sink doesn't report UIBC capabitity");
+        mUibcServerHandler->setUibcEnabled(UIBC_DISABLED);
+    }
+#endif
+    ///@}
     return sendM4(sessionID);
 }
 
@@ -986,12 +1771,33 @@ status_t WifiDisplaySource::onReceiveM4Response(
         return ERROR_UNSUPPORTED;
     }
 
+    ALOGI("onReceiveM4Response(), mUsingHDCP:%d, mHDCPInitializationComplete:%d", mUsingHDCP, mHDCPInitializationComplete);
+
     if (mUsingHDCP && !mHDCPInitializationComplete) {
         ALOGI("Deferring SETUP trigger until HDCP initialization completes.");
 
         mSetupTriggerDeferred = true;
         return OK;
     }
+
+    ///M: Support WFD UIBC @{
+#ifdef UIBC_SOURCE_SUPPORT
+    // Setting the nego resolutin to handler for mouse/touch support
+    if (mUibcServerHandler != NULL &&
+        mUibcServerHandler->getUibcEnabled()) {
+        size_t width, height, framesPerSecond;
+        bool interlaced;
+        CHECK(VideoFormats::GetConfiguration(
+                  mChosenVideoResolutionType,
+                  mChosenVideoResolutionIndex,
+                  &width,
+                  &height,
+                  &framesPerSecond,
+                  &interlaced));
+        mUibcServerHandler->setWFDResolution(width, height);
+    }
+#endif
+    ///@}
 
     return sendTrigger(sessionID, TRIGGER_SETUP);
 }
@@ -1052,7 +1858,7 @@ status_t WifiDisplaySource::onReceiveClientData(const sp<AMessage> &msg) {
     sp<ParsedMessage> data =
         static_cast<ParsedMessage *>(obj.get());
 
-    ALOGV("session %d received '%s'",
+    ALOGI("session %d received '%s'",
           sessionID, data->debugString().c_str());
 
     AString method;
@@ -1064,6 +1870,12 @@ status_t WifiDisplaySource::onReceiveClientData(const sp<AMessage> &msg) {
         sendErrorResponse(sessionID, "400 Bad Request", -1 /* cseq */);
         return ERROR_MALFORMED;
     }
+    //M: Add error handling for the client session is disconnected from other thread @{
+//    if( mClientSessionID <= 0){
+//        ALOGE("The client session is disconnected. Ingore the incoming session data");
+//        return;
+//    }
+    // @}
 
     if (method.startsWith("RTSP/")) {
         // This is a response.
@@ -1110,12 +1922,16 @@ status_t WifiDisplaySource::onReceiveClientData(const sp<AMessage> &msg) {
     } else if (method == "PLAY") {
         err = onPlayRequest(sessionID, cseq, data);
     } else if (method == "PAUSE") {
+            ALOGI(" received a request method = PAUSE");
         err = onPauseRequest(sessionID, cseq, data);
     } else if (method == "TEARDOWN") {
+            ALOGI(" received a request method = TEARDOWN");
         err = onTeardownRequest(sessionID, cseq, data);
     } else if (method == "GET_PARAMETER") {
+            ALOGI(" received a request method = GET_PARAMETER");
         err = onGetParameterRequest(sessionID, cseq, data);
     } else if (method == "SET_PARAMETER") {
+            ALOGI(" received a request method = SET_PARAMETER");
         err = onSetParameterRequest(sessionID, cseq, data);
     } else {
         sendErrorResponse(sessionID, "405 Method Not Allowed", cseq);
@@ -1147,9 +1963,16 @@ status_t WifiDisplaySource::onOptionsRequest(
 
     response.append("\r\n");
 
-    status_t err = mNetSession->sendRequest(sessionID, response.c_str());
+    status_t err = mNetSession->sendDirectRequest(sessionID, response.c_str(), response.size());
 
     if (err == OK) {
+
+        // For mediatek test bed, can not send M3 message immediately
+        if((mWfdFlags & kTestModeFlag) == kTestModeFlag){
+            ALOGI("sleep 100ms for mediatek miracast test bed");
+            usleep(100 * 1000);
+        }
+
         err = sendM3(sessionID);
     }
 
@@ -1208,10 +2031,18 @@ status_t WifiDisplaySource::onSetupRequest(
             rtpMode = RTPSender::TRANSPORT_TCP;
         }
     } else if (transport.startsWith("RTP/AVP;unicast;")
-            || transport.startsWith("RTP/AVP/UDP;unicast;")) {
+            || transport.startsWith("RTP/AVP/UDP;unicast;")
+///M:@{
+            || transport.startsWith("RTP/AVP/UDP;unicast ")) {
+///@}
         bool badRequest = false;
 
         AString clientPort;
+///M:@{
+        if(transport.startsWith("RTP/AVP/UDP;unicast ")){
+           transport.erase(0, strlen("RTP/AVP/UDP;unicast "));
+        }
+///@}
         if (!ParsedMessage::GetAttribute(
                     transport.c_str(), "client_port", &clientPort)) {
             badRequest = true;
@@ -1245,9 +2076,33 @@ status_t WifiDisplaySource::onSetupRequest(
     notify->setInt32("playbackSessionID", playbackSessionID);
     notify->setInt32("sessionID", sessionID);
 
+    // mtk00634 for HDCP authenticaion fail error handling, set NULL pointer to playbackSession to disable HDCP encrypt
+#ifdef MTK_AOSP_ENHANCEMENT
+    sp<PlaybackSession> playbackSession;
+
+    if (mUsingHDCP)
+    {
+       ALOGI("new playbackSession w/ HDCP");
+       playbackSession =
+            new PlaybackSession(
+                    mOpPackageName, mNetSession, notify, mInterfaceAddr, mHDCP, mMediaPath.c_str());
+    }
+    else
+    {
+       ALOGI("new playbackSession w/o HDCP");
+       playbackSession =
+            new PlaybackSession(
+                    mOpPackageName, mNetSession, notify, mInterfaceAddr, NULL, mMediaPath.c_str());
+    }
+
+    //M: To avoid playbacksessoin init() is interrupted by destroyAsync()
+    mPlaybackSessionIniting = false;
+
+#else
     sp<PlaybackSession> playbackSession =
         new PlaybackSession(
                 mOpPackageName, mNetSession, notify, mInterfaceAddr, mHDCP, mMediaPath.c_str());
+#endif
 
     looper()->registerHandler(playbackSession);
 
@@ -1269,7 +2124,37 @@ status_t WifiDisplaySource::onSetupRequest(
         rtcpMode = RTPSender::TRANSPORT_NONE;
     }
 
-    status_t err = playbackSession->init(
+    status_t err;
+    ALOGI("Init playbackSession");
+    ///Configure for test mode
+    if((mWfdFlags & kSigmaTest) == kSigmaTest){
+
+        ALOGI("Configure video capability for test bed");
+
+        err = playbackSession->init(
+            mClientInfo.mRemoteIP.c_str(),
+            clientRtp,
+            rtpMode,
+            clientRtcp,
+            rtcpMode,
+            mSinkSupportsAudio,
+            mUsingPCMAudio,
+            mSinkSupportsVideo,
+            VideoFormats::RESOLUTION_CEA,  //640x480, 60fps
+            0,
+            mChosenVideoProfile,
+            mChosenVideoLevel);
+
+
+        ALOGI("[Workaround] pause playbackSession");
+
+        playbackSession->pause();
+    #ifdef MTK_AOSP_ENHANCEMENT
+        // Notify it's miracast certification mode for dropping dummy nalu
+        playbackSession->setMiracastMode(true);
+    #endif
+    }else{
+        err = playbackSession->init(
             mClientInfo.mRemoteIP.c_str(),
             clientRtp,
             rtpMode,
@@ -1282,6 +2167,15 @@ status_t WifiDisplaySource::onSetupRequest(
             mChosenVideoResolutionIndex,
             mChosenVideoProfile,
             mChosenVideoLevel);
+    }
+
+    //For HE dongle, its RTP port is 1010
+    if(clientRtp == 1010 || clientRtp == 24030){
+        //ALOGI("Enable slide mode for HE dongle");
+        //playbackSession->setSliceMode(1);
+    }
+
+
 
     if (err != OK) {
         looper()->unregisterHandler(playbackSession->id());
@@ -1290,6 +2184,9 @@ status_t WifiDisplaySource::onSetupRequest(
 
     switch (err) {
         case OK:
+
+            //M: To avoid playbacksessoin init() is interrupted by destroyAsync()
+            mPlaybackSessionIniting = true;
             break;
         case -ENOENT:
             sendErrorResponse(sessionID, "404 Not Found", cseq);
@@ -1311,7 +2208,40 @@ status_t WifiDisplaySource::onSetupRequest(
                     "Transport: RTP/AVP/TCP;interleaved=%d-%d;",
                     clientRtp, clientRtcp));
     } else {
+///M: @{
+#if 0
+    /* disable RTP port in server side */
+        AString transportString = "UDP";
+        if (transportMode == Sender::TRANSPORT_TCP) {
+            transportString = "TCP";
+        }
+
+        if (clientRtcp >= 0) {
+            response.append(
+                    AStringPrintf(
+                        "Transport: RTP/AVP/%s;unicast;client_port=%d-%d;server_port=0-0\r\n",
+                        transportString.c_str(),
+                        clientRtp, clientRtcp));
+        } else {
+            response.append(
+                    AStringPrintf(
+                        "Transport: RTP/AVP/%s;unicast;client_port=%d;server_port=0\r\n",
+                        transportString.c_str(),
+                        clientRtp));
+        }
+#endif
+///@}
+
         int32_t serverRtp = playbackSession->getRTPPort();
+
+        ///M: @{ For MET integration
+#ifdef DEBUG_BUILD
+        char buffer [16];
+        snprintf(buffer, sizeof(buffer), "%d", serverRtp);
+        ALOGI("serverRtp port=%s", buffer);
+        property_set("media.wfd.met_port", buffer);
+#endif
+        ///@}
 
         AString transportString = "UDP";
         if (rtpMode == RTPSender::TRANSPORT_TCP) {
@@ -1333,6 +2263,7 @@ status_t WifiDisplaySource::onSetupRequest(
                         transportString.c_str(),
                         clientRtp, serverRtp));
         }
+
     }
 
     response.append("\r\n");
@@ -1355,6 +2286,11 @@ status_t WifiDisplaySource::onPlayRequest(
         int32_t sessionID,
         int32_t cseq,
         const sp<ParsedMessage> &data) {
+
+    ///M:
+    mPlayRequestReceived = true;
+    /// @}
+
     int32_t playbackSessionID;
     sp<PlaybackSession> playbackSession =
         findPlaybackSession(data, &playbackSessionID);
@@ -1364,6 +2300,15 @@ status_t WifiDisplaySource::onPlayRequest(
         return ERROR_MALFORMED;
     }
 
+    ALOGI("Received PLAY request :%d", mState);
+
+///M: Check mState for PLAY request
+    if(mState >= AWAITING_CLIENT_TEARDOWN){
+       ALOGE("Wrong state for PLAY request");
+       return OK;
+    }
+/// @}
+#if 0
     if (mState != AWAITING_CLIENT_PLAY
      && mState != PAUSED_TO_PLAYING
      && mState != PAUSED) {
@@ -1374,8 +2319,8 @@ status_t WifiDisplaySource::onPlayRequest(
 
         return INVALID_OPERATION;
     }
+#endif
 
-    ALOGI("Received PLAY request.");
     if (mPlaybackSessionEstablished) {
         finishPlay();
     } else {
@@ -1393,10 +2338,44 @@ status_t WifiDisplaySource::onPlayRequest(
         return err;
     }
 
-    if (mState == PAUSED_TO_PLAYING || mPlaybackSessionEstablished) {
-        mState = PLAYING;
+
+    if(mState == PAUSED_TO_PLAYING || mState == PAUSED
+       || mPlaybackSessionEstablished){
+
+      ///For miracast testing issue
+      playbackSession->updateLiveness();
+      scheduleKeepAlive(sessionID);
+      scheduleReaper();
+
+      mState = PLAYING;
+      return OK;
+    }else if(mState == PLAYING){
+
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGE("Wrong state for PLAY request:%d", mState);
+        sendErrorResponse(sessionID, "406 not acceptable", cseq);
         return OK;
+#endif
     }
+
+///M: Enable UIBC channel @{
+#ifdef UIBC_SOURCE_SUPPORT
+    //During fast setup, need to eable UIBC channel
+    if((mWfdFlags & kFastSetupFlag) > 0){
+       ///Enable UIBC server for client
+        if (mUibcServerHandler != NULL &&
+            mUibcServerHandler->getUibcEnabled() &&
+            mUibcSessionID == 0) {
+            ALOGI("The UIBC server is started");
+            sp<AMessage> uibcNotify = new AMessage(kWhatUibcNotify, this);
+            mNetSession->createUIBCServer(
+                mInterfaceAddr, WFD_UIBC_SERVER_PORT, uibcNotify, &mUibcSessionID);
+        }
+       ALOGI("New UIBC session for Fast Setup");
+       sendM14(sessionID);
+    }
+#endif
+/// @}
 
     CHECK_EQ(mState, AWAITING_CLIENT_PLAY);
     mState = ABOUT_TO_PLAY;
@@ -1408,6 +2387,7 @@ void WifiDisplaySource::finishPlay() {
     const sp<PlaybackSession> &playbackSession =
         mClientInfo.mPlaybackSession;
 
+    ALOGI("call playbackSession play()");
     status_t err = playbackSession->play();
     CHECK_EQ(err, (status_t)OK);
 }
@@ -1431,8 +2411,17 @@ status_t WifiDisplaySource::onPauseRequest(
         return INVALID_OPERATION;
     }
 
+    //if (mState == PAUSED) {
+//#ifdef MTK_AOSP_ENHANCEMENT
+//        ALOGE("Wrong state for PAUSE request:%d", mState);
+//        sendErrorResponse(sessionID, "406 not acceptable", cseq);
+//#endif
+//        return OK;
+//   }
+
     status_t err = playbackSession->pause();
     CHECK_EQ(err, (status_t)OK);
+
 
     AString response = "RTSP/1.0 200 OK\r\n";
     AppendCommonResponse(&response, cseq, playbackSessionID);
@@ -1453,7 +2442,7 @@ status_t WifiDisplaySource::onTeardownRequest(
         int32_t sessionID,
         int32_t cseq,
         const sp<ParsedMessage> &data) {
-    ALOGI("Received TEARDOWN request.");
+    ALOGI("Received TEARDOWN request:%d", mState);
 
     int32_t playbackSessionID;
     sp<PlaybackSession> playbackSession =
@@ -1471,18 +2460,28 @@ status_t WifiDisplaySource::onTeardownRequest(
 
     mNetSession->sendRequest(sessionID, response.c_str());
 
+    ///M: @{ For MET integration
+#ifdef DEBUG_BUILD
+    property_set("media.wfd.met_port", "-1");
+#endif
+    ///@}
+
     if (mState == AWAITING_CLIENT_TEARDOWN) {
         CHECK(mStopReplyID != NULL);
         finishStop();
     } else {
-        mClient->onDisplayError(IRemoteDisplayClient::kDisplayErrorUnknown);
+        if(mClient != NULL){
+            mClient->onDisplayError(IRemoteDisplayClient::kDisplayErrorUnknown);
+        }else{
+            stopTestSession();
+        }
     }
 
     return OK;
 }
 
 void WifiDisplaySource::finishStop() {
-    ALOGV("finishStop");
+    ALOGI("finishStop");
 
     mState = STOPPING;
 
@@ -1490,10 +2489,15 @@ void WifiDisplaySource::finishStop() {
 }
 
 void WifiDisplaySource::finishStopAfterDisconnectingClient() {
-    ALOGV("finishStopAfterDisconnectingClient");
+    ALOGI("finishStopAfterDisconnectingClient");
 
     if (mHDCP != NULL) {
         ALOGI("Initiating HDCP shutdown.");
+
+        //Deinitialize for Miracast
+        ALOGI("Reset mHDCPInitializationComplete.");
+        mHDCPInitializationComplete = false;
+
         mHDCP->shutdownAsync();
         return;
     }
@@ -1502,7 +2506,7 @@ void WifiDisplaySource::finishStopAfterDisconnectingClient() {
 }
 
 void WifiDisplaySource::finishStop2() {
-    ALOGV("finishStop2");
+    ALOGI("finishStop2");
 
     if (mHDCP != NULL) {
         mHDCP->setObserver(NULL);
@@ -1510,15 +2514,24 @@ void WifiDisplaySource::finishStop2() {
         mHDCP.clear();
     }
 
+    ALOGI("We're stopped.");
+    mState = STOPPED;
+
+    status_t err = OK;
+
+    if (mTestSessionStopped) {
+        ALOGD("in test mode, don't reply any message and stop RTSP server");
+        return;
+    }
+
+    //This is a server session; Don't stop under test mode
     if (mSessionID != 0) {
         mNetSession->destroySession(mSessionID);
         mSessionID = 0;
     }
 
-    ALOGI("We're stopped.");
-    mState = STOPPED;
 
-    status_t err = OK;
+
 
     sp<AMessage> response = new AMessage;
     response->setInt32("err", err);
@@ -1618,6 +2631,7 @@ void WifiDisplaySource::sendErrorResponse(
 }
 
 int32_t WifiDisplaySource::makeUniquePlaybackSessionID() const {
+    srand(time(NULL));
     return rand();
 }
 
@@ -1637,7 +2651,7 @@ sp<WifiDisplaySource::PlaybackSession> WifiDisplaySource::findPlaybackSession(
 }
 
 void WifiDisplaySource::disconnectClientAsync() {
-    ALOGV("disconnectClient");
+    ALOGI("disconnectClient");
 
     if (mClientInfo.mPlaybackSession == NULL) {
         disconnectClient2();
@@ -1645,13 +2659,23 @@ void WifiDisplaySource::disconnectClientAsync() {
     }
 
     if (mClientInfo.mPlaybackSession != NULL) {
-        ALOGV("Destroying PlaybackSession");
-        mClientInfo.mPlaybackSession->destroyAsync();
+
+        //M: To avoid playbacksessoin init() is interrupted by destroyAsync()
+        if (mPlaybackSessionIniting) {
+            ALOGI("Deferring destroy playbacksession until playbacksession initialization completes.");
+
+            mPlaybackSessionDestroyDeferred = true;
+
+        }
+        else {
+            ALOGI("Destroying PlaybackSession");
+            mClientInfo.mPlaybackSession->destroyAsync();
+        }
     }
 }
 
 void WifiDisplaySource::disconnectClient2() {
-    ALOGV("disconnectClient2");
+    ALOGI("disconnectClient2");
 
     if (mClientInfo.mPlaybackSession != NULL) {
         looper()->unregisterHandler(mClientInfo.mPlaybackSession->id());
@@ -1663,7 +2687,31 @@ void WifiDisplaySource::disconnectClient2() {
         mClientSessionID = 0;
     }
 
-    mClient->onDisplayDisconnected();
+///M:@{
+#ifdef UIBC_SOURCE_SUPPORT
+    if (mUibcSessionID > 0) {   //Check the UIBC server is alive
+        if (mUibcServerHandler != NULL) {
+            mUibcServerHandler->destroy();
+            mUibcServerHandler.clear();
+            mUibcServerHandler = NULL;
+        }
+
+        mNetSession->destroySession(mUibcSessionID); //Check the UIBC client
+        if(mUibcClientSessionID > 0){
+           mUibcClientSessionID = 0;
+        }
+    }
+#endif
+
+    if (mTestClientSessionID > 0) {
+        mNetSession->destroySession(mTestClientSessionID);
+        mTestClientSessionID = 0;
+    }
+    ///@}
+
+    if(mClient != NULL){
+        mClient->onDisplayDisconnected();
+    }
 
     finishStopAfterDisconnectingClient();
 }
@@ -1735,5 +2783,511 @@ status_t WifiDisplaySource::makeHDCP() {
     return OK;
 }
 
-}  // namespace android
 
+
+/// M: Add by MTK @{
+status_t WifiDisplaySource::sendGenericMsgByMethod(int32_t methodID) {
+    AString method;
+
+    if(mClientSessionID <= 0){
+        ALOGE("No active client session for WFD client");
+        return 0;
+    }
+
+    switch(methodID){
+        case TRIGGER_PLAY:
+            mState = PAUSED_TO_PLAYING;
+            method = "PLAY\r\n";
+            break;
+        case TRIGGER_PAUSE:
+            mState = PLAYING_TO_PAUSED;
+            method = "PAUSE\r\n";
+            break;
+        case TRIGGER_TEARDOWN:
+            method = "TEARDOWN\r\n";
+            break;
+        default:
+            ALOGE("Unknown methodID:%d", methodID);
+            return BAD_VALUE;
+            break;
+    }
+
+    AString body = "wfd_trigger_method: ";
+    body.append(method);
+
+    AString request = "SET_PARAMETER rtsp://localhost/wfd1.0 RTSP/1.0\r\n";
+    AppendCommonResponse(&request, mNextCSeq);
+
+    request.append("Content-Type: text/parameters\r\n");
+    request.append(AStringPrintf("Content-Length: %d\r\n", body.size()));
+    request.append("\r\n");
+    request.append(body);
+
+    status_t err =
+        mNetSession->sendRequest(mClientSessionID, request.c_str(), request.size());
+
+    if (err != OK) {
+        return err;
+    }
+    ALOGI("mNextCSeq=%d method =%d",mNextCSeq,methodID);
+
+    registerResponseHandler(
+            mClientSessionID, mNextCSeq, &WifiDisplaySource::onReceiveGenericResponse);
+
+    ++mNextCSeq;
+
+    return OK;
+}
+
+status_t WifiDisplaySource::onReceiveGenericResponse(
+        int32_t sessionID, const sp<ParsedMessage> &msg) {
+    int32_t statusCode;
+
+    CHECK_EQ(sessionID, mClientSessionID);
+
+    if (!msg->getStatusCode(&statusCode)) {
+        return ERROR_MALFORMED;
+    }
+
+    if (statusCode != 200) {
+        return ERROR_UNSUPPORTED;
+    }
+
+    return OK;
+}
+
+bool WifiDisplaySource::isTestMode(){
+    return (kTestModeFlag & kTestModeFlag) ? true: false;
+}
+
+void WifiDisplaySource::onReceiveTestData(const sp<AMessage> &msg) {
+    status_t err = OK;
+    int32_t sessionID;
+    AString response = "";
+    CHECK(msg->findInt32("sessionID", &sessionID));
+
+    AString data;
+    CHECK(msg->findString("data", &data));
+
+    mWfdFlags |= kSigmaTest;
+
+    ALOGI("test session %d received '%s'",
+          sessionID, data.c_str());
+
+    if(data.startsWith("reset") || data.startsWith("wfd_cmd wfd_reset")){
+        resetRtspClient();
+        response = "OK,\r\n";
+    }else if(data.startsWith("rtsp_get sessionids")){
+        if(mClientInfo.mPlaybackSessionID > 0){
+            response = AStringPrintf("OK,%d,0\r\n", mClientInfo.mPlaybackSessionID);
+        }else{
+            response = "FAIL,0,0\r\n";
+        }
+    }else if(data.startsWith("rtsp_trigger PLAY")){
+        err = sendGenericMsgByMethod(TRIGGER_PLAY);
+        response = "OK,PLAY\r\n";
+    }else if(data.startsWith("rtsp_trigger PAUSE")){
+        err = sendGenericMsgByMethod(TRIGGER_PAUSE);
+        response = "OK,PAUSE\r\n";
+    }else if(data.startsWith("rtsp_trigger TEARDOWN")){
+        err = sendGenericMsgByMethod(TRIGGER_TEARDOWN);
+        response = "OK,TEARDOWN\r\n";
+    }else if(data.startsWith("rtsp_set")){
+        response = "OK,\r\n";
+    }
+    // For HDCP
+     else if(data.startsWith("preset wfdHdcp")){
+        response = "OK,\r\n";
+    }else if(data.startsWith("preset disableOption")){
+        response = "OK,\r\n";
+    }else if(data.startsWith("preset inputContentType 1") ||
+             data.startsWith("preset inputContentType 3")){
+        response = "OK,\r\n";
+        //Do nothing for PRESET
+    }else if(data.startsWith("preset inputContentType 2")){
+        response = "OK,\r\n";
+        //Do nothing for PRESET
+    }else if(data.startsWith("event inputContentType 1") ||
+             data.startsWith("event inputContentType 3")){
+        response = "OK,\r\n";
+        ALOGI("mUsingHDCP:%d", mUsingHDCP);
+        if (!mUsingHDCP){
+            if (mClientInfo.mPlaybackSession != NULL) {
+            #ifdef MTK_AOSP_ENHANCEMENT
+                ALOGI("call forceBlackScreen(%d)", 1);
+                mClientInfo.mPlaybackSession->forceBlackScreen(true);
+            #endif
+            }
+        }
+    }else if(data.startsWith("event inputContentType 2")){
+        response = "OK,\r\n";
+        ALOGI("mUsingHDCP:%d", mUsingHDCP);
+        if (!mUsingHDCP){
+            if (mClientInfo.mPlaybackSession != NULL) {
+            #ifdef MTK_AOSP_ENHANCEMENT
+                ALOGI("call forceBlackScreen(%d)", 0);
+                mClientInfo.mPlaybackSession->forceBlackScreen(false);
+            #endif
+            }
+        }
+    }
+#ifdef UIBC_SOURCE_SUPPORT
+    else if (data.startsWith("event uibcGen 1")) {
+        response = "OK,\r\n";
+        //Do nothing for uibcGen
+    } else if (data.startsWith("event uibcPrepare 3")) {
+        response = "OK,\r\n";
+        if (mUibcServerHandler != NULL) {
+            mUibcServerHandler->simulateKeyEvent();
+        }
+    } else if (data.startsWith("event uibcPrepare 4")) {
+        response = "OK,\r\n";
+        if (mUibcServerHandler != NULL) {
+            mUibcServerHandler->simulateMouseEvent();
+        }
+    } else if (data.startsWith("preset wfdUibcPrepare 1")) {
+        response = "OK,\r\n";
+    } else if (data.startsWith("event uibcHidPrepare 3")) {
+        response = "OK,\r\n";
+        mUibcServerHandler->simulateHidcKeyEvent();
+    } else if (data.startsWith("event uibcHidPrepare 1") ||
+              data.startsWith("event uibcHidPrepare 2") ||
+              data.startsWith("event uibcHidPrepare 4")) {
+        response = "OK,\r\n";
+        mUibcServerHandler->simulateHidcMouseEvent();
+    }
+#endif
+    else {
+        ALOGD("No match test command");
+    }
+
+    if(response.size() > 0){
+        ALOGD("test response:[%s]", response.c_str());
+        mNetSession->sendDirectRequest(sessionID, response.c_str(), response.size());
+    }
+
+}
+
+void WifiDisplaySource::onReceiveUIBCData(const sp<AMessage> &msg) {
+#ifdef UIBC_SOURCE_SUPPORT
+    int32_t sessionID;
+    CHECK(msg->findInt32("sessionID", &sessionID));
+
+    sp<ABuffer> obj;
+    CHECK(msg->findBuffer("data", &obj));
+
+#if 0
+    ALOGD("UIBC in with size:%d", obj->size());
+    hexdump(obj->data(), obj->size());
+#endif
+
+    if(mUibcServerHandler != NULL) {
+        mUibcServerHandler->handleUIBCMessage(obj);
+    }else{
+        ALOGE("No UIBC session");
+    }
+#endif
+}
+
+status_t WifiDisplaySource::sendM14(int32_t sessionID) {
+#ifdef UIBC_SOURCE_SUPPORT
+    const char* pUibcCapStr = mUibcServerHandler->getSupportedCapabilities();
+    AString body = AStringPrintf(pUibcCapStr);
+
+    AString request = "SET_PARAMETER rtsp://localhost/wfd1.0 RTSP/1.0\r\n";
+    AppendCommonResponse(&request, mNextCSeq);
+
+    request.append("Content-Type: text/parameters\r\n");
+    request.append(AStringPrintf("Content-Length: %d\r\n", body.size()));
+    request.append("\r\n");
+    request.append(body);
+
+    status_t err =
+        mNetSession->sendRequest(sessionID, request.c_str(), request.size());
+
+    if (err != OK) {
+        return err;
+    }
+
+    registerResponseHandler(
+            sessionID, mNextCSeq, &WifiDisplaySource::onReceiveM14Response);
+
+    ++mNextCSeq;
+#endif
+    return OK;
+}
+
+status_t WifiDisplaySource::onReceiveM14Response(
+        int32_t /*sessionID*/, const sp<ParsedMessage> &msg) {
+    int32_t statusCode;
+    if (!msg->getStatusCode(&statusCode)) {
+        return ERROR_MALFORMED;
+    }
+
+    if (statusCode != 200) {
+        return ERROR_UNSUPPORTED;
+    }
+
+    return OK;
+}
+
+void WifiDisplaySource::resetRtspClient() {
+    ALOGI("resetRtspClient()");
+
+    if (mClientSessionID != 0) {
+        if (mClientInfo.mPlaybackSession != NULL) {
+            looper()->unregisterHandler(mClientInfo.mPlaybackSession->id());
+            ALOGE("mPlaybackSession clear");
+            mClientInfo.mPlaybackSession->destroyAsync();
+            mClientInfo.mPlaybackSession.clear();
+        }
+        mNetSession->destroySession(mClientSessionID);
+        mClientSessionID = 0;
+    }
+
+    mClientInfo.mPlaybackSessionID = -1;
+    mTestSessionStopped = false;
+
+    //Sync with incoming TCP connetion checking
+    mState = AWAITING_CLIENT_CONNECTION;
+#ifdef UIBC_SOURCE_SUPPORT
+    if(mUibcClientSessionID > 0){
+        mNetSession->destroySession(mUibcClientSessionID); //Check the UIBC client
+        mUibcClientSessionID = 0;
+    }
+
+    if (mUibcSessionID > 0) {   //Check the UIBC server is alive
+        mNetSession->destroySession(mUibcSessionID); //Check the UIBC client
+        if (mUibcServerHandler != NULL) {
+            mUibcServerHandler->destroy();
+            mUibcServerHandler.clear();
+            mUibcServerHandler = NULL;
+        }
+    }
+#endif
+    if(mSessionID == 0){
+        sp<AMessage> notify = new AMessage(kWhatRTSPNotify, this);
+        ALOGD("Create RTSP server for WFD Sigma");
+        mNetSession->createRTSPServer(mInterfaceAddr, kWifiDisplayDefaultPort, notify, &mSessionID);
+    }
+
+    setAudioPath(true);
+
+    //Deinitialize for Miracast
+    ALOGI("Reset mHDCPInitializationComplete.");
+    mHDCPInitializationComplete = false;
+}
+
+void WifiDisplaySource::startRtpClient(const char* /*remoteIP*/, int32_t /*clientRtp*/) {
+#if 0
+    int32_t playbackSessionID = makeUniquePlaybackSessionID();
+
+    sp<AMessage> notify = new AMessage(kWhatRtpNotify, this);
+    notify->setInt32("playbackSessionID", playbackSessionID);
+    notify->setInt32("sessionID", 0);
+
+    sp<PlaybackSession> playbackSession =
+        new PlaybackSession(
+                mNetSession, notify, mInterfaceAddr, mHDCP);
+
+    looper()->registerHandler(playbackSession);
+
+    ALOGI("Run startRtpClient");
+
+    status_t err = playbackSession->init(
+            remoteIP,
+            clientRtp,
+            -1,
+            RTPSender::TRANSPORT_UDP,
+            true); //Use PCM
+
+    if (err != OK) {
+        looper()->unregisterHandler(playbackSession->id());
+        playbackSession.clear();
+    }
+
+    mClientInfo.mPlaybackSessionID = playbackSessionID;
+    mClientInfo.mPlaybackSession = playbackSession;
+
+    ALOGI("Prepare to Play");
+
+    err = playbackSession->play();
+    CHECK_EQ(err, (status_t)OK);
+
+    playbackSession->finishPlay();
+    CHECK_EQ(err, (status_t)OK);
+#endif
+}
+
+///M: add for rtsp generic message @{
+status_t WifiDisplaySource::sendGenericMsg(int cmd) {
+    ALOGI("WifiDisplaySource sendGenericMsg");
+
+    if(mClientSessionID == 0){
+        ALOGE("No Client WFD session");
+        return OK;
+    }
+
+    if(mSessionID == 0){
+        ALOGE("No WFD session");
+        return OK;
+    }
+
+    sp<AMessage> msg = new AMessage(kWhatSendGenericMsg, this);
+    msg->setInt32("cmd",cmd);
+    msg->post();
+
+    return OK;
+}
+
+status_t WifiDisplaySource::setWfdLevel(int level) {
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    mClientInfo.mPlaybackSession->setWfdLevel(level);
+#endif
+    return OK;
+}
+
+int WifiDisplaySource::getWfdParam(int paramType) {
+    int paramValue = 0;
+
+    // 0: expected bit rate, 1: current bit rate, 2: fluency rate
+    if (paramType == 0 || paramType == 1 || paramType == 2)
+    {
+    #ifdef MTK_AOSP_ENHANCEMENT
+        paramValue = mClientInfo.mPlaybackSession->getWfdParam(paramType);
+    #endif
+    }
+    // 3: if audio format is LPCM
+    else if (paramType == 3) {
+        paramValue = mUsingPCMAudio ? 1: 0;
+    }
+    // 4: if video profile is CBP
+    else if (paramType == 4) {
+        paramValue = (mChosenVideoProfile == VideoFormats::PROFILE_CBP) ? 1 : 0;
+    }
+#ifdef MTK_AOSP_ENHANCEMENT
+    // 5: average latency, 6: sink fps
+    else if (paramType == 5 || paramType == 6) {
+
+        sp<WfdDebugInfo> debugInfo= defaultWfdDebugInfo();
+        int64_t value = 0, dummy;
+    int32_t fps;
+
+        if (paramType == 5){
+            debugInfo->getStatistics(1, &value, &dummy, &fps, &dummy);
+            paramValue = (int) value;
+        }else if (paramType == 6){
+            debugInfo->getStatistics(1, &dummy, &dummy, &fps ,&dummy);
+            paramValue = (int) fps;
+        }
+    }
+#endif
+    else if (paramType == 7) {
+    #if defined(MTK_DX_HDCP_SUPPORT) || defined(WFD_HDCP_TX_SUPPORT)
+        paramValue = mUsingHDCP ? 1 : 0;
+    #else
+        paramValue = 0;
+    #endif
+    }
+#ifdef  UIBC_SOURCE_SUPPORT
+    else if (paramType == 8) {
+        /*
+         * bit 0: UIBC touch
+         * bit 1: UIBC mouse
+         * bit 2: UIBC keyboard
+         */
+         paramValue = 0;
+         if (mUibcServerHandler != NULL) {
+             if (mUibcServerHandler->getUibcEnabled()) {
+                bool touchSupported = mUibcServerHandler->isGenericSupported(DEVICE_TYPE_SINGLETOUCH);
+                bool mouseSupported = mUibcServerHandler->isGenericSupported(DEVICE_TYPE_MOUSE);
+                bool keyboardSupported = mUibcServerHandler->isGenericSupported(DEVICE_TYPE_KEYBOARD);
+                 paramValue |= touchSupported ? 0x01:0x00;
+                 paramValue |= mouseSupported ? 0x02:0x00;
+                 paramValue |= keyboardSupported ? 0x04:0x00;
+             }
+         }
+    }
+#endif
+    return paramValue;
+}
+
+void WifiDisplaySource::setAudioPath(bool on) {
+
+    ALOGI("setAudioPath:%d", on);
+    if (on) {
+        AudioSystem::setDeviceConnectionState(
+            AUDIO_DEVICE_OUT_REMOTE_SUBMIX, AUDIO_POLICY_DEVICE_STATE_AVAILABLE, 0, NULL);
+        AudioSystem::setDeviceConnectionState(
+            AUDIO_DEVICE_IN_REMOTE_SUBMIX, AUDIO_POLICY_DEVICE_STATE_AVAILABLE, 0, NULL);
+    }else{
+        AudioSystem::setDeviceConnectionState(
+            AUDIO_DEVICE_OUT_REMOTE_SUBMIX, AUDIO_POLICY_DEVICE_STATE_UNAVAILABLE, 0, NULL);
+        AudioSystem::setDeviceConnectionState(
+            AUDIO_DEVICE_IN_REMOTE_SUBMIX, AUDIO_POLICY_DEVICE_STATE_UNAVAILABLE, 0, NULL);
+    }
+}
+
+void WifiDisplaySource::stopTestSession() {
+     ALOGI("stop RTSP session for test mode: %d", mState);
+
+     if(mState != STOPPING){
+       mTestSessionStopped = true;
+       finishStop();
+     }
+     setAudioPath(false);
+}
+
+
+
+void WifiDisplaySource::notifyThermal(bool start){
+
+    FILE *fp = fopen("/proc/driver/thermal/clwmt_wfdstat", "w");
+    if(fp != NULL)
+    {
+        if (start) {
+            fprintf(fp, "2");
+        } else {
+            fprintf(fp, "0");
+        }
+
+        fclose(fp);
+    }
+    else
+    {
+        ALOGI("Error: Open /proc/driver/thermal/clwmt_wfdstat fail");
+    }
+
+    // Notify thermal to apply WFD policy: 52 degrees
+    ALOGI("Set thermal policy: %d", start);
+    if (start) {
+        system("/system/bin/thermal_manager thermal_policy_00 1");
+    } else {
+        system("/system/bin/thermal_manager thermal_policy_00 0");
+    }
+
+}
+
+
+
+void WifiDisplaySource::notifyGPUDriver(bool start) {
+    FILE *fp= fopen("/d/ged/hal/event_notify", "w");
+    if(fp != NULL) {
+        if (start) {
+            fprintf(fp, "enable_WFD 1");
+        } else {
+            fprintf(fp, "enable_WFD 0");
+        }
+        fclose(fp);
+    } else {
+        ALOGI("Error: Open /d/ged/hal/event_notify fail");
+    }
+    // Notify GPU Driver
+    ALOGI("Notify GPU Driver: %d", start);
+}
+///@}
+
+
+/// M: @}
+}  // namespace android

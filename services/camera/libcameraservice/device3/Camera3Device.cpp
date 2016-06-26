@@ -44,7 +44,6 @@
 #include <utils/Timers.h>
 
 #include "utils/CameraTraces.h"
-#include "mediautils/SchedulingPolicyService.h"
 #include "device3/Camera3Device.h"
 #include "device3/Camera3OutputStream.h"
 #include "device3/Camera3InputStream.h"
@@ -67,7 +66,6 @@ Camera3Device::Camera3Device(int id):
         mNextResultFrameNumber(0),
         mNextReprocessResultFrameNumber(0),
         mNextShutterFrameNumber(0),
-        mNextReprocessShutterFrameNumber(0),
         mListener(NULL)
 {
     ATRACE_CALL();
@@ -287,27 +285,19 @@ status_t Camera3Device::disconnect() {
         mStatusTracker->join();
     }
 
-    camera3_device_t *hal3Device;
     {
         Mutex::Autolock l(mLock);
 
         mRequestThread.clear();
         mStatusTracker.clear();
 
-        hal3Device = mHal3Device;
-    }
+        if (mHal3Device != NULL) {
+            ATRACE_BEGIN("camera3->close");
+            mHal3Device->common.close(&mHal3Device->common);
+            ATRACE_END();
+            mHal3Device = NULL;
+        }
 
-    // Call close without internal mutex held, as the HAL close may need to
-    // wait on assorted callbacks,etc, to complete before it can return.
-    if (hal3Device != NULL) {
-        ATRACE_BEGIN("camera3->close");
-        hal3Device->common.close(&hal3Device->common);
-        ATRACE_END();
-    }
-
-    {
-        Mutex::Autolock l(mLock);
-        mHal3Device = NULL;
         internalUpdateStatusLocked(STATUS_UNINITIALIZED);
     }
 
@@ -567,18 +557,6 @@ status_t Camera3Device::convertMetadataListToRequestListLocked(
 
         ALOGV("%s: requestId = %" PRId32, __FUNCTION__, newRequest->mResultExtras.requestId);
     }
-
-    // Setup batch size if this is a high speed video recording request.
-    if (mIsConstrainedHighSpeedConfiguration && requestList->size() > 0) {
-        auto firstRequest = requestList->begin();
-        for (auto& outputStream : (*firstRequest)->mOutputStreams) {
-            if (outputStream->isVideoStream()) {
-                (*firstRequest)->mBatchSize = requestList->size();
-                break;
-            }
-        }
-    }
-
     return OK;
 }
 
@@ -1420,7 +1398,7 @@ status_t Camera3Device::flush(int64_t *frameNumber) {
 
     status_t res;
     if (mHal3Device->common.version >= CAMERA_DEVICE_API_VERSION_3_1) {
-        res = mRequestThread->flush();
+        res = mHal3Device->ops->flush(mHal3Device);
     } else {
         Mutex::Autolock l(mLock);
         res = waitUntilDrainedLocked();
@@ -1430,10 +1408,6 @@ status_t Camera3Device::flush(int64_t *frameNumber) {
 }
 
 status_t Camera3Device::prepare(int streamId) {
-    return prepare(camera3::Camera3StreamInterface::ALLOCATE_PIPELINE_MAX, streamId);
-}
-
-status_t Camera3Device::prepare(int maxCount, int streamId) {
     ATRACE_CALL();
     ALOGV("%s: Camera %d: Preparing stream %d", __FUNCTION__, mId, streamId);
     Mutex::Autolock il(mInterfaceLock);
@@ -1458,7 +1432,7 @@ status_t Camera3Device::prepare(int maxCount, int streamId) {
         return BAD_VALUE;
     }
 
-    return mPreparerThread->prepare(maxCount, stream);
+    return mPreparerThread->prepare(stream);
 }
 
 status_t Camera3Device::tearDown(int streamId) {
@@ -1609,7 +1583,6 @@ sp<Camera3Device::CaptureRequest> Camera3Device::createCaptureRequest(
         newRequest->mOutputStreams.push(stream);
     }
     newRequest->mSettings.erase(ANDROID_REQUEST_OUTPUT_STREAMS);
-    newRequest->mBatchSize = 1;
 
     return newRequest;
 }
@@ -1767,21 +1740,6 @@ status_t Camera3Device::configureStreamsLocked() {
     // Request thread needs to know to avoid using repeat-last-settings protocol
     // across configure_streams() calls
     mRequestThread->configurationComplete();
-
-    // Boost priority of request thread for high speed recording to SCHED_FIFO
-    if (mIsConstrainedHighSpeedConfiguration) {
-        pid_t requestThreadTid = mRequestThread->getTid();
-        res = requestPriority(getpid(), requestThreadTid,
-                kConstrainedHighSpeedThreadPriority, true);
-        if (res != OK) {
-            ALOGW("Can't set realtime priority for request processing thread: %s (%d)",
-                    strerror(-res), res);
-        } else {
-            ALOGD("Set real time priority for request queue thread (tid %d)", requestThreadTid);
-        }
-    } else {
-        // TODO: Set/restore normal priority for normal use cases
-    }
 
     // Update device state
 
@@ -2535,6 +2493,18 @@ void Camera3Device::notifyError(const camera3_error_msg_t &msg,
 void Camera3Device::notifyShutter(const camera3_shutter_msg_t &msg,
         NotificationListener *listener) {
     ssize_t idx;
+    // Verify ordering of shutter notifications
+    {
+        Mutex::Autolock l(mOutputLock);
+        // TODO: need to track errors for tighter bounds on expected frame number.
+        if (msg.frame_number < mNextShutterFrameNumber) {
+            SET_ERR("Shutter notification out-of-order. Expected "
+                    "notification for frame %d, got frame %d",
+                    mNextShutterFrameNumber, msg.frame_number);
+            return;
+        }
+        mNextShutterFrameNumber = msg.frame_number + 1;
+    }
 
     // Set timestamp for the request in the in-flight tracking
     // and get the request ID to send upstream
@@ -2543,29 +2513,6 @@ void Camera3Device::notifyShutter(const camera3_shutter_msg_t &msg,
         idx = mInFlightMap.indexOfKey(msg.frame_number);
         if (idx >= 0) {
             InFlightRequest &r = mInFlightMap.editValueAt(idx);
-
-            // Verify ordering of shutter notifications
-            {
-                Mutex::Autolock l(mOutputLock);
-                // TODO: need to track errors for tighter bounds on expected frame number.
-                if (r.hasInputBuffer) {
-                    if (msg.frame_number < mNextReprocessShutterFrameNumber) {
-                        SET_ERR("Shutter notification out-of-order. Expected "
-                                "notification for frame %d, got frame %d",
-                                mNextReprocessShutterFrameNumber, msg.frame_number);
-                        return;
-                    }
-                    mNextReprocessShutterFrameNumber = msg.frame_number + 1;
-                } else {
-                    if (msg.frame_number < mNextShutterFrameNumber) {
-                        SET_ERR("Shutter notification out-of-order. Expected "
-                                "notification for frame %d, got frame %d",
-                                mNextShutterFrameNumber, msg.frame_number);
-                        return;
-                    }
-                    mNextShutterFrameNumber = msg.frame_number + 1;
-                }
-            }
 
             ALOGVV("Camera %d: %s: Shutter fired for frame %d (id %d) at %" PRId64,
                     mId, __FUNCTION__,
@@ -2807,17 +2754,6 @@ status_t Camera3Device::RequestThread::clear(
     return OK;
 }
 
-status_t Camera3Device::RequestThread::flush() {
-    ATRACE_CALL();
-    Mutex::Autolock l(mFlushLock);
-
-    if (mHal3Device->common.version >= CAMERA_DEVICE_API_VERSION_3_1) {
-        return mHal3Device->ops->flush(mHal3Device);
-    }
-
-    return -ENOTSUP;
-}
-
 void Camera3Device::RequestThread::setPaused(bool paused) {
     Mutex::Autolock l(mPauseLock);
     mDoPause = paused;
@@ -2908,7 +2844,7 @@ void Camera3Device::overrideResultForPrecaptureCancel(
 }
 
 bool Camera3Device::RequestThread::threadLoop() {
-    ATRACE_CALL();
+
     status_t res;
 
     // Handle paused state.
@@ -2916,31 +2852,147 @@ bool Camera3Device::RequestThread::threadLoop() {
         return true;
     }
 
-    // Wait for the next batch of requests.
-    waitForNextRequestBatch();
-    if (mNextRequests.size() == 0) {
+    // Get work to do
+
+    sp<CaptureRequest> nextRequest = waitForNextRequest();
+    if (nextRequest == NULL) {
         return true;
     }
 
-    // Get the latest request ID, if any
-    int latestRequestId;
-    camera_metadata_entry_t requestIdEntry = mNextRequests[mNextRequests.size() - 1].
-            captureRequest->mSettings.find(ANDROID_REQUEST_ID);
+    // Create request to HAL
+    camera3_capture_request_t request = camera3_capture_request_t();
+    request.frame_number = nextRequest->mResultExtras.frameNumber;
+    Vector<camera3_stream_buffer_t> outputBuffers;
+
+    // Get the request ID, if any
+    int requestId;
+    camera_metadata_entry_t requestIdEntry =
+            nextRequest->mSettings.find(ANDROID_REQUEST_ID);
     if (requestIdEntry.count > 0) {
-        latestRequestId = requestIdEntry.data.i32[0];
+        requestId = requestIdEntry.data.i32[0];
     } else {
-        ALOGW("%s: Did not have android.request.id set in the request.", __FUNCTION__);
-        latestRequestId = NAME_NOT_FOUND;
+        ALOGW("%s: Did not have android.request.id set in the request",
+                __FUNCTION__);
+        requestId = NAME_NOT_FOUND;
     }
 
-    // Prepare a batch of HAL requests and output buffers.
-    res = prepareHalRequests();
-    if (res == TIMED_OUT) {
-        // Not a fatal error if getting output buffers time out.
-        cleanUpFailedRequests(/*sendRequestError*/ true);
-        return true;
-    } else if (res != OK) {
-        cleanUpFailedRequests(/*sendRequestError*/ false);
+    // Insert any queued triggers (before metadata is locked)
+    int32_t triggerCount;
+    res = insertTriggers(nextRequest);
+    if (res < 0) {
+        SET_ERR("RequestThread: Unable to insert triggers "
+                "(capture request %d, HAL device: %s (%d)",
+                request.frame_number, strerror(-res), res);
+        cleanUpFailedRequest(request, nextRequest, outputBuffers);
+        return false;
+    }
+    triggerCount = res;
+
+    bool triggersMixedIn = (triggerCount > 0 || mPrevTriggers > 0);
+
+    // If the request is the same as last, or we had triggers last time
+    if (mPrevRequest != nextRequest || triggersMixedIn) {
+        /**
+         * HAL workaround:
+         * Insert a dummy trigger ID if a trigger is set but no trigger ID is
+         */
+        res = addDummyTriggerIds(nextRequest);
+        if (res != OK) {
+            SET_ERR("RequestThread: Unable to insert dummy trigger IDs "
+                    "(capture request %d, HAL device: %s (%d)",
+                    request.frame_number, strerror(-res), res);
+            cleanUpFailedRequest(request, nextRequest, outputBuffers);
+            return false;
+        }
+
+        /**
+         * The request should be presorted so accesses in HAL
+         *   are O(logn). Sidenote, sorting a sorted metadata is nop.
+         */
+        nextRequest->mSettings.sort();
+        request.settings = nextRequest->mSettings.getAndLock();
+        mPrevRequest = nextRequest;
+        ALOGVV("%s: Request settings are NEW", __FUNCTION__);
+
+        IF_ALOGV() {
+            camera_metadata_ro_entry_t e = camera_metadata_ro_entry_t();
+            find_camera_metadata_ro_entry(
+                    request.settings,
+                    ANDROID_CONTROL_AF_TRIGGER,
+                    &e
+            );
+            if (e.count > 0) {
+                ALOGV("%s: Request (frame num %d) had AF trigger 0x%x",
+                      __FUNCTION__,
+                      request.frame_number,
+                      e.data.u8[0]);
+            }
+        }
+    } else {
+        // leave request.settings NULL to indicate 'reuse latest given'
+        ALOGVV("%s: Request settings are REUSED",
+               __FUNCTION__);
+    }
+
+    uint32_t totalNumBuffers = 0;
+
+    // Fill in buffers
+    if (nextRequest->mInputStream != NULL) {
+        request.input_buffer = &nextRequest->mInputBuffer;
+        totalNumBuffers += 1;
+    } else {
+        request.input_buffer = NULL;
+    }
+
+    outputBuffers.insertAt(camera3_stream_buffer_t(), 0,
+            nextRequest->mOutputStreams.size());
+    request.output_buffers = outputBuffers.array();
+    for (size_t i = 0; i < nextRequest->mOutputStreams.size(); i++) {
+        res = nextRequest->mOutputStreams.editItemAt(i)->
+                getBuffer(&outputBuffers.editItemAt(i));
+        if (res != OK) {
+            // Can't get output buffer from gralloc queue - this could be due to
+            // abandoned queue or other consumer misbehavior, so not a fatal
+            // error
+            ALOGE("RequestThread: Can't get output buffer, skipping request:"
+                    " %s (%d)", strerror(-res), res);
+            {
+                Mutex::Autolock l(mRequestLock);
+                if (mListener != NULL) {
+                    mListener->notifyError(
+                            ICameraDeviceCallbacks::ERROR_CAMERA_REQUEST,
+                            nextRequest->mResultExtras);
+                }
+            }
+            cleanUpFailedRequest(request, nextRequest, outputBuffers);
+            return true;
+        }
+        request.num_output_buffers++;
+    }
+    totalNumBuffers += request.num_output_buffers;
+
+    // Log request in the in-flight queue
+    sp<Camera3Device> parent = mParent.promote();
+    if (parent == NULL) {
+        // Should not happen, and nowhere to send errors to, so just log it
+        CLOGE("RequestThread: Parent is gone");
+        cleanUpFailedRequest(request, nextRequest, outputBuffers);
+        return false;
+    }
+
+    res = parent->registerInFlight(request.frame_number,
+            totalNumBuffers, nextRequest->mResultExtras,
+            /*hasInput*/request.input_buffer != NULL,
+            nextRequest->mAeTriggerCancelOverride);
+    ALOGVV("%s: registered in flight requestId = %" PRId32 ", frameNumber = %" PRId64
+           ", burstId = %" PRId32 ".",
+            __FUNCTION__,
+            nextRequest->mResultExtras.requestId, nextRequest->mResultExtras.frameNumber,
+            nextRequest->mResultExtras.burstId);
+    if (res != OK) {
+        SET_ERR("RequestThread: Unable to register new in-flight request:"
+                " %s (%d)", strerror(-res), res);
+        cleanUpFailedRequest(request, nextRequest, outputBuffers);
         return false;
     }
 
@@ -2948,208 +3000,55 @@ bool Camera3Device::RequestThread::threadLoop() {
     {
         Mutex::Autolock al(mLatestRequestMutex);
 
-        mLatestRequestId = latestRequestId;
+        mLatestRequestId = requestId;
         mLatestRequestSignal.signal();
     }
 
-    // Submit a batch of requests to HAL.
-    // Use flush lock only when submitting multilple requests in a batch.
-    // TODO: The problem with flush lock is flush() will be blocked by process_capture_request()
-    // which may take a long time to finish so synchronizing flush() and
-    // process_capture_request() defeats the purpose of cancelling requests ASAP with flush().
-    // For now, only synchronize for high speed recording and we should figure something out for
-    // removing the synchronization.
-    bool useFlushLock = mNextRequests.size() > 1;
+    // Submit request and block until ready for next one
+    ATRACE_ASYNC_BEGIN("frame capture", request.frame_number);
+    ATRACE_BEGIN("camera3->process_capture_request");
+    res = mHal3Device->ops->process_capture_request(mHal3Device, &request);
+    ATRACE_END();
 
-    if (useFlushLock) {
-        mFlushLock.lock();
+    if (res != OK) {
+        // Should only get a failure here for malformed requests or device-level
+        // errors, so consider all errors fatal.  Bad metadata failures should
+        // come through notify.
+        SET_ERR("RequestThread: Unable to submit capture request %d to HAL"
+                " device: %s (%d)", request.frame_number, strerror(-res), res);
+        cleanUpFailedRequest(request, nextRequest, outputBuffers);
+        return false;
     }
 
-    ALOGVV("%s: %d: submitting %d requests in a batch.", __FUNCTION__, __LINE__,
-            mNextRequests.size());
-    for (auto& nextRequest : mNextRequests) {
-        // Submit request and block until ready for next one
-        ATRACE_ASYNC_BEGIN("frame capture", nextRequest.halRequest.frame_number);
-        ATRACE_BEGIN("camera3->process_capture_request");
-        res = mHal3Device->ops->process_capture_request(mHal3Device, &nextRequest.halRequest);
-        ATRACE_END();
+    // Update the latest request sent to HAL
+    if (request.settings != NULL) { // Don't update them if they were unchanged
+        Mutex::Autolock al(mLatestRequestMutex);
 
-        if (res != OK) {
-            // Should only get a failure here for malformed requests or device-level
-            // errors, so consider all errors fatal.  Bad metadata failures should
-            // come through notify.
-            SET_ERR("RequestThread: Unable to submit capture request %d to HAL"
-                    " device: %s (%d)", nextRequest.halRequest.frame_number, strerror(-res),
-                    res);
-            cleanUpFailedRequests(/*sendRequestError*/ false);
-            if (useFlushLock) {
-                mFlushLock.unlock();
-            }
-            return false;
-        }
-
-        // Mark that the request has be submitted successfully.
-        nextRequest.submitted = true;
-
-        // Update the latest request sent to HAL
-        if (nextRequest.halRequest.settings != NULL) { // Don't update if they were unchanged
-            Mutex::Autolock al(mLatestRequestMutex);
-
-            camera_metadata_t* cloned = clone_camera_metadata(nextRequest.halRequest.settings);
-            mLatestRequest.acquire(cloned);
-        }
-
-        if (nextRequest.halRequest.settings != NULL) {
-            nextRequest.captureRequest->mSettings.unlock(nextRequest.halRequest.settings);
-        }
-
-        // Remove any previously queued triggers (after unlock)
-        res = removeTriggers(mPrevRequest);
-        if (res != OK) {
-            SET_ERR("RequestThread: Unable to remove triggers "
-                  "(capture request %d, HAL device: %s (%d)",
-                  nextRequest.halRequest.frame_number, strerror(-res), res);
-            cleanUpFailedRequests(/*sendRequestError*/ false);
-            if (useFlushLock) {
-                mFlushLock.unlock();
-            }
-            return false;
-        }
+        camera_metadata_t* cloned = clone_camera_metadata(request.settings);
+        mLatestRequest.acquire(cloned);
     }
 
-    if (useFlushLock) {
-        mFlushLock.unlock();
+    if (request.settings != NULL) {
+        nextRequest->mSettings.unlock(request.settings);
     }
 
     // Unset as current request
     {
         Mutex::Autolock l(mRequestLock);
-        mNextRequests.clear();
+        mNextRequest.clear();
     }
+
+    // Remove any previously queued triggers (after unlock)
+    res = removeTriggers(mPrevRequest);
+    if (res != OK) {
+        SET_ERR("RequestThread: Unable to remove triggers "
+              "(capture request %d, HAL device: %s (%d)",
+              request.frame_number, strerror(-res), res);
+        return false;
+    }
+    mPrevTriggers = triggerCount;
 
     return true;
-}
-
-status_t Camera3Device::RequestThread::prepareHalRequests() {
-    ATRACE_CALL();
-
-    for (auto& nextRequest : mNextRequests) {
-        sp<CaptureRequest> captureRequest = nextRequest.captureRequest;
-        camera3_capture_request_t* halRequest = &nextRequest.halRequest;
-        Vector<camera3_stream_buffer_t>* outputBuffers = &nextRequest.outputBuffers;
-
-        // Prepare a request to HAL
-        halRequest->frame_number = captureRequest->mResultExtras.frameNumber;
-
-        // Insert any queued triggers (before metadata is locked)
-        status_t res = insertTriggers(captureRequest);
-
-        if (res < 0) {
-            SET_ERR("RequestThread: Unable to insert triggers "
-                    "(capture request %d, HAL device: %s (%d)",
-                    halRequest->frame_number, strerror(-res), res);
-            return INVALID_OPERATION;
-        }
-        int triggerCount = res;
-        bool triggersMixedIn = (triggerCount > 0 || mPrevTriggers > 0);
-        mPrevTriggers = triggerCount;
-
-        // If the request is the same as last, or we had triggers last time
-        if (mPrevRequest != captureRequest || triggersMixedIn) {
-            /**
-             * HAL workaround:
-             * Insert a dummy trigger ID if a trigger is set but no trigger ID is
-             */
-            res = addDummyTriggerIds(captureRequest);
-            if (res != OK) {
-                SET_ERR("RequestThread: Unable to insert dummy trigger IDs "
-                        "(capture request %d, HAL device: %s (%d)",
-                        halRequest->frame_number, strerror(-res), res);
-                return INVALID_OPERATION;
-            }
-
-            /**
-             * The request should be presorted so accesses in HAL
-             *   are O(logn). Sidenote, sorting a sorted metadata is nop.
-             */
-            captureRequest->mSettings.sort();
-            halRequest->settings = captureRequest->mSettings.getAndLock();
-            mPrevRequest = captureRequest;
-            ALOGVV("%s: Request settings are NEW", __FUNCTION__);
-
-            IF_ALOGV() {
-                camera_metadata_ro_entry_t e = camera_metadata_ro_entry_t();
-                find_camera_metadata_ro_entry(
-                        halRequest->settings,
-                        ANDROID_CONTROL_AF_TRIGGER,
-                        &e
-                );
-                if (e.count > 0) {
-                    ALOGV("%s: Request (frame num %d) had AF trigger 0x%x",
-                          __FUNCTION__,
-                          halRequest->frame_number,
-                          e.data.u8[0]);
-                }
-            }
-        } else {
-            // leave request.settings NULL to indicate 'reuse latest given'
-            ALOGVV("%s: Request settings are REUSED",
-                   __FUNCTION__);
-        }
-
-        uint32_t totalNumBuffers = 0;
-
-        // Fill in buffers
-        if (captureRequest->mInputStream != NULL) {
-            halRequest->input_buffer = &captureRequest->mInputBuffer;
-            totalNumBuffers += 1;
-        } else {
-            halRequest->input_buffer = NULL;
-        }
-
-        outputBuffers->insertAt(camera3_stream_buffer_t(), 0,
-                captureRequest->mOutputStreams.size());
-        halRequest->output_buffers = outputBuffers->array();
-        for (size_t i = 0; i < captureRequest->mOutputStreams.size(); i++) {
-            res = captureRequest->mOutputStreams.editItemAt(i)->
-                    getBuffer(&outputBuffers->editItemAt(i));
-            if (res != OK) {
-                // Can't get output buffer from gralloc queue - this could be due to
-                // abandoned queue or other consumer misbehavior, so not a fatal
-                // error
-                ALOGE("RequestThread: Can't get output buffer, skipping request:"
-                        " %s (%d)", strerror(-res), res);
-
-                return TIMED_OUT;
-            }
-            halRequest->num_output_buffers++;
-        }
-        totalNumBuffers += halRequest->num_output_buffers;
-
-        // Log request in the in-flight queue
-        sp<Camera3Device> parent = mParent.promote();
-        if (parent == NULL) {
-            // Should not happen, and nowhere to send errors to, so just log it
-            CLOGE("RequestThread: Parent is gone");
-            return INVALID_OPERATION;
-        }
-        res = parent->registerInFlight(halRequest->frame_number,
-                totalNumBuffers, captureRequest->mResultExtras,
-                /*hasInput*/halRequest->input_buffer != NULL,
-                captureRequest->mAeTriggerCancelOverride);
-        ALOGVV("%s: registered in flight requestId = %" PRId32 ", frameNumber = %" PRId64
-               ", burstId = %" PRId32 ".",
-                __FUNCTION__,
-                captureRequest->mResultExtras.requestId, captureRequest->mResultExtras.frameNumber,
-                captureRequest->mResultExtras.burstId);
-        if (res != OK) {
-            SET_ERR("RequestThread: Unable to register new in-flight request:"
-                    " %s (%d)", strerror(-res), res);
-            return INVALID_OPERATION;
-        }
-    }
-
-    return OK;
 }
 
 CameraMetadata Camera3Device::RequestThread::getLatestRequest() const {
@@ -3164,13 +3063,11 @@ bool Camera3Device::RequestThread::isStreamPending(
         sp<Camera3StreamInterface>& stream) {
     Mutex::Autolock l(mRequestLock);
 
-    for (const auto& nextRequest : mNextRequests) {
-        if (!nextRequest.submitted) {
-            for (const auto& s : nextRequest.captureRequest->mOutputStreams) {
-                if (stream == s) return true;
-            }
-            if (stream == nextRequest.captureRequest->mInputStream) return true;
+    if (mNextRequest != nullptr) {
+        for (const auto& s : mNextRequest->mOutputStreams) {
+            if (stream == s) return true;
         }
+        if (stream == mNextRequest->mInputStream) return true;
     }
 
     for (const auto& request : mRequestQueue) {
@@ -3190,94 +3087,36 @@ bool Camera3Device::RequestThread::isStreamPending(
     return false;
 }
 
-void Camera3Device::RequestThread::cleanUpFailedRequests(bool sendRequestError) {
-    if (mNextRequests.empty()) {
-        return;
+void Camera3Device::RequestThread::cleanUpFailedRequest(
+        camera3_capture_request_t &request,
+        sp<CaptureRequest> &nextRequest,
+        Vector<camera3_stream_buffer_t> &outputBuffers) {
+
+    if (request.settings != NULL) {
+        nextRequest->mSettings.unlock(request.settings);
     }
-
-    for (auto& nextRequest : mNextRequests) {
-        // Skip the ones that have been submitted successfully.
-        if (nextRequest.submitted) {
-            continue;
-        }
-
-        sp<CaptureRequest> captureRequest = nextRequest.captureRequest;
-        camera3_capture_request_t* halRequest = &nextRequest.halRequest;
-        Vector<camera3_stream_buffer_t>* outputBuffers = &nextRequest.outputBuffers;
-
-        if (halRequest->settings != NULL) {
-            captureRequest->mSettings.unlock(halRequest->settings);
-        }
-
-        if (captureRequest->mInputStream != NULL) {
-            captureRequest->mInputBuffer.status = CAMERA3_BUFFER_STATUS_ERROR;
-            captureRequest->mInputStream->returnInputBuffer(captureRequest->mInputBuffer);
-        }
-
-        for (size_t i = 0; i < halRequest->num_output_buffers; i++) {
-            outputBuffers->editItemAt(i).status = CAMERA3_BUFFER_STATUS_ERROR;
-            captureRequest->mOutputStreams.editItemAt(i)->returnBuffer((*outputBuffers)[i], 0);
-        }
-
-        if (sendRequestError) {
-            Mutex::Autolock l(mRequestLock);
-            if (mListener != NULL) {
-                mListener->notifyError(
-                        ICameraDeviceCallbacks::ERROR_CAMERA_REQUEST,
-                        captureRequest->mResultExtras);
-            }
-        }
+    if (nextRequest->mInputStream != NULL) {
+        nextRequest->mInputBuffer.status = CAMERA3_BUFFER_STATUS_ERROR;
+        nextRequest->mInputStream->returnInputBuffer(nextRequest->mInputBuffer);
+    }
+    for (size_t i = 0; i < request.num_output_buffers; i++) {
+        outputBuffers.editItemAt(i).status = CAMERA3_BUFFER_STATUS_ERROR;
+        nextRequest->mOutputStreams.editItemAt(i)->returnBuffer(
+            outputBuffers[i], 0);
     }
 
     Mutex::Autolock l(mRequestLock);
-    mNextRequests.clear();
-}
-
-void Camera3Device::RequestThread::waitForNextRequestBatch() {
-    // Optimized a bit for the simple steady-state case (single repeating
-    // request), to avoid putting that request in the queue temporarily.
-    Mutex::Autolock l(mRequestLock);
-
-    assert(mNextRequests.empty());
-
-    NextRequest nextRequest;
-    nextRequest.captureRequest = waitForNextRequestLocked();
-    if (nextRequest.captureRequest == nullptr) {
-        return;
-    }
-
-    nextRequest.halRequest = camera3_capture_request_t();
-    nextRequest.submitted = false;
-    mNextRequests.add(nextRequest);
-
-    // Wait for additional requests
-    const size_t batchSize = nextRequest.captureRequest->mBatchSize;
-
-    for (size_t i = 1; i < batchSize; i++) {
-        NextRequest additionalRequest;
-        additionalRequest.captureRequest = waitForNextRequestLocked();
-        if (additionalRequest.captureRequest == nullptr) {
-            break;
-        }
-
-        additionalRequest.halRequest = camera3_capture_request_t();
-        additionalRequest.submitted = false;
-        mNextRequests.add(additionalRequest);
-    }
-
-    if (mNextRequests.size() < batchSize) {
-        ALOGE("RequestThread: only get %d out of %d requests. Skipping requests.",
-                mNextRequests.size(), batchSize);
-        cleanUpFailedRequests(/*sendRequestError*/true);
-    }
-
-    return;
+    mNextRequest.clear();
 }
 
 sp<Camera3Device::CaptureRequest>
-        Camera3Device::RequestThread::waitForNextRequestLocked() {
+        Camera3Device::RequestThread::waitForNextRequest() {
     status_t res;
     sp<CaptureRequest> nextRequest;
+
+    // Optimized a bit for the simple steady-state case (single repeating
+    // request), to avoid putting that request in the queue temporarily.
+    Mutex::Autolock l(mRequestLock);
 
     while (mRequestQueue.empty()) {
         if (!mRepeatingRequests.empty()) {
@@ -3372,6 +3211,8 @@ sp<Camera3Device::CaptureRequest>
     }
 
     handleAePrecaptureCancelRequest(nextRequest);
+
+    mNextRequest = nextRequest;
 
     return nextRequest;
 }
@@ -3637,12 +3478,12 @@ Camera3Device::PreparerThread::~PreparerThread() {
     clear();
 }
 
-status_t Camera3Device::PreparerThread::prepare(int maxCount, sp<Camera3StreamInterface>& stream) {
+status_t Camera3Device::PreparerThread::prepare(sp<Camera3StreamInterface>& stream) {
     status_t res;
 
     Mutex::Autolock l(mLock);
 
-    res = stream->startPrepare(maxCount);
+    res = stream->startPrepare();
     if (res == OK) {
         // No preparation needed, fire listener right off
         ALOGV("%s: Stream %d already prepared", __FUNCTION__, stream->getId());

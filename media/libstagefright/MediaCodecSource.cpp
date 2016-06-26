@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright 2014, The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -214,7 +219,11 @@ void MediaCodecSource::Puller::onMessageReceived(const sp<AMessage> &msg) {
             status_t err = mSource->read(&mbuf);
 
             if (mPaused) {
+#ifdef MTK_AOSP_ENHANCEMENT
+                if (err == OK && mbuf != NULL) {//stop after pause resulted mbuf == NULL
+#else
                 if (err == OK) {
+#endif
                     mbuf->release();
                     mbuf = NULL;
                 }
@@ -408,6 +417,14 @@ status_t MediaCodecSource::initEncoder() {
         return NO_INIT;
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    // 20150813 Marcus Huang:
+    // "recorder" is set to ACodec::setupAVCEncoderParameters().
+    //  It's necessary to be set; otherwise, in Google's original code, the profile of AVC encoder is
+    //  forced to be baseline.
+    mOutputFormat->setInt32("recorder", 1);
+#endif
+
     ALOGV("output format is '%s'", mOutputFormat->debugString(0).c_str());
 
     mEncoderActivityNotify = new AMessage(kWhatEncoderActivity, mReflector);
@@ -565,12 +582,18 @@ status_t MediaCodecSource::feedEncoderInputBuffers() {
         int64_t timeUs = 0ll;
         uint32_t flags = 0;
         size_t size = 0;
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_SLOW_MOTION_VIDEO_SUPPORT)
+                int32_t IsCodecConfig = 0;
+#endif
 
         if (mbuf != NULL) {
             CHECK(mbuf->meta_data()->findInt64(kKeyTime, &timeUs));
 
             // push decoding time for video, or drift time for audio
             if (mIsVideo) {
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_SLOW_MOTION_VIDEO_SUPPORT)//when directlink, not push the first config time in mDecodingTimeQueue
+                if(!mbuf->meta_data()->findInt32(kKeyIsCodecConfig, &IsCodecConfig) || !IsCodecConfig)
+#endif
                 mDecodingTimeQueue.push_back(timeUs);
             } else {
 #if DEBUG_DRIFT_TIME
@@ -629,6 +652,9 @@ status_t MediaCodecSource::onStart(MetaData *params) {
 
     if (mStarted) {
         ALOGI("MediaCodecSource (%s) resuming", mIsVideo ? "video" : "audio");
+#ifdef MTK_AOSP_ENHANCEMENT
+        requestIDRFrame();
+#endif
         if (mFlags & FLAG_USE_SURFACE_INPUT) {
             resume();
         } else {
@@ -784,6 +810,11 @@ void MediaCodecSource::onMessageReceived(const sp<AMessage> &msg) {
             if (flags & MediaCodec::BUFFER_FLAG_SYNCFRAME) {
                 mbuf->meta_data()->setInt32(kKeyIsSyncFrame, true);
             }
+#ifdef MTK_AOSP_ENHANCEMENT
+            if (flags & MediaCodec::BUFFER_FLAG_MULTISLICE) {
+                mbuf->meta_data()->setInt32(KKeyMultiSliceBS, true);
+            }
+#endif
             mbuf->setObserver(this);
             mbuf->add_ref();
 
@@ -852,7 +883,11 @@ void MediaCodecSource::onMessageReceived(const sp<AMessage> &msg) {
     }
     case kWhatPause:
     {
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (mFlags & FLAG_USE_SURFACE_INPUT) {// android default symbol is wrong
+#else
         if (mFlags && FLAG_USE_SURFACE_INPUT) {
+#endif
             suspend();
         } else {
             CHECK(mPuller != NULL);
@@ -865,4 +900,16 @@ void MediaCodecSource::onMessageReceived(const sp<AMessage> &msg) {
     }
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+/******************************************************************************
+*  Added Operations
+*******************************************************************************/
+status_t MediaCodecSource::requestIDRFrame(){
+    sp<AMessage> param = new AMessage;
+
+    param->setInt32("request-sync", true);
+    mEncoder->setParameters(param);
+    return OK;
+}
+#endif
 } // namespace android

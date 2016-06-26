@@ -148,6 +148,10 @@ private:
     MtpResponseCode     doTruncateObject();
     MtpResponseCode     doBeginEditObject();
     MtpResponseCode     doEndEditObject();
+
+public:
+    void                sendObjectInfoChanged(MtpObjectHandle handle);
+    void                sendStorageInfoChanged(MtpStorageID id);
 };
 
 }; // namespace android

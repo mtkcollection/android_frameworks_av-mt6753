@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -41,7 +46,11 @@ struct AnotherPacketSource : public MediaSource {
     virtual status_t read(
             MediaBuffer **buffer, const ReadOptions *options = NULL);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    void clear(const bool bKeepFormat = false);
+#else
     void clear();
+#endif
 
     // Returns true if we have any packets including discontinuities
     bool hasBufferAvailable(status_t *finalResult);
@@ -56,7 +65,10 @@ struct AnotherPacketSource : public MediaSource {
     // Returns the difference between the last and the first queued
     // presentation timestamps since the last discontinuity (if any).
     int64_t getBufferedDurationUs(status_t *finalResult);
-
+#ifdef MTK_AOSP_ENHANCEMENT
+    int64_t getEstimatedDurationUs();
+    int64_t getBufferedDurationUs_l(status_t *finalResult);
+#endif
     status_t nextBufferTime(int64_t *timeUs);
 
     void queueAccessUnit(const sp<ABuffer> &buffer);
@@ -116,11 +128,39 @@ private:
     List<sp<ABuffer> > mBuffers;
     status_t mEOSResult;
     sp<AMessage> mLatestEnqueuedMeta;
+#ifdef MTK_AOSP_ENHANCEMENT
+    size_t  mQueuedDiscontinuityCount;
+#endif
     sp<AMessage> mLatestDequeuedMeta;
 
     bool wasFormatChange(int32_t discontinuityType) const;
 
     DISALLOW_EVIL_CONSTRUCTORS(AnotherPacketSource);
+#ifdef MTK_AOSP_ENHANCEMENT
+public:
+    status_t isEOS();
+    void setBufQueSize(size_t iBufQueSize) { m_BufQueSize = iBufQueSize; }
+    void setTargetTime(size_t iTargetTime) { m_TargetTime = iTargetTime; }
+    bool getNSN(int32_t * uiNextSeqNum);
+    size_t getFreeBufSpace();
+    void setScanForIDR(bool enable);
+    unsigned getSourcePID();
+    void setSourcePID(unsigned uStrmPid);
+
+private:
+    bool mIsEOS;
+
+    //for bitrate-adaptation
+    size_t m_BufQueSize;        //Whole Buffer queue size
+    size_t m_TargetTime;        // target protected time of buffer queue duration for interrupt-free playback
+    int32_t m_uiNextAduSeqNum;
+
+    // wait IDR for 264
+    bool mScanForIDR;
+    bool mIsAVC;
+    bool mNeedScanForIDR;
+    unsigned mStrmSourcePID;
+#endif
 };
 
 

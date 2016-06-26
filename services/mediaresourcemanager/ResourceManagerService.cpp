@@ -90,7 +90,11 @@ static ResourceInfo& getResourceInfoForEdit(
 }
 
 status_t ResourceManagerService::dump(int fd, const Vector<String16>& /* args */) {
+    Mutex::Autolock lock(mLock);
+
     String8 result;
+    const size_t SIZE = 256;
+    char buffer[SIZE];
 
     if (checkCallingPermission(String16("android.permission.DUMP")) == false) {
         result.format("Permission Denial: "
@@ -101,35 +105,20 @@ status_t ResourceManagerService::dump(int fd, const Vector<String16>& /* args */
         return PERMISSION_DENIED;
     }
 
-    PidResourceInfosMap mapCopy;
-    bool supportsMultipleSecureCodecs;
-    bool supportsSecureWithNonSecureCodec;
-    String8 serviceLog;
-    {
-        Mutex::Autolock lock(mLock);
-        mapCopy = mMap;  // Shadow copy, real copy will happen on write.
-        supportsMultipleSecureCodecs = mSupportsMultipleSecureCodecs;
-        supportsSecureWithNonSecureCodec = mSupportsSecureWithNonSecureCodec;
-        serviceLog = mServiceLog->toString("    " /* linePrefix */);
-    }
-
-    const size_t SIZE = 256;
-    char buffer[SIZE];
     snprintf(buffer, SIZE, "ResourceManagerService: %p\n", this);
     result.append(buffer);
     result.append("  Policies:\n");
-    snprintf(buffer, SIZE, "    SupportsMultipleSecureCodecs: %d\n", supportsMultipleSecureCodecs);
+    snprintf(buffer, SIZE, "    SupportsMultipleSecureCodecs: %d\n", mSupportsMultipleSecureCodecs);
     result.append(buffer);
-    snprintf(buffer, SIZE, "    SupportsSecureWithNonSecureCodec: %d\n",
-            supportsSecureWithNonSecureCodec);
+    snprintf(buffer, SIZE, "    SupportsSecureWithNonSecureCodec: %d\n", mSupportsSecureWithNonSecureCodec);
     result.append(buffer);
 
     result.append("  Processes:\n");
-    for (size_t i = 0; i < mapCopy.size(); ++i) {
-        snprintf(buffer, SIZE, "    Pid: %d\n", mapCopy.keyAt(i));
+    for (size_t i = 0; i < mMap.size(); ++i) {
+        snprintf(buffer, SIZE, "    Pid: %d\n", mMap.keyAt(i));
         result.append(buffer);
 
-        const ResourceInfos &infos = mapCopy.valueAt(i);
+        const ResourceInfos &infos = mMap.valueAt(i);
         for (size_t j = 0; j < infos.size(); ++j) {
             result.append("      Client:\n");
             snprintf(buffer, SIZE, "        Id: %lld\n", (long long)infos[j].clientId);
@@ -147,7 +136,7 @@ status_t ResourceManagerService::dump(int fd, const Vector<String16>& /* args */
         }
     }
     result.append("  Events logs (most recent at top):\n");
-    result.append(serviceLog);
+    result.append(mServiceLog->toString("    " /* linePrefix */));
 
     write(fd, result.string(), result.size());
     return OK;
@@ -318,10 +307,6 @@ bool ResourceManagerService::reclaimResource(
         }
     }
 
-    if (failedClient == NULL) {
-        return true;
-    }
-
     {
         Mutex::Autolock lock(mLock);
         bool found = false;
@@ -344,7 +329,7 @@ bool ResourceManagerService::reclaimResource(
         }
     }
 
-    return false;
+    return (failedClient == NULL);
 }
 
 bool ResourceManagerService::getAllClients_l(

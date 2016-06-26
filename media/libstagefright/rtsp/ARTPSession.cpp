@@ -1,4 +1,10 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -89,6 +95,10 @@ status_t ARTPSession::setup(const sp<ASessionDescription> &desc) {
                 rtpSocket, rtcpSocket, mDesc, i, notify, false /* injected */);
 
         info->mPacketSource = source;
+#ifdef MTK_AOSP_ENHANCEMENT
+        mRTPConn->enableSRTimestamp();
+        mRTPConn->useFirstTimestamp();
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
     }
 
     mInitCheck = OK;
@@ -134,6 +144,13 @@ void ARTPSession::onMessageReceived(const sp<AMessage> &msg) {
                 // rtcp packet.
                 break;
             }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+            int32_t firstRTP;
+            if (msg->findInt32("first-rtp", &firstRTP)) {
+                break;
+            }
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
 
             size_t trackIndex;
             CHECK(msg->findSize("track-index", &trackIndex));
@@ -239,4 +256,12 @@ sp<MediaSource> ARTPSession::trackAt(size_t index) {
     return mTracks.editItemAt(index).mPacketSource;
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+void ARTPSession::stop() {
+    for (size_t i = 0; i < mTracks.size(); ++i) {
+        TrackInfo *info = &mTracks.editItemAt(i);
+        info->mPacketSource->signalEOS(ERROR_END_OF_STREAM);
+    }
+}
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
 }  // namespace android

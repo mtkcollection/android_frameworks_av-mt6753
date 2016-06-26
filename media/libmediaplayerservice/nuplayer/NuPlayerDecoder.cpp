@@ -39,6 +39,7 @@
 #include "avc_utils.h"
 #include "ATSParser.h"
 
+#include <media/MtkMMLog.h>
 namespace android {
 
 static inline bool getAudioDeepBufferSetting() {
@@ -75,9 +76,21 @@ NuPlayer::Decoder::Decoder(
     mCodecLooper = new ALooper;
     mCodecLooper->setName("NPDecoder-CL");
     mCodecLooper->start(false, false, ANDROID_PRIORITY_AUDIO);
+#ifdef MTK_AOSP_ENHANCEMENT
+    mLeftOverBuffer = NULL;
+    mSupportsPartialFrames = false;
+    mIsSMPL = false;
+    /* for ALPS02065697:
+    mAudioAllDropped = false;
+    mNumFramesHandleOutput = 0;
+    */
+#endif
 }
 
 NuPlayer::Decoder::~Decoder() {
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (mCodec != NULL)
+#endif
     mCodec->release();
     releaseAndResetMediaBuffers();
 }
@@ -164,8 +177,11 @@ void NuPlayer::Decoder::onMessageReceived(const sp<AMessage> &msg) {
                     CHECK(msg->findInt32("err", &err));
                     ALOGE("Decoder (%s) reported error : 0x%x",
                             mIsAudio ? "audio" : "video", err);
-
+#ifdef MTK_AOSP_ENHANCEMENT
+                    handleError(err, true);
+#else
                     handleError(err);
+#endif
                     break;
                 }
 
@@ -267,7 +283,11 @@ void NuPlayer::Decoder::onConfigure(const sp<AMessage> &format) {
     if (mCodec == NULL) {
         ALOGE("Failed to create %s%s decoder",
                 (secure ? "secure " : ""), mime.c_str());
+#ifdef MTK_AOSP_ENHANCEMENT
+        handleError(UNKNOWN_ERROR, true);
+#else
         handleError(UNKNOWN_ERROR);
+#endif
         return;
     }
     mIsSecure = secure;
@@ -284,13 +304,21 @@ void NuPlayer::Decoder::onConfigure(const sp<AMessage> &format) {
         // any error signaling will occur.
         ALOGW_IF(err != OK, "failed to disconnect from surface: %d", err);
     }
+#ifdef MTK_16X_SLOWMOTION_VIDEO_SUPPORT
+        err = mCodec->configure(format, surface, NULL, MediaCodec::CONFIGURE_FLAG_16X_SLOWMOTION);
+#else
     err = mCodec->configure(
             format, mSurface, NULL /* crypto */, 0 /* flags */);
+#endif
     if (err != OK) {
         ALOGE("Failed to configure %s decoder (err=%d)", mComponentName.c_str(), err);
         mCodec->release();
         mCodec.clear();
+#ifdef MTK_AOSP_ENHANCEMENT
+        handleError(err, true);
+#else
         handleError(err);
+#endif
         return;
     }
     rememberCodecSpecificData(format);
@@ -314,22 +342,59 @@ void NuPlayer::Decoder::onConfigure(const sp<AMessage> &format) {
     sp<AMessage> reply = new AMessage(kWhatCodecNotify, this);
     mCodec->setCallback(reply);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    int32_t partialFramesSupport = false;
+    if ((mInputFormat->findInt32("support-partial-frame", &partialFramesSupport))
+        && partialFramesSupport) {
+            mSupportsPartialFrames = true;
+    }
+    ALOGI("mSupportsPartialFrames %d ", mSupportsPartialFrames);
+#endif
     err = mCodec->start();
     if (err != OK) {
         ALOGE("Failed to start %s decoder (err=%d)", mComponentName.c_str(), err);
         mCodec->release();
         mCodec.clear();
+#ifdef MTK_AOSP_ENHANCEMENT
+        handleError(err, true);
+#else
         handleError(err);
+#endif
         return;
     }
 
-    releaseAndResetMediaBuffers();
+#ifdef MTK_16X_SLOWMOTION_VIDEO_SUPPORT
+        int64_t slowmotion_start = 0;
+        int64_t slowmotion_end = 0;
+        int32_t slowmotion_speed = 0;
 
+        if (format->findInt64("slowmotion-start", &slowmotion_start) &&
+            format->findInt64("slowmotion-end", &slowmotion_end) &&
+            format->findInt32("slowmotion-speed", &slowmotion_speed)) {
+            sp<AMessage> params = new AMessage;
+            params->setInt64("slowmotion-start", slowmotion_start);
+            params->setInt64("slowmotion-end", slowmotion_end);
+            params->setInt32("slowmotion-speed", slowmotion_speed);
+            status_t ret = this->setParameters(params);
+            if (ret != OK) {
+                ALOGW("Setting slowmotion start-end failed (%lld-%lld), speed(%d)",
+                    slowmotion_start, slowmotion_end, slowmotion_speed);
+            }
+        }
+#endif
+    releaseAndResetMediaBuffers();
     mPaused = false;
     mResumePending = false;
 }
 
 void NuPlayer::Decoder::onSetParameters(const sp<AMessage> &params) {
+#ifdef MTK_SLOW_MOTION_VIDEO_SUPPORT
+    int32_t videospeed = -1;
+    if(params->findInt32("slowmotion-speed", &videospeed)&&videospeed != -1){
+         mIsSMPL= true;
+         ALOGD("slowmotion playback,current speed %d",videospeed);
+    }
+#endif
     if (mCodec == NULL) {
         ALOGW("onSetParameters called before codec is created.");
         return;
@@ -379,14 +444,23 @@ void NuPlayer::Decoder::doFlush(bool notifyComplete) {
 
     if (err != OK) {
         ALOGE("failed to flush %s (err=%d)", mComponentName.c_str(), err);
+#ifdef MTK_AOSP_ENHANCEMENT
+        handleError(err, true);
+#else
         handleError(err);
+#endif
         // finish with posting kWhatFlushCompleted.
         // we attempt to release the buffers even if flush fails.
     }
     releaseAndResetMediaBuffers();
+#ifdef MTK_CLEARMOTION_SUPPORT
+    if (mLeftOverBuffer != NULL) {
+      ALOGD("flush mLeftOverBuffer");
+      mLeftOverBuffer = NULL;
+    }
+#endif
     mPaused = true;
 }
-
 
 void NuPlayer::Decoder::onFlush() {
     doFlush(true);
@@ -429,7 +503,11 @@ void NuPlayer::Decoder::onShutdown(bool notifyComplete) {
 
     if (err != OK) {
         ALOGE("failed to release %s (err=%d)", mComponentName.c_str(), err);
+#ifdef MTK_AOSP_ENHANCEMENT
+        handleError(err, true);
+#else
         handleError(err);
+#endif
         // finish with posting kWhatShutdownCompleted.
     }
 
@@ -495,7 +573,11 @@ bool NuPlayer::Decoder::handleAnInputBuffer(size_t index) {
     mCodec->getInputBuffer(index, &buffer);
 
     if (buffer == NULL) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        handleError(UNKNOWN_ERROR, true);
+#else
         handleError(UNKNOWN_ERROR);
+#endif
         return false;
     }
 
@@ -572,11 +654,24 @@ bool NuPlayer::Decoder::handleAnOutputBuffer(
 
     bool eos = flags & MediaCodec::BUFFER_FLAG_EOS;
     // we do not expect CODECCONFIG or SYNCFRAME for decoder
+#ifdef MTK_CLEARMOTION_SUPPORT
+        if (flags & MediaCodec::BUFFER_FLAG_INTERPOLATE_FRAME) {
+                buffer->meta()->setInt32("interpolateframe", 1);
+             ALOGD("interl frame");
+        }
+#endif
 
     sp<AMessage> reply = new AMessage(kWhatRenderBuffer, this);
     reply->setSize("buffer-ix", index);
     reply->setInt32("generation", mBufferGeneration);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    // ALOGI("[%s] handleAnOutputBuffer timeUs = %lld, mSkipRenderingUntilMediaTimeUs = %lld",
+    //      mComponentName.c_str(), (long long)timeUs, mSkipRenderingUntilMediaTimeUs);
+    /* for ALPS02065697:
+    if (mIsAudio) mNumFramesHandleOutput++;
+    */
+#endif
     if (eos) {
         ALOGI("[%s] saw output EOS", mIsAudio ? "audio" : "video");
 
@@ -584,25 +679,84 @@ bool NuPlayer::Decoder::handleAnOutputBuffer(
         reply->setInt32("eos", true);
     } else if (mSkipRenderingUntilMediaTimeUs >= 0) {
         if (timeUs < mSkipRenderingUntilMediaTimeUs) {
+#ifdef MTK_AOSP_ENHANCEMENT
+            /* for ALPS02065697:
+            if (mIsAudio && (1 == mNumFramesHandleOutput)) {
+                mAudioAllDropped = true;
+            }
+            */
+#endif
             ALOGV("[%s] dropping buffer at time %lld as requested.",
                      mComponentName.c_str(), (long long)timeUs);
-
+            MM_LOGD("[%s] dropping buffer at time %lld as requested.",
+                     mComponentName.c_str(), (long long)timeUs);
             reply->post();
+#ifdef MTK_AOSP_ENHANCEMENT
+            if (flags & MediaCodec::BUFFER_FLAG_EOS) {
+                /* for ALPS02065697:
+                   Problem: turn on slide video, play video to eos -> powerkey off -> power on ->
+                      start, then video has no sound.
+                   Root cause: Render can't restart mAudioSink.
+                      1. When user start again, NuPlayer resume() in Paused State, Renderer only
+                         start mAudioSink when mHasAudio = true.
+                      2. But all audio is dropped in decoder, no audio is queued to Renderer, so
+                         Renderer's mHasAudio is always false.
+                   Solution: if all audio is dropped by Decoder, then notify to Renderer to start
+                      mAudioSink.
+
+                if (mIsAudio) {
+                    mRenderer->allAudioDroppedInDecoder(mAudioAllDropped);
+                }
+                */
+                mRenderer->queueEOS(mIsAudio, ERROR_END_OF_STREAM);
+                mSkipRenderingUntilMediaTimeUs = -1;
+            }
+#endif
             return true;
         }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGI("[%s] seek_preroll end, set mSkipRenderingUntilMediaTimeUs = %lld to -1",
+              mComponentName.c_str(), mSkipRenderingUntilMediaTimeUs);
+#endif
         mSkipRenderingUntilMediaTimeUs = -1;
     }
 
     mNumFramesTotal += !mIsAudio;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    /* for ALPS02065697:
+    if (mIsAudio) mAudioAllDropped = false;
+    */
+#endif
     // wait until 1st frame comes out to signal resume complete
     notifyResumeCompleteIfNecessary();
 
     if (mRenderer != NULL) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (flags & MediaCodec::BUFFER_FLAG_EOS && size == 0 && timeUs == 0) {
+            reply->setInt32("render", 0);
+            reply->post();
+            ALOGI("[%s] EOS ,timeUs:%lld ,size 0",
+                    mComponentName.c_str(), timeUs);
+        } else {
+            // send the buffer to renderer.
+            mRenderer->queueBuffer(mIsAudio, buffer, reply);
+            MM_LOGI("[%s] queueBuffer(%s, %lld)",
+                    mComponentName.c_str(), mIsAudio ? "audio" : "video", (long long)timeUs);
+            /* for ALPS02065697:
+            if (mIsAudio) {
+                mRenderer->allAudioDroppedInDecoder(mAudioAllDropped);
+            }
+            */
+        }
+#else
         // send the buffer to renderer.
         mRenderer->queueBuffer(mIsAudio, buffer, reply);
+#endif
         if (eos && !isDiscontinuityPending()) {
+            MM_LOGI("[%s] EOS ,timeUs:%lld",
+                    mComponentName.c_str(), timeUs);
             mRenderer->queueEOS(mIsAudio, ERROR_END_OF_STREAM);
         }
     }
@@ -635,11 +789,23 @@ void NuPlayer::Decoder::handleOutputFormatChange(const sp<AMessage> &format) {
             flags = AUDIO_OUTPUT_FLAG_NONE;
         }
 
-        status_t err = mRenderer->openAudioSink(
+#ifdef MTK_AOSP_ENHANCEMENT
+
+/* ******************************************
+*		 For mp3 and ape low power
+*		 NuPlayerDecoder & NuPlayerRenderer
+*		 patch 1/1 of NuPlayerDecoder
+********************************************/
+    AString mime;
+    mInputFormat->findString("mime", &mime);
+    if ((!strcasecmp(mime.c_str(), MEDIA_MIMETYPE_AUDIO_MPEG)) || (!strcasecmp(mime.c_str(), MEDIA_MIMETYPE_AUDIO_APE)))
+    {
+        format->setInt32("is-mp3-or-ape", 1);
+    }
+#endif
+
+        mRenderer->openAudioSink(
                 format, false /* offloadOnly */, hasVideo, flags, NULL /* isOffloaed */);
-        if (err != OK) {
-            handleError(err);
-        }
     }
 }
 
@@ -740,6 +906,26 @@ status_t NuPlayer::Decoder::fetchInputData(sp<AMessage> &reply) {
         }
 
         dropAccessUnit = false;
+#ifdef MTK_SLOW_MOTION_VIDEO_SUPPORT
+        if(mIsSMPL){
+            dropAccessUnit = false;
+        }else {
+            if (!mIsAudio
+                    && !mIsSecure
+                    && mRenderer->getVideoLateByUs() > 100000ll
+                    && mIsVideoAVC
+                    && !IsAVCReferenceFrame(accessUnit)) {
+                dropAccessUnit = true;
+                ++mNumInputFramesDropped;
+#ifdef MTK_AOSP_ENHANCEMENT
+                int64_t mediaTimeUs;
+                accessUnit->meta()->findInt64("timeUs", &mediaTimeUs);
+                MM_LOGI("[%s] drop one frame timeUs:%lld (%lld frames has dropped)",
+                        mComponentName.c_str(), (long long)mediaTimeUs, mNumInputFramesDropped);
+#endif
+            }
+        }
+#else
         if (!mIsAudio
                 && !mIsSecure
                 && mRenderer->getVideoLateByUs() > 100000ll
@@ -747,7 +933,14 @@ status_t NuPlayer::Decoder::fetchInputData(sp<AMessage> &reply) {
                 && !IsAVCReferenceFrame(accessUnit)) {
             dropAccessUnit = true;
             ++mNumInputFramesDropped;
+#ifdef MTK_AOSP_ENHANCEMENT
+            int64_t mediaTimeUs;
+            accessUnit->meta()->findInt64("timeUs", &mediaTimeUs);
+            MM_LOGI("[%s] drop one frame timeUs:%lld (%lld frames has dropped)",
+                    mComponentName.c_str(), (long long)mediaTimeUs, mNumInputFramesDropped);
+#endif
         }
+#endif
     } while (dropAccessUnit);
 
     // ALOGV("returned a valid buffer of %s data", mIsAudio ? "mIsAudio" : "video");
@@ -817,6 +1010,13 @@ bool NuPlayer::Decoder::onInputBufferFetched(const sp<AMessage> &msg) {
         CHECK(streamErr != OK);
 
         // attempt to queue EOS
+#ifdef  MTK_PLAYREADY_SUPPORT
+        if (!mInputBufferIsDequeued[bufferIx]) {
+            ALOGI("[%s] bufferIx:%zu, is not dequeued now",
+                    mComponentName.c_str(),  bufferIx);
+            return false;
+        }
+#endif
         status_t err = mCodec->queueInputBuffer(
                 bufferIx,
                 0,
@@ -835,7 +1035,11 @@ bool NuPlayer::Decoder::onInputBufferFetched(const sp<AMessage> &msg) {
                     mComponentName.c_str(),
                     streamErr,
                     err == OK ? "successfully" : "unsuccessfully");
+#ifdef MTK_AOSP_ENHANCEMENT
+            handleError(streamErr, false);     // not ACodec error
+#else
             handleError(streamErr);
+#endif
         }
     } else {
         sp<AMessage> extra;
@@ -847,6 +1051,18 @@ bool NuPlayer::Decoder::onInputBufferFetched(const sp<AMessage> &msg) {
                         mComponentName.c_str(), (long long)resumeAtMediaTimeUs);
                 mSkipRenderingUntilMediaTimeUs = resumeAtMediaTimeUs;
             }
+#ifdef MTK_AOSP_ENHANCEMENT
+            int64_t seekTimeUsForDecoder = 0;
+            if (extra->findInt64(
+                        "decode-seekTime", &seekTimeUsForDecoder)) {
+                if (!mIsAudio && mCodec != NULL) {
+                    sp<AMessage> msg = new AMessage;
+                    msg->setInt64("seekTimeUs", seekTimeUsForDecoder);
+                    mCodec->setParameters(msg);
+                    ALOGI("set video decode seek time:%lld", (long long)seekTimeUsForDecoder);
+                }
+            }
+#endif
         }
 
         int64_t timeUs = 0;
@@ -861,9 +1077,21 @@ bool NuPlayer::Decoder::onInputBufferFetched(const sp<AMessage> &msg) {
             flags |= MediaCodec::BUFFER_FLAG_CODECCONFIG;
         }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    int32_t fgInvalidTimeUs = false;
+    if (buffer->meta()->findInt32("invt", &fgInvalidTimeUs) && fgInvalidTimeUs) {
+        flags |= MediaCodec::BUFFER_FLAG_INVALID_PTS;
+    }
+#endif
         // copy into codec buffer
         if (buffer != codecBuffer) {
+#ifndef MTK_AOSP_ENHANCEMENT
             CHECK_LE(buffer->size(), codecBuffer->capacity());
+#else
+        if (!checkHandlePartialFrame(buffer, codecBuffer, csd, eos, &flags, mediaBuffer)) {
+            return false;
+        }
+#endif
             codecBuffer->setRange(0, buffer->size());
             memcpy(codecBuffer->data(), buffer->data(), buffer->size());
         }
@@ -880,7 +1108,11 @@ bool NuPlayer::Decoder::onInputBufferFetched(const sp<AMessage> &msg) {
             }
             ALOGE("Failed to queue input buffer for %s (err=%d)",
                     mComponentName.c_str(), err);
+#ifdef MTK_AOSP_ENHANCEMENT
+            handleError(err, true);
+#else
             handleError(err);
+#endif
         } else {
             mInputBufferIsDequeued.editItemAt(bufferIx) = false;
             if (mediaBuffer != NULL) {
@@ -908,6 +1140,9 @@ void NuPlayer::Decoder::onRenderBuffer(const sp<AMessage> &msg) {
             mCCDecoder->display(timeUs);
         }
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+    setRenderBufferInfo(bufferIx, msg);
+#endif
 
     if (msg->findInt32("render", &render) && render) {
         int64_t timestampNs;
@@ -920,7 +1155,11 @@ void NuPlayer::Decoder::onRenderBuffer(const sp<AMessage> &msg) {
     if (err != OK) {
         ALOGE("failed to release output buffer for %s (err=%d)",
                 mComponentName.c_str(), err);
+#ifdef MTK_AOSP_ENHANCEMENT
+        handleError(err, true);
+#else
         handleError(err);
+#endif
     }
     if (msg->findInt32("eos", &eos) && eos
             && isDiscontinuityPending()) {
@@ -999,13 +1238,20 @@ bool NuPlayer::Decoder::supportsSeamlessFormatChange(const sp<AMessage> &targetF
     }
 
     if (targetFormat == NULL) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        return false;
+#else
         return true;
+#endif
     }
 
     AString oldMime, newMime;
     if (!mInputFormat->findString("mime", &oldMime)
             || !targetFormat->findString("mime", &newMime)
             || !(oldMime == newMime)) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGI("not support seamless format change from %s to %s", oldMime.c_str(), newMime.c_str());
+#endif
         return false;
     }
 
@@ -1020,7 +1266,11 @@ bool NuPlayer::Decoder::supportsSeamlessFormatChange(const sp<AMessage> &targetF
                 isAdaptive);
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("%s seamless support for %s", seamless ? "yes" : "no", oldMime.c_str());
+#else
     ALOGV("%s seamless support for %s", seamless ? "yes" : "no", oldMime.c_str());
+#endif
     return seamless;
 }
 
@@ -1049,6 +1299,73 @@ void NuPlayer::Decoder::notifyResumeCompleteIfNecessary() {
         notify->post();
     }
 }
+#ifdef MTK_AOSP_ENHANCEMENT
+void NuPlayer::Decoder::setRenderBufferInfo(size_t bufferIx, const sp<AMessage> &msgFrom) {
+    sp<ABuffer> buffer = mOutputBuffers[bufferIx];
+    int64_t realTimeUs = -1;
+    int64_t delaytimeus = -1;
+    int64_t  AvSyncRefTimeUs = -1;
+    if (msgFrom->findInt64("realtimeus", &realTimeUs) && realTimeUs != -1) {
+         buffer->meta()->setInt64("realtimeus", realTimeUs);
+    }
+    if (msgFrom->findInt64("delaytimeus", &delaytimeus) && delaytimeus != -1) {
+         buffer->meta()->setInt64("delaytimeus", delaytimeus);
+    }
+    if (msgFrom->findInt64("AvSyncRefTimeUs", &AvSyncRefTimeUs) && AvSyncRefTimeUs != -1) {
+         buffer->meta()->setInt64("AvSyncRefTimeUs", AvSyncRefTimeUs);
+    }
+}
 
+bool NuPlayer::Decoder::checkHandlePartialFrame(sp<ABuffer> srcBuffer, const sp<ABuffer> &codecBuffer,
+        bool isCsd, bool isEos, uint32_t *flags, MediaBuffer * mBuffer) {
+    if (srcBuffer->size() > codecBuffer->capacity()) {
+           int64_t timeUs = 0;
+        CHECK(srcBuffer->meta()->findInt64("timeUs", &timeUs));
+        if (mSupportsPartialFrames) {
+            sp<ABuffer> leftBuffer = new ABuffer(srcBuffer->size() - codecBuffer->capacity());
+            memcpy(leftBuffer->data(), srcBuffer->data() + codecBuffer->capacity(),
+                    srcBuffer->size() - codecBuffer->capacity());
+            leftBuffer->meta()->setInt64("timeUs", timeUs);
+            if (isCsd) {
+                leftBuffer->meta()->setInt32("csd", isCsd);
+            } else if (isEos) {
+                leftBuffer->meta()->setInt32("eos", isEos);
+            }
+            srcBuffer->setRange(srcBuffer->offset(), codecBuffer->capacity());
+            *flags |= MediaCodec::BUFFER_FLAG_PARTAIL_FRAME;
+
+            ALOGI("split big input buffer %d to %d + %d",
+                    srcBuffer->size(), codecBuffer->capacity(), leftBuffer->size());
+
+            mLeftOverBuffer = leftBuffer;
+        } else {
+            if (mBuffer != NULL) {
+                mBuffer->release();
+            }
+            ALOGE("not support partial frame,buffer size:%d, large codec input buffer size:%d",
+                    srcBuffer->size(), codecBuffer->capacity());
+            handleError(ERROR_BAD_FRAME_SIZE, false);
+            return false;
+        }
+    }
+    return true;
+}
+
+void NuPlayer::Decoder::handleError(int32_t err, bool isACodecErr) {
+    // We cannot immediately release the codec due to buffers still outstanding
+    // in the renderer.  We signal to the player the error so it can shutdown/release the
+    // decoder after flushing and increment the generation to discard unnecessary messages.
+
+    ++mBufferGeneration;
+
+    sp<AMessage> notify = mNotify->dup();
+    notify->setInt32("what", kWhatError);
+    notify->setInt32("err", err);
+    if (isACodecErr) {
+        notify->setInt32("errACodec", err);
+    }
+    notify->post();
+}
+#endif
 }  // namespace android
 

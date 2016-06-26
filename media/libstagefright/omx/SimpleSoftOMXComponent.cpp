@@ -262,6 +262,9 @@ OMX_ERRORTYPE SimpleSoftOMXComponent::freeBuffer(
         OMX_U32 portIndex,
         OMX_BUFFERHEADERTYPE *header) {
     Mutex::Autolock autoLock(mLock);
+#ifdef MTK_AOSP_ENHANCEMENT
+ALOGD("freeBuffer ++ portIndex = %d, header = %p",portIndex,header);
+#endif
 
     CHECK_LT(portIndex, mPorts.size());
 
@@ -301,6 +304,9 @@ OMX_ERRORTYPE SimpleSoftOMXComponent::freeBuffer(
     }
 
     CHECK(found);
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("freeBuffer --");
+#endif
 
     return OMX_ErrorNone;
 }
@@ -418,8 +424,30 @@ void SimpleSoftOMXComponent::onSendCommand(
 }
 
 void SimpleSoftOMXComponent::onChangeState(OMX_STATETYPE state) {
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    // Timing issue.
+    // If binder die comes, When freeBuffer do not complete.
+    // But onChangeState() called by freeNode() is called after all buffer freed.
+    // At this time, state == OMX_StateLoaded. mState ==  OMX_StateLoaded.
+    // So there is no need to do something when state == mState.
+    if (state == mState) {
+        ALOGE("Warnning: state==mState, mState = %d, mTargetState=%d", state, mTargetState);
+        return;
+    }
+
+    // If binder die comes, when freeBuffer do not complete.
+    // At this time, mState == OMX_StateIdle, but mTargetState == OMX_StateLoaded.
+    // So if there is no need to CHECK_EQ((int)mState, (int)mTargetState);
+    if (mState != mTargetState) {
+        ALOGE("Warnning: mState != mTargetState, mState = %d, mTargetState = %d, state=%d",
+                      mState, mTargetState, state);
+        return;
+    }
+#else
     // We shouldn't be in a state transition already.
     CHECK_EQ((int)mState, (int)mTargetState);
+#endif
 
     switch (mState) {
         case OMX_StateLoaded:
@@ -547,12 +575,17 @@ void SimpleSoftOMXComponent::onPortFlush(
 }
 
 void SimpleSoftOMXComponent::checkTransitions() {
+#ifdef MTK_AOSP_ENHANCEMENT
+ALOGD("checkTransitions ++ mState = %d, mTargetState = %d",(int)mState,(int)mTargetState);
+#endif
     if (mState != mTargetState) {
         bool transitionComplete = true;
 
         if (mState == OMX_StateLoaded) {
             CHECK_EQ((int)mTargetState, (int)OMX_StateIdle);
-
+#ifdef MTK_AOSP_ENHANCEMENT
+            ALOGD("mState = OMX_StateLoaded (%d), mTargetState = OMX_StateIdle (%d)",(int)mState,(int)mTargetState);
+#endif
             for (size_t i = 0; i < mPorts.size(); ++i) {
                 const PortInfo &port = mPorts.itemAt(i);
                 if (port.mDef.bEnabled == OMX_FALSE) {
@@ -566,7 +599,9 @@ void SimpleSoftOMXComponent::checkTransitions() {
             }
         } else if (mTargetState == OMX_StateLoaded) {
             CHECK_EQ((int)mState, (int)OMX_StateIdle);
-
+#ifdef MTK_AOSP_ENHANCEMENT
+            ALOGD("mState = OMX_StateIdle (%d), mTargetState = OMX_StateLoaded (%d)",(int)mState,(int)mTargetState);
+#endif
             for (size_t i = 0; i < mPorts.size(); ++i) {
                 const PortInfo &port = mPorts.itemAt(i);
                 if (port.mDef.bEnabled == OMX_FALSE) {
@@ -599,6 +634,11 @@ void SimpleSoftOMXComponent::checkTransitions() {
 
             notify(OMX_EventCmdComplete, OMX_CommandStateSet, mState, NULL);
         }
+#ifdef MTK_AOSP_ENHANCEMENT
+       else{
+           ALOGD("transition not Complete yet!! mState = %d, mTargetState = %d",(int)mState,(int)mTargetState);
+       }
+#endif
     }
 
     for (size_t i = 0; i < mPorts.size(); ++i) {
@@ -607,6 +647,9 @@ void SimpleSoftOMXComponent::checkTransitions() {
         if (port->mTransition == PortInfo::DISABLING) {
             if (port->mBuffers.empty()) {
                 ALOGV("Port %zu now disabled.", i);
+#ifdef MTK_AOSP_ENHANCEMENT
+                ALOGD("Port %zu now disabled.", i);
+#endif
 
                 port->mTransition = PortInfo::NONE;
                 notify(OMX_EventCmdComplete, OMX_CommandPortDisable, i, NULL);
@@ -616,6 +659,9 @@ void SimpleSoftOMXComponent::checkTransitions() {
         } else if (port->mTransition == PortInfo::ENABLING) {
             if (port->mDef.bPopulated == OMX_TRUE) {
                 ALOGV("Port %zu now enabled.", i);
+#ifdef MTK_AOSP_ENHANCEMENT
+                ALOGD("Port %zu now enabled.", i);
+#endif
 
                 port->mTransition = PortInfo::NONE;
                 port->mDef.bEnabled = OMX_TRUE;
@@ -625,6 +671,9 @@ void SimpleSoftOMXComponent::checkTransitions() {
             }
         }
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("checkTransitions -- mState = %d, mTargetState = %d",(int)mState,(int)mTargetState);
+#endif
 }
 
 void SimpleSoftOMXComponent::addPort(const OMX_PARAM_PORTDEFINITIONTYPE &def) {

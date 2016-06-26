@@ -52,6 +52,8 @@ public:
     inline const char*      getPath() const { return (const char *)mFilePath; }
     inline bool             isRemovable() const { return mRemovable; }
     inline uint64_t         getMaxFileSize() const { return mMaxFileSize; }
+    // for storage update
+    bool                    setDescription(const char* description);
 };
 
 }; // namespace android

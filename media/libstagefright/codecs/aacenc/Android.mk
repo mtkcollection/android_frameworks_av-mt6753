@@ -82,7 +82,7 @@ LOCAL_C_INCLUDES += $(LOCAL_PATH)/src/asm/ARMV5E
 LOCAL_C_INCLUDES += $(LOCAL_PATH)/src/asm/ARMV7
 endif
 
-LOCAL_CFLAGS += -Werror
+
 
 include $(BUILD_STATIC_LIBRARY)
 
@@ -108,7 +108,7 @@ ifeq ($(AAC_LIBRARY), fraunhofer)
 
   LOCAL_CFLAGS :=
 
-  LOCAL_CFLAGS += -Werror
+
 
   LOCAL_STATIC_LIBRARIES := libFraunhoferAAC
 

@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -49,10 +54,16 @@ void SampleIterator::reset() {
     mStopChunkSampleIndex = 0;
     mSamplesPerChunk = 0;
     mChunkDesc = 0;
+#ifdef MTK_AOSP_ENHANCEMENT
+    mCurrentSampleIndex = 0xffffffff;
+#endif
 }
 
 status_t SampleIterator::seekTo(uint32_t sampleIndex) {
     ALOGV("seekTo(%d)", sampleIndex);
+#ifdef MTK_AOSP_ENHANCEMENT
+    bool isNewChunk = false;
+#endif
 
     if (sampleIndex >= mTable->mNumSampleSizes) {
         return ERROR_END_OF_STREAM;
@@ -71,10 +82,16 @@ status_t SampleIterator::seekTo(uint32_t sampleIndex) {
     }
 
     if (!mInitialized || sampleIndex < mFirstChunkSampleIndex) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    isNewChunk = true;
+#endif
         reset();
     }
 
     if (sampleIndex >= mStopChunkSampleIndex) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    isNewChunk = true;
+#endif
         status_t err;
         if ((err = findChunkRange(sampleIndex)) != OK) {
             ALOGE("findChunkRange failed");
@@ -89,6 +106,9 @@ status_t SampleIterator::seekTo(uint32_t sampleIndex) {
         + mFirstChunk;
 
     if (!mInitialized || chunk != mCurrentChunkIndex) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    isNewChunk = true;
+#endif
         mCurrentChunkIndex = chunk;
 
         status_t err;
@@ -108,7 +128,16 @@ status_t SampleIterator::seekTo(uint32_t sampleIndex) {
             if ((err = getSampleSizeDirect(
                             firstChunkSampleIndex + i, &sampleSize)) != OK) {
                 ALOGE("getSampleSizeDirect return error");
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (err == ERROR_OUT_OF_RANGE) {
+            ALOGW("Sample Index(from stsc) > Sample Count(from stsz), Set mSamplesPerChunk to %d according to stsz", mSamplesPerChunk);
+            mSamplesPerChunk = i;
+            break;
+        } else
+            return err;
+#else
                 return err;
+#endif
             }
 
             mCurrentChunkSampleSizes.push(sampleSize);
@@ -117,12 +146,20 @@ status_t SampleIterator::seekTo(uint32_t sampleIndex) {
 
     uint32_t chunkRelativeSampleIndex =
         (sampleIndex - mFirstChunkSampleIndex) % mSamplesPerChunk;
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (!isNewChunk && (sampleIndex == mCurrentSampleIndex + 1) && (chunkRelativeSampleIndex > 0)) {
+        mCurrentSampleOffset += mCurrentChunkSampleSizes[chunkRelativeSampleIndex-1];
+    }
+    else {
+#endif
 
     mCurrentSampleOffset = mCurrentChunkOffset;
     for (uint32_t i = 0; i < chunkRelativeSampleIndex; ++i) {
         mCurrentSampleOffset += mCurrentChunkSampleSizes[i];
     }
-
+#ifdef MTK_AOSP_ENHANCEMENT
+    }
+#endif
     mCurrentSampleSize = mCurrentChunkSampleSizes[chunkRelativeSampleIndex];
     if (sampleIndex < mTTSSampleIndex) {
         mTimeToSampleIndex = 0;

@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2008 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,6 +26,10 @@
 #include <media/AudioSystem.h>
 #include <media/IAudioRecord.h>
 #include <utils/threads.h>
+
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <media/AudioEffect.h>
+#endif
 
 namespace android {
 
@@ -181,6 +190,24 @@ public:
                                     int uid = -1,
                                     pid_t pid = -1,
                                     const audio_attributes_t* pAttributes = NULL);
+#ifdef MTK_AOSP_ENHANCEMENT
+            AudioRecord(audio_source_t inputSource,
+                        String8 Params,
+                        uint32_t sampleRate = 0,
+                        audio_format_t format          = AUDIO_FORMAT_DEFAULT,
+                        audio_channel_mask_t channelMask = AUDIO_CHANNEL_IN_MONO,
+                        const String16& opPackageName = String16("android.media"),
+                        int frameCount      = 0,
+                        callback_t cbf = NULL,
+                        void* user = NULL,
+                        int notificationFrames = 0,
+                        int sessionId = 0,
+                        transfer_type transferType = TRANSFER_DEFAULT,
+                        audio_input_flags_t flags = AUDIO_INPUT_FLAG_NONE,
+                        int uid = -1,
+                        pid_t pid = -1,
+                        const audio_attributes_t* pAttributes = NULL);
+#endif
 
     /* Terminates the AudioRecord and unregisters it from AudioFlinger.
      * Also destroys all resources associated with the AudioRecord.
@@ -481,6 +508,11 @@ private:
     /* copying audio record objects is not allowed */
                         AudioRecord(const AudioRecord& other);
             AudioRecord& operator = (const AudioRecord& other);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+//    void fn_ReleaseEffect(AudioEffect *&pEffect);
+    void fn_ReleaseEffect();
+#endif
 
     /* a small internal class to handle the callback */
     class AudioRecordThread : public Thread

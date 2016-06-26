@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -35,6 +40,9 @@ public:
     virtual sp<MediaSource> getTrack(size_t index) = 0;
 
     enum GetTrackMetaDataFlags {
+#ifdef MTK_AOSP_ENHANCEMENT
+        kIncludeInterleaveInfo = 2,
+#endif
         kIncludeExtensiveMetaData = 1
     };
     virtual sp<MetaData> getTrackMetaData(
@@ -49,6 +57,9 @@ public:
         CAN_SEEK_FORWARD   = 2,  // the "seek 10secs forward button"
         CAN_PAUSE          = 4,
         CAN_SEEK           = 8,  // the "seek bar"
+#ifdef MTK_AOSP_ENHANCEMENT
+        MAY_PARSE_TOO_LONG = 256,
+#endif
     };
 
     // If subclasses do _not_ override this, the default is
@@ -77,6 +88,14 @@ private:
 
     MediaExtractor(const MediaExtractor &);
     MediaExtractor &operator=(const MediaExtractor &);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+
+public:
+    virtual int stopParsing() { return 0; }
+    virtual int finishParsing() { return 0; }
+    virtual int cancelVideoRead() { return 0; }
+#endif
 };
 
 }  // namespace android

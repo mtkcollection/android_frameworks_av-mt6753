@@ -150,4 +150,10 @@ status_t MediaClock::getRealTimeFor(
     return OK;
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+void MediaClock::addBufferingTimeToAnchorTimeRealUs(int64_t bufferingtimeUs){
+    mAnchorTimeRealUs += bufferingtimeUs;
+}
+#endif
+
 }  // namespace android

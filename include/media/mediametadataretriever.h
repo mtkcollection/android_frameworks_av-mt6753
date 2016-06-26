@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2008 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -60,7 +65,25 @@ enum {
     METADATA_KEY_VIDEO_ROTATION  = 24,
     METADATA_KEY_CAPTURE_FRAMERATE = 25,
 
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    METADATA_KEY_Is_LivePhoto   = 203,
+    METADATA_KEY_SlowMotion_SpeedValue  = 204,
+#endif
+
+
     // Add more here...
+    // OMA DRM v1 implementation
+    METADATA_KEY_DRM_CONTENT_URI = 101,
+    METADATA_KEY_DRM_OFFSET      = 102,
+    METADATA_KEY_DRM_DATALEN     = 103,
+    METADATA_KEY_DRM_RIGHTS_ISSUER = 104,
+    METADATA_KEY_DRM_CONTENT_NAME  = 105,
+    METADATA_KEY_DRM_CONTENT_DES   = 106,
+    METADATA_KEY_DRM_CONTENT_VENDOR = 107,
+    METADATA_KEY_DRM_ICON_URI       = 108,
+    METADATA_KEY_DRM_METHOD     = 109,
+    METADATA_KEY_DRM_MIME       = 110,
 };
 
 class MediaMetadataRetriever: public RefBase
@@ -82,7 +105,7 @@ public:
     const char* extractMetadata(int keyCode);
 
 private:
-    static const sp<IMediaPlayerService> getService();
+    static const sp<IMediaPlayerService>& getService();
 
     class DeathNotifier: public IBinder::DeathRecipient
     {

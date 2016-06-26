@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -53,6 +58,21 @@ enum {
     INFO_FORMAT_CHANGED    = MEDIA_ERROR_BASE - 12,
     INFO_DISCONTINUITY     = MEDIA_ERROR_BASE - 13,
     INFO_OUTPUT_BUFFERS_CHANGED = MEDIA_ERROR_BASE - 14,
+#ifdef MTK_AOSP_ENHANCEMENT
+    INFO_DOLBY_PROCESSED_AUDIO_START = MEDIA_ERROR_BASE - 15,
+    INFO_DOLBY_PROCESSED_AUDIO_STOP = MEDIA_ERROR_BASE - 16,
+    FAKE_INFO_DISCONTINUITY = MEDIA_ERROR_BASE - 20,
+    ERROR_FORBIDDEN        = MEDIA_ERROR_BASE - 100 - 0,
+    ERROR_POOR_INTERLACE   = MEDIA_ERROR_BASE - 100 - 1,
+    INFO_TRY_READ_FAIL     = MEDIA_ERROR_BASE - 100 - 2,
+    ERROR_UNSUPPORTED_VIDEO = MEDIA_ERROR_BASE - 100 - 3,
+    ERROR_UNSUPPORTED_AUDIO = MEDIA_ERROR_BASE - 100 - 4,
+    ERROR_EOS_QUITNOW      = MEDIA_ERROR_BASE - 100 - 5,
+    ERROR_BUFFER_DEQUEUE_FAIL = MEDIA_ERROR_BASE - 100 - 6,
+    ERROR_INVALID_ES_FRAME = MEDIA_ERROR_BASE - 100 - 7,
+    // frame size abnorma large for decode input buffer
+    ERROR_BAD_FRAME_SIZE   = MEDIA_ERROR_BASE - 100 - 8,
+#endif
 
     // The following constant values should be in sync with
     // drm/drm_framework_common.h
@@ -74,7 +94,11 @@ enum {
 
     ERROR_DRM_VENDOR_MAX                     = DRM_ERROR_BASE - 500,
     ERROR_DRM_VENDOR_MIN                     = DRM_ERROR_BASE - 999,
-
+#ifdef MTK_AOSP_ENHANCEMENT
+    // Deprecated
+    ERROR_DRM_WV_VENDOR_MAX                 = ERROR_DRM_VENDOR_MAX,
+    ERROR_DRM_WV_VENDOR_MIN                 = ERROR_DRM_VENDOR_MIN,
+#endif  // MTK_AOSP_ENHANCEMENT
     // Heartbeat Error Codes
     HEARTBEAT_ERROR_BASE = -3000,
     ERROR_HEARTBEAT_TERMINATE_REQUESTED                     = HEARTBEAT_ERROR_BASE,

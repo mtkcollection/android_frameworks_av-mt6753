@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
 **
 ** Copyright 2012, The Android Open Source Project
 **
@@ -275,6 +280,11 @@ public:
                                                audio_patch_handle_t *handle) = 0;
     virtual     status_t    releaseAudioPatch_l(const audio_patch_handle_t handle) = 0;
     virtual     void        getAudioPortConfig(struct audio_port_config *config) = 0;
+//#ifdef TIME_STRETCH_ENABLE
+            int mTimeStretchRatio[32];
+            int  mTimeStretchTrackName[32];
+    virtual     status_t  setTimestretch(const String8& keyValuePairs, int trackName);
+//#endif
 
 
                 // see note at declaration of mStandby, mOutDevice and mInDevice
@@ -369,6 +379,9 @@ public:
 
     mutable     Mutex                   mLock;
 
+#if 0 //ship test for fix getPresentationPosition bug
+    mutable     Mutex                   mMixLock;
+#endif
 protected:
 
                 // entry describing an effect being suspended in mSuspendedSessions keyed vector
@@ -449,6 +462,9 @@ protected:
                 char                    mThreadName[kThreadNameLength]; // guaranteed NUL-terminated
                 sp<IPowerManager>       mPowerManager;
                 sp<IBinder>             mWakeLockToken;
+//<MTK_AUDIO_ADD
+                sp<IBinder>             mWakeLockTokenEngMode;
+//MTK_AUDIO_ADD>
                 const sp<PMDeathRecipient> mDeathRecipient;
                 // list of suspended effects per session and per type. The first vector is
                 // keyed by session ID, the second by type UUID timeLow field
@@ -611,6 +627,9 @@ public:
                 void        deletePatchTrack(const sp<PatchTrack>& track);
 
     virtual     void        getAudioPortConfig(struct audio_port_config *config);
+//<MTK_AUDIO_ADD
+                void        invalidateCrossMountTracks(audio_stream_type_t streamType);
+//MTK_AUDIO_ADD>
 
 protected:
     // updated by readOutputParameters_l()
@@ -691,6 +710,39 @@ protected:
     // FIXME overflows every 6+ hours at 44.1 kHz stereo 16-bit samples
     // mFramesWritten would be better, or 64-bit even better
     size_t                          mBytesWritten;
+
+//<MTK_AUDIO_ADD
+    bool mWriteMutedData;   // Whether write muted data to HAL.
+    DcRemove *mDcRemove;
+    int32_t*                        mDcRemoveWorkBuffer;
+    int32_t*                        mDcRemoveInBuffer;
+    size_t                          DcRemoveBufferSize;
+
+    audio_devices_t mOutputDevice;
+    bool fUpdateDRCParam;
+
+    // for S2M
+    int mSteroToMono;
+    status_t SetStereoToMonoFlag(int new_device);   // apply to local device
+
+    // for sampling rate dynamic change & fast output
+    status_t         checkFinalOutputFormat();
+//MTK_AUDIO_ADD>
+
+//<MTK_AUDIO_ADD
+
+    /**
+     * Bli SRC
+     */
+    MtkAudioSrc*     mBliSrcUp;
+
+    char*            mBliSrcOutputBuffer;
+
+    status_t         initBliSrc();
+    status_t         deinitBliSrc();
+    status_t         doBliSrc(MtkAudioSrc* mBliSrc, void *pInBuffer, uint32_t inBytes, void **ppOutBuffer, uint32_t *pOutBytes);
+//MTK_AUDIO_ADD>
+
 private:
     // mMasterMute is in both PlaybackThread and in AudioFlinger.  When a
     // PlaybackThread needs to find out if master-muted, it checks it's local
@@ -708,6 +760,9 @@ protected:
     virtual int             getTrackName_l(audio_channel_mask_t channelMask,
                                            audio_format_t format, int sessionId) = 0;
     virtual void            deleteTrackName_l(int name) = 0;
+//<MTK_AUDIO_ADD
+    virtual     void        releaseTrackDrc_l(int name) = 0;
+// MTK_AUDIO_ADD>
 
     // Time to sleep between cycles when:
     virtual uint32_t        activeSleepTimeUs() const;      // mixer state MIXER_TRACKS_ENABLED
@@ -868,6 +923,9 @@ public:
     virtual     bool        checkForNewParameter_l(const String8& keyValuePair,
                                                    status_t& status);
     virtual     void        dumpInternals(int fd, const Vector<String16>& args);
+#ifdef TIME_STRETCH_ENABLE
+    virtual     status_t  setTimestretch(const String8& keyValuePairs, int trackName);
+#endif
 
 protected:
     virtual     mixer_state prepareTracks_l(Vector< sp<Track> > *tracksToRemove);
@@ -889,6 +947,10 @@ protected:
     virtual     status_t    createAudioPatch_l(const struct audio_patch *patch,
                                    audio_patch_handle_t *handle);
     virtual     status_t    releaseAudioPatch_l(const audio_patch_handle_t handle);
+
+//<MTK_AUDIO_ADD
+    virtual     void        releaseTrackDrc_l(int name);
+// MTK_AUDIO_ADD>
 
                 AudioMixer* mAudioMixer;    // normal mixer
 private:
@@ -947,6 +1009,10 @@ protected:
     virtual     bool        shouldStandby_l();
 
     virtual     void        onAddNewTrack_l();
+
+//<MTK_AUDIO_ADD
+    virtual     void        releaseTrackDrc_l(int name);
+// MTK_AUDIO_ADD>
 
     // volumes last sent to audio HAL with stream->set_volume()
     float mLeftVolFloat;
@@ -1018,16 +1084,21 @@ private:
     uint32_t                   mDrainSequence;
     Condition                  mWaitWorkCV;
     Mutex                      mLock;
+//<MTK_AUDIO_ADD
+    Mutex                      mMixLock;
+//MTK_AUDIO_ADD>
 };
 
 class DuplicatingThread : public MixerThread {
 public:
+//<MTK_AUDIO_ADD
     DuplicatingThread(const sp<AudioFlinger>& audioFlinger, MixerThread* mainThread,
-                      audio_io_handle_t id, bool systemReady);
+                      audio_io_handle_t id, bool systemReady, uint32_t latency=0);
     virtual                 ~DuplicatingThread();
 
     // Thread virtuals
-                void        addOutputTrack(MixerThread* thread);
+                void        addOutputTrack(MixerThread* thread, uint32_t latency=0);
+//MTK_AUDIO_ADD>
                 void        removeOutputTrack(MixerThread* thread);
                 uint32_t    waitTimeMs() const { return mWaitTimeMs; }
 protected:

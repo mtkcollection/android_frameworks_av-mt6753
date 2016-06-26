@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -55,7 +60,9 @@ public:
     MediaBuffer(const sp<GraphicBuffer>& graphicBuffer);
 
     MediaBuffer(const sp<ABuffer> &buffer);
-
+#ifdef MTK_AOSP_ENHANCEMENT
+    MediaBuffer(size_t size, sp<MetaData> metaData);
+#endif
     // Decrements the reference count and returns the buffer to its
     // associated MediaBufferGroup if the reference count drops to 0.
     virtual void release();
@@ -119,6 +126,13 @@ private:
     MediaBuffer(const MediaBuffer &);
     MediaBuffer &operator=(const MediaBuffer &);
 };
+
+#ifdef MTK_AOSP_ENHANCEMENT
+class MediaBufferSimpleObserver: public MediaBufferObserver {
+public:
+    virtual void signalBufferReturned(MediaBuffer *buffer);
+};
+#endif  // #ifndef MTK_AOSP_ENHANCEMENT
 
 }  // namespace android
 

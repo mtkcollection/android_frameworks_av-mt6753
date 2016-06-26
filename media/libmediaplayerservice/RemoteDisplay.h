@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright 2012, The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -24,6 +29,10 @@
 #include <utils/Errors.h>
 #include <utils/RefBase.h>
 
+///M: @{
+#include "sink/WifiDisplaySink.h"
+///@}
+
 namespace android {
 
 struct ALooper;
@@ -36,6 +45,27 @@ struct RemoteDisplay : public BnRemoteDisplay {
             const String16 &opPackageName,
             const sp<IRemoteDisplayClient> &client,
             const char *iface);
+///M: @{
+#ifdef MTK_AOSP_ENHANCEMENT
+    RemoteDisplay(
+        const String16 &opPackageName,
+        const sp<IRemoteDisplayClient> &client,
+        const char *iface,
+        const uint32_t wfdFlags);
+
+    RemoteDisplay(
+        const sp<IRemoteDisplayClient> &client,
+        const char *iface,
+        const sp<IGraphicBufferProducer> &bufferProducer);
+
+    ///M: add for rtsp generic message
+    virtual status_t sendGenericMsg(int cmd);
+    virtual status_t setBitrateControl(int level);
+    virtual int      getWfdParam(int paramType);
+    virtual status_t suspendDisplay(bool suspend, const sp<IGraphicBufferProducer> &bufferProducer);
+    virtual status_t sendUibcEvent(const String8& eventDesc);
+#endif /* MTK_AOSP_ENHANCEMENT */
+///@}
 
     virtual status_t pause();
     virtual status_t resume();
@@ -49,6 +79,18 @@ private:
     sp<ALooper> mLooper;
     sp<ANetworkSession> mNetSession;
     sp<WifiDisplaySource> mSource;
+
+///M: @{
+#ifdef MTK_AOSP_ENHANCEMENT
+    static const unsigned defaultPort = 7236;
+    sp<WifiDisplaySink> mSink;
+    bool mSinkMode;
+    bool mDisposed;
+    enum {
+        kWhatSinkNotify,
+    };
+#endif
+///@}
 
     DISALLOW_EVIL_CONSTRUCTORS(RemoteDisplay);
 };

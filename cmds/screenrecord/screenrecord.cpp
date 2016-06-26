@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright 2013 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -55,6 +60,10 @@
 #include "screenrecord.h"
 #include "Overlay.h"
 #include "FrameOutput.h"
+
+#ifdef MTK_AOSP_ENHANCEMENT
+#include "venc_drv_if_public.h"
+#endif
 
 using namespace android;
 
@@ -161,7 +170,12 @@ static status_t prepareEncoder(float displayFps, sp<MediaCodec>* pCodec,
     format->setInt32("color-format", OMX_COLOR_FormatAndroidOpaque);
     format->setInt32("bitrate", gBitRate);
     format->setFloat("frame-rate", displayFps);
+#ifndef MTK_AOSP_ENHANCEMENT
     format->setInt32("i-frame-interval", 10);
+#else
+    format->setInt32("i-frame-interval", 2);
+#endif
+
 
     sp<ALooper> looper = new ALooper;
     looper->setName("screenrecord_looper");
@@ -563,6 +577,11 @@ static status_t recordScreen(const char* fileName) {
         gVideoHeight = rotated ? mainDpyInfo.w : mainDpyInfo.h;
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    err = checkVideoEncoderBufferLimit("video/avc", gVideoWidth, gVideoHeight);
+    if (err != NO_ERROR)
+        return err;
+#endif
     // Configure and start the encoder.
     sp<MediaCodec> encoder;
     sp<FrameOutput> frameOutput;
@@ -919,6 +938,10 @@ int main(int argc, char* const argv[]) {
                     gVideoWidth, gVideoHeight);
                 return 2;
             }
+#ifdef MTK_AOSP_ENHANCEMENT
+            if(checkVideoSize(gVideoWidth,gVideoHeight)!= 0)
+                return 2;
+#endif
             gSizeSpecified = true;
             break;
         case 'b':
@@ -1004,3 +1027,99 @@ int main(int argc, char* const argv[]) {
     ALOGD(err == NO_ERROR ? "success" : "failed");
     return (int) err;
 }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+static status_t checkVideoEncoderBufferLimit(const char *mime, uint32_t &videoWidth, uint32_t &videoHeight){
+
+    VENC_DRV_VIDEO_FORMAT_T eVideoFormat;
+    if (!strcasecmp("video/avc", mime)) {
+        eVideoFormat = VENC_DRV_VIDEO_FORMAT_H264;
+    }
+    else
+    {
+        ALOGE("check input format fail, only support H264");
+        return UNKNOWN_ERROR;
+    }
+
+    VENC_DRV_QUERY_VIDEO_FORMAT_T qinfo;
+    VENC_DRV_QUERY_VIDEO_FORMAT_T outinfo;
+    memset(&qinfo,0,sizeof(VENC_DRV_QUERY_VIDEO_FORMAT_T));
+    memset(&outinfo,0,sizeof(VENC_DRV_QUERY_VIDEO_FORMAT_T));
+    uint32_t maxWidth = 0;
+    uint32_t maxHeight = 0;
+
+    qinfo.eVideoFormat = eVideoFormat;
+    if(VENC_DRV_MRESULT_OK != eVEncDrvQueryCapability(VENC_DRV_QUERY_TYPE_VIDEO_FORMAT, &qinfo, &outinfo))
+    {
+        ALOGE("Query codec Buffer limitation for resolution fail!!");
+        return UNKNOWN_ERROR;
+    }
+    ALOGD("checkVideoCapability, format=%d,support maxwidth=%d,maxheight=%d, bitrate %d, framerate %d",qinfo.eVideoFormat,outinfo.u4Width,outinfo.u4Height, outinfo.u4Bitrate, outinfo.u4FrameRate);
+    fprintf(stderr, "The max width/height supported by codec is %dx%d\n", (int32_t)(outinfo.u4Width), (int32_t)(outinfo.u4Height));
+
+
+    ALOGD("before resolution check, width=%d, height=%d", videoWidth, videoHeight);
+    if( (videoWidth>videoHeight && outinfo.u4Width<outinfo.u4Height) || (videoWidth<videoHeight && outinfo.u4Width>outinfo.u4Height))
+    {
+        maxWidth = outinfo.u4Height;
+        maxHeight = outinfo.u4Width;
+    }
+    else
+    {
+        maxWidth = outinfo.u4Width;
+        maxHeight = outinfo.u4Height;
+    }
+
+    if(videoWidth>maxWidth)
+    {
+        videoHeight = videoHeight*maxWidth/videoWidth;
+        videoWidth = maxWidth;
+    }
+
+    if(videoHeight>maxHeight)
+    {
+        videoWidth = videoWidth*maxHeight/videoHeight;
+        videoHeight = maxHeight;
+    }
+    ALOGD("after resolution check, width=%d, height=%d", videoWidth, videoHeight);
+
+    VENC_DRV_QUERY_INPUT_BUF_LIMIT tInputBuflimit;
+    tInputBuflimit.eVideoFormat = eVideoFormat;
+    tInputBuflimit.u4Width= videoWidth; //input
+    tInputBuflimit.u4Height = videoHeight; //input
+    tInputBuflimit.u4Stride = videoWidth; //output--buffer width limitation
+    tInputBuflimit.u4SliceHeight = videoHeight;//output--buffer height limiatation
+    if(VENC_DRV_MRESULT_OK != eVEncDrvQueryCapability(VENC_DRV_QUERY_TYPE_INPUT_BUF_LIMIT,(void*)&tInputBuflimit,NULL)){
+        ALOGE("Query codec Buffer limitation for u4Stride fail!!");
+        return UNKNOWN_ERROR;
+    }
+
+    if(videoWidth != tInputBuflimit.u4Stride || videoHeight != tInputBuflimit.u4SliceHeight)
+        ALOGI("%ux%u do not confirm to the byte alignment rules, reset it to %ux%u\n",
+            videoWidth, videoHeight, tInputBuflimit.u4Stride, tInputBuflimit.u4SliceHeight);
+
+    videoWidth = tInputBuflimit.u4Stride;
+    videoHeight = tInputBuflimit.u4SliceHeight;
+    return NO_ERROR;
+}
+status_t checkVideoSize(uint32_t gVideoWidth,uint32_t gVideoHeight){
+    uint32_t videoWidth = gVideoWidth;
+    uint32_t videoHeight = gVideoHeight;
+    if (NO_ERROR != checkVideoEncoderBufferLimit("video/avc", videoWidth, videoHeight))
+    {
+        fprintf(stderr,
+            "checkVideoEncoderBufferLimit failed\n");
+        return 2;
+    }
+
+    if (gVideoWidth != videoWidth || gVideoHeight != videoHeight) {
+        fprintf(stderr,
+            "%ux%u is not supported by codec, suggest to set it as %ux%u\n",
+            gVideoWidth, gVideoHeight, videoWidth, videoHeight);
+        return 2;
+    }
+    return 0;
+}
+
+#endif
+

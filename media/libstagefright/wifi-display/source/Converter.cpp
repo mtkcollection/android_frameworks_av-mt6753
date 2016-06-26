@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright 2012, The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -38,6 +43,18 @@
 
 #include <OMX_Video.h>
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <dlfcn.h>
+#include "DataPathTrace.h"
+#define ATRACE_TAG ATRACE_TAG_VIDEO
+#include <utils/Trace.h>
+#include "WifiDisplaySource.h"
+#define MAX_VIDEO_QUEUE_BUFFER (3)
+#define MAX_AUDIO_QUEUE_BUFFER (5)
+#define WFD_LOGI(fmt,arg...) ALOGI(fmt,##arg)
+#else
+#define WFD_LOGI(fmt,arg...)
+#endif
 namespace android {
 
 Converter::Converter(
@@ -69,9 +86,19 @@ Converter::Converter(
         mIsVideo = true;
 
         mIsH264 = !strcasecmp(mime.c_str(), MEDIA_MIMETYPE_VIDEO_AVC);
+#ifdef MTK_VIDEO_HEVC_SUPPORT
+    mIsHEVC =false;
+    mIsH264 =  ( !strcasecmp(mime.c_str(), MEDIA_MIMETYPE_VIDEO_AVC))
+             ||( !strcasecmp(mime.c_str(), MEDIA_MIMETYPE_VIDEO_HEVC));
+    mIsHEVC = !strcasecmp(mime.c_str(), MEDIA_MIMETYPE_VIDEO_HEVC);
+    ALOGI("  IsHEVC %d",mIsHEVC);
+#endif
     } else if (!strcasecmp(MEDIA_MIMETYPE_AUDIO_RAW, mime.c_str())) {
         mIsPCMAudio = true;
     }
+#if USE_OMX_BITRATE_CONTROLLER
+        bcInit(mIsVideo);
+#endif
 }
 
 void Converter::releaseEncoder() {
@@ -88,6 +115,12 @@ void Converter::releaseEncoder() {
 }
 
 Converter::~Converter() {
+#ifdef MTK_AOSP_ENHANCEMENT
+    releaseEncoder();//release mEncoder
+#if USE_OMX_BITRATE_CONTROLLER
+        bcDeinit();
+#endif
+#endif
     CHECK(mEncoder == NULL);
 }
 
@@ -167,10 +200,16 @@ status_t Converter::initEncoder() {
 
     if (isAudio) {
         mOutputFormat->setInt32("bitrate", audioBitrate);
+#ifdef MTK_AOSP_ENHANCEMENT
+    mOutputFormat->setInt32("isWfdMode", 1);
+#endif
     } else {
         mOutputFormat->setInt32("bitrate", videoBitrate);
         mOutputFormat->setInt32("bitrate-mode", OMX_Video_ControlRateConstant);
+#ifndef MTK_AOSP_ENHANCEMENT
+        //remove this,else will overwrite the playbackSession config
         mOutputFormat->setInt32("frame-rate", 30);
+#endif
         mOutputFormat->setInt32("i-frame-interval", 15);  // Iframes every 15 secs
 
         // Configure encoder to use intra macroblock refresh mode
@@ -189,10 +228,16 @@ status_t Converter::initEncoder() {
         // to recover from a lost/corrupted packet.
         mbs = (((width + 15) / 16) * ((height + 15) / 16) * 10) / 100;
         mOutputFormat->setInt32("intra-refresh-CIR-mbs", mbs);
+#ifdef MTK_AOSP_ENHANCEMENT
+        initEncoder_ext();
+#endif
     }
+#ifndef MTK_AOSP_ENHANCEMENT
 
     ALOGV("output format is '%s'", mOutputFormat->debugString(0).c_str());
-
+#else
+    ALOGI("output format is '%s'", mOutputFormat->debugString(0).c_str());
+#endif
     mNeedToManuallyPrependSPSPPS = false;
 
     status_t err = NO_INIT;
@@ -215,6 +260,14 @@ status_t Converter::initEncoder() {
             mNeedToManuallyPrependSPSPPS = true;
 
             ALOGI("We going to manually prepend SPS and PPS to IDR frames.");
+#ifdef MTK_AOSP_ENHANCEMENT
+            int32_t store_metadata_in_buffers_output =0;
+            if(mOutputFormat->findInt32("store-metadata-in-buffers-output",&store_metadata_in_buffers_output)
+                     && store_metadata_in_buffers_output ==1){
+                ALOGE("!!![error]Codec not support prepend-sps-pps-to-idr-frames while store-metadata-in-buffers-output!!!");
+                mNeedToManuallyPrependSPSPPS =false;
+            }
+#endif
         }
     }
 
@@ -294,12 +347,26 @@ void Converter::onMessageReceived(const sp<AMessage> &msg) {
         case kWhatMediaPullerNotify:
         {
             int32_t what;
+
+#ifdef MTK_AOSP_ENHANCEMENT
+            if(mIsVideo) {
+                ATRACE_BEGIN("VideoConv, kWhatMediaPullerNotify");
+            }
+            else {
+                ATRACE_BEGIN("AudioConv, kWhatMediaPullerNotify");
+            }
+#endif
             CHECK(msg->findInt32("what", &what));
 
             if (!mIsPCMAudio && mEncoder == NULL) {
+#ifndef MTK_AOSP_ENHANCEMENT
+
                 ALOGV("got msg '%s' after encoder shutdown.",
                       msg->debugString().c_str());
-
+#else
+                ALOGI("got msg '%s' after encoder shutdown.",
+                      msg->debugString().c_str());
+#endif
                 if (what == MediaPuller::kWhatAccessUnit) {
                     sp<ABuffer> accessUnit;
                     CHECK(msg->findBuffer("accessUnit", &accessUnit));
@@ -366,12 +433,40 @@ void Converter::onMessageReceived(const sp<AMessage> &msg) {
                 }
 #endif
 
+#ifdef MTK_AOSP_ENHANCEMENT
+                uint32_t maxSize = mIsVideo ? MAX_VIDEO_QUEUE_BUFFER : MAX_AUDIO_QUEUE_BUFFER;
+                if(mInputBufferQueue.size() >= maxSize)//for rsss warning as pull new buffer
+                {
+//                    void *mediaBuffer; //Rock , L migration 0930
+                    sp<ABuffer> tmpbuffer = *mInputBufferQueue.begin();
+                    tmpbuffer->setMediaBufferBase(NULL);
+/*
+                    if (tmpbuffer->meta()->findPointer("mediaBuffer", &mediaBuffer)
+                         && mediaBuffer != NULL) {
+                	    ALOGI("[video buffer]video queuebuffer >= %d release oldest buffer=%p,refcount=%d",maxSize,mediaBuffer,((MediaBuffer *)mediaBuffer)->refcount());
+                        ReleaseMediaBufferReference(tmpbuffer);
+                	    mediaBuffer = NULL;
+                    }
+*/
+
+                    if(!mIsVideo)
+                        ALOGI("[audio buffer]audio queuebuffer >= %d release oldest buffer",maxSize);
+                    else
+                        ALOGI("[vedio buffer]audio queuebuffer >= %d release oldest buffer",maxSize);
+
+                    mInputBufferQueue.erase(mInputBufferQueue.begin());
+                }
+#endif
                 mInputBufferQueue.push_back(accessUnit);
 
                 feedEncoderInputBuffers();
 
                 scheduleDoMoreWork();
             }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+                ATRACE_END();
+#endif
             break;
         }
 
@@ -409,8 +504,13 @@ void Converter::onMessageReceived(const sp<AMessage> &msg) {
             }
 
             if (mIsVideo) {
+#ifndef MTK_AOSP_ENHANCEMENT
                 ALOGV("requesting IDR frame");
                 mEncoder->requestIDRFrame();
+#else
+                ALOGI("requesting IDR frame");
+                mEncoder->requestIDRFrame();
+#endif
             }
             break;
         }
@@ -609,6 +709,7 @@ status_t Converter::feedEncoderInputBuffers() {
     while (!mInputBufferQueue.empty()
             && !mAvailEncoderInputIndices.empty()) {
         sp<ABuffer> buffer = *mInputBufferQueue.begin();
+        //release the mediabuffer newed in MediaPuller
         mInputBufferQueue.erase(mInputBufferQueue.begin());
 
         size_t bufferIndex = *mAvailEncoderInputIndices.begin();
@@ -623,7 +724,22 @@ status_t Converter::feedEncoderInputBuffers() {
             memcpy(mEncoderInputBuffers.itemAt(bufferIndex)->data(),
                    buffer->data(),
                    buffer->size());
-
+#ifdef MTK_AOSP_ENHANCEMENT
+        int64_t timeNow = ALooper::GetNowUs();
+        sp<WfdDebugInfo> debugInfo= defaultWfdDebugInfo();
+        debugInfo->addTimeInfoByKey(mIsVideo, timeUs, "ConverterQueIn", timeNow/1000);
+        int32_t latencyToken = 0;
+        if(buffer->meta()->findInt32("LatencyToken", &latencyToken)){
+            ATRACE_ASYNC_END("MPR-CNV", latencyToken);
+            ATRACE_ASYNC_BEGIN("CNV-VENC", latencyToken);
+        }
+            if (mIsVideo) {
+                ATRACE_INT64("VideoConv, TS:  ms", timeUs/1000);
+            }
+            else {
+                ATRACE_INT64("AudioConv, TS: ", timeUs/1000);
+            }
+#endif
             MediaBuffer *mediaBuffer =
                 (MediaBuffer *)(buffer->getMediaBufferBase());
             if (mediaBuffer != NULL) {
@@ -635,6 +751,9 @@ status_t Converter::feedEncoderInputBuffers() {
         } else {
             flags = MediaCodec::BUFFER_FLAG_EOS;
         }
+#if USE_OMX_BITRATE_CONTROLLER
+        bcCheckSkip();
+#endif
 
         status_t err = mEncoder->queueInputBuffer(
                 bufferIndex, 0, (buffer == NULL) ? 0 : buffer->size(),
@@ -643,6 +762,13 @@ status_t Converter::feedEncoderInputBuffers() {
         if (err != OK) {
             return err;
         }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+            //this type can handle some the if-else {}not match issue
+            mIsVideo?
+              ATRACE_INT("Converter_VQI, bufferIndex: ", bufferIndex):
+              ATRACE_INT("Converter_AQI, bufferIndex: ", bufferIndex);
+#endif
     }
 
     return OK;
@@ -659,7 +785,11 @@ sp<ABuffer> Converter::prependCSD(const sp<ABuffer> &accessUnit) const {
     CHECK(accessUnit->meta()->findInt64("timeUs", &timeUs));
 
     dup->meta()->setInt64("timeUs", timeUs);
-
+#ifdef MTK_VIDEO_HEVC_SUPPORT
+    if(mIsHEVC){
+        dup->meta()->setInt32("isHEVC", 1);
+    }
+#endif
     return dup;
 }
 
@@ -704,6 +834,15 @@ status_t Converter::doMoreWork() {
             }
             break;
         }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (mIsVideo) {
+            ATRACE_INT("Converter_VDO, bufferIndex: ", bufferIndex);
+        }
+        else{
+            ATRACE_INT("Converter_ADO, bufferIndex: ", bufferIndex);
+        }
+#endif
 
         if (flags & MediaCodec::BUFFER_FLAG_EOS) {
             sp<AMessage> notify = mNotify->dup();
@@ -751,6 +890,9 @@ status_t Converter::doMoreWork() {
 
             memcpy(buffer->data(), outbuf->base() + offset, size);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+            doMoreWork_p(buffer, outbuf, timeUs, flags);
+#endif
             if (flags & MediaCodec::BUFFER_FLAG_CODECCONFIG) {
                 if (!handle) {
                     if (mIsH264) {
@@ -777,6 +919,9 @@ status_t Converter::doMoreWork() {
             mEncoder->releaseOutputBuffer(bufferIndex);
         }
 
+#if USE_OMX_BITRATE_CONTROLLER
+    bcSetOneFrameBits( size<<3, (flags & MediaCodec::BUFFER_FLAG_SYNCFRAME));
+#endif
         if (flags & MediaCodec::BUFFER_FLAG_EOS) {
             break;
         }
@@ -816,5 +961,280 @@ void Converter::setVideoBitrate(int32_t bitRate) {
         mPrevVideoBitrate = bitRate;
     }
 }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+
+void Converter::doMoreWork_p(sp<ABuffer> &buffer, sp<ABuffer> &outbuf, int64_t &timeUs, uint32_t &flags)
+{
+    sp<WfdDebugInfo> debugInfo = defaultWfdDebugInfo();
+    if (flags & MediaCodec::BUFFER_FLAG_DUMMY) {
+         buffer->meta()->setInt32("dummy-nal", 1);
+         int64_t latencyB = debugInfo->getTimeInfoByKey(mIsVideo, timeUs, mIsVideo?"RpIn":"MpIn");
+         int64_t LatencyToken = -1;
+         int32_t tmpToken = -1;
+         if(outbuf->meta()->findInt32("LatencyToken", &tmpToken) && tmpToken  >= 0){
+           LatencyToken = static_cast<int64_t>(tmpToken);
+         }else{
+           LatencyToken = debugInfo->getTimeInfoByKey(  mIsVideo,   timeUs, mIsVideo?"LatencyToken":"No");
+        }
+         buffer->meta()->setInt64("latencyB", latencyB);
+         buffer->meta()->setInt64("LatencyToken", LatencyToken);
+         ATRACE_ASYNC_END("CNV-VENC", LatencyToken);
+         ATRACE_ASYNC_BEGIN("VENC-SND", LatencyToken);
+    }else{
+       int64_t FBDT=0;
+
+       if( outbuf->meta()->findInt64("ACodecFBD", &FBDT)){
+           debugInfo->addTimeInfoByKey(mIsVideo , timeUs, "ACodecFBD", FBDT);
+       }
+        if( outbuf->meta()->findInt64("MCodecFBD", &FBDT)){
+           debugInfo->addTimeInfoByKey(mIsVideo , timeUs, "MCodecFBD", FBDT);
+       }
+       int64_t time  = ALooper::GetNowUs();
+       debugInfo->addTimeInfoByKey(mIsVideo , timeUs, "ConverterDeqOut", time/1000);
+
+    }
+
+   #ifdef MTK_VIDEO_HEVC_SUPPORT
+    if(mIsHEVC){
+       buffer->meta()->setInt32("isHEVC", 1);
+    }
+   #endif
+
+}
+
+
+void  Converter::initEncoder_ext(){
+    //framerate
+    int32_t frameRate=0;
+    if(mOutputFormat->findInt32("frame-rate", &frameRate) && frameRate > 0){
+        ALOGI("user set frameRate=%d",frameRate);
+
+    }else{
+        mOutputFormat->setInt32("frame-rate", 30);
+        frameRate = 30;
+    }
+    mOutputFormat->setInt32("frame-rate", frameRate);
+
+    //I interval
+    mOutputFormat->setInt32("i-frame-interval", 4);  // Iframes every 15 secs
+
+    //bitrate,W-H
+    int width =0;
+    int height =0;
+    mOutputFormat->findInt32("width", &width);
+    mOutputFormat->findInt32("height", &height);
+
+    int32_t video_bitrate=4800000;
+    if(width >= 1920 && height >= 1080){
+        video_bitrate=11000000;
+        ALOGI("change video_bitrate to %d as 1080P ",video_bitrate);
+    }
+    mOutputFormat->setInt32("bitrate", video_bitrate);
+
+    //property set
+    char video_bitrate_char[PROPERTY_VALUE_MAX];
+
+    if (property_get("media.wfd.video-bitrate", video_bitrate_char, NULL)){
+        int32_t temp_video_bitrate = atoi(video_bitrate_char);
+        if(temp_video_bitrate > 0){
+            video_bitrate = temp_video_bitrate ;
+        }
+    }
+    mOutputFormat->setInt32("bitrate", video_bitrate);
+
+    char frameRate_char[PROPERTY_VALUE_MAX];
+
+    if (property_get("media.wfd.frame-rate", frameRate_char, NULL)){
+        int32_t temp_fps= atoi(frameRate_char);
+        if(temp_fps > 0){
+             mOutputFormat->setInt32("frame-rate", temp_fps);
+        }
+    }
+
+
+    int32_t useSliceMode=0;
+
+    if(mOutputFormat->findInt32("slice-mode", &useSliceMode) && useSliceMode ==1){
+        ALOGI("useSliceMode =%d",useSliceMode);
+        int32_t buffersize=60*1024;
+
+        char buffersize_value[PROPERTY_VALUE_MAX];
+        if(property_get("wfd.slice.size", buffersize_value, NULL) ){
+            buffersize = atoi(buffersize_value)*1024;
+        }
+        mOutputFormat->setInt32("outputbuffersize", buffersize); // bs buffer size is 15k for slice mode
+        ALOGI("slice mode: output buffer size=%d KB",buffersize/1024);
+    }
+
+    mOutputFormat->setInt32("inputbuffercnt", 4); // yuv buffer count is 4
+    mOutputFormat->setInt32("bitrate-mode", 0x7F000001);//OMX_Video_ControlRateMtkWFD
+
+
+#if USE_OMX_BITRATE_CONTROLLER
+     bcSetTolerantBitrate( video_bitrate);
+#endif//USE_OMX_BITRATE_CONTROLLER
+
+
+
+}
+
+status_t Converter::setWfdLevel(int32_t level){
+    if(mIsVideo){
+#if USE_OMX_BITRATE_CONTROLLER
+            if (mBitrateCtrler.bcLib != NULL && mBitrateCtrler.UpdownLevel != NULL)
+            {
+                mBitrateCtrler.UpdownLevel(mBitrateCtrler.bcHandle, level);
+            }
+        ALOGI("setWfdLevel:level=%d",level);
+        return OK;
+#endif
+    }
+
+
+       ALOGE(" should not audio");
+    return ERROR;
+
+
+}
+
+int  Converter::getWfdParam(int paramType){
+    if(mIsVideo){
+         int paramValue=0;
+        //call encoder api   paramValue=xxx
+#if USE_OMX_BITRATE_CONTROLLER
+        if (mBitrateCtrler.bcLib == NULL || mBitrateCtrler.GetStatus == NULL)
+        {
+            return -1;
+        }
+        switch(paramType){
+            case WifiDisplaySource::kExpectedBitRate :
+                paramValue =bcGetStatus( 0);
+                break;
+            case WifiDisplaySource::kCuurentBitRate:
+                paramValue =bcGetStatus( 1);
+                break;
+            case WifiDisplaySource::kSkipRate:
+                paramValue =bcGetStatus(  2);
+                break;
+            default:
+                paramValue=-1;
+                break;
+
+        }
+
+        ALOGI("getWfdParam:paramValue=%d",paramValue);
+        return paramValue;
+#endif
+    }
+
+
+       ALOGE(" should not audio");
+    return -1;
+
+}
+void  Converter::forceBlackScreen(bool blackNow){
+    ALOGI("force black now blackNow=%d",blackNow);
+
+    sp<AMessage> params = new AMessage;
+    params->setInt32("drawBlack", (blackNow) ? 1 : 0);
+
+    mEncoder->setParameters(params);
+}
+#if USE_OMX_BITRATE_CONTROLLER
+void Converter::bcInit(bool isVideo){
+
+    if (isVideo)
+    {
+        mBitrateCtrler.bcHandle = NULL;
+        mBitrateCtrler.InitBC = NULL;
+        mBitrateCtrler.SetOneFrameBits = NULL;
+        mBitrateCtrler.CheckSkip = NULL;
+        mBitrateCtrler.UpdownLevel = NULL;
+        mBitrateCtrler.GetStatus = NULL;
+        mBitrateCtrler.SetTolerantBitrate = NULL;
+        mBitrateCtrler.DeInitBC = NULL;
+        mBitrateCtrler.bcLib = dlopen("/system/lib/libbrctrler.so", RTLD_LAZY);
+        if (mBitrateCtrler.bcLib == NULL)
+        {
+            ALOGE("[ERROR] dlopen failed, %s", dlerror());
+        }
+        else
+        {
+            mBitrateCtrler.InitBC = (int (*)(void **))dlsym(mBitrateCtrler.bcLib, "InitBC");
+            mBitrateCtrler.SetOneFrameBits = (int (*)(void *, int, bool))dlsym(mBitrateCtrler.bcLib, "SetOneFrameBits");
+            mBitrateCtrler.CheckSkip = (bool (*)(void *))dlsym(mBitrateCtrler.bcLib, "CheckSkip");
+            mBitrateCtrler.UpdownLevel = (int (*)(void*, int))dlsym(mBitrateCtrler.bcLib, "UpdownLevel");
+            mBitrateCtrler.GetStatus = (int (*)(void *, int))dlsym(mBitrateCtrler.bcLib, "GetStatus");
+            mBitrateCtrler.SetTolerantBitrate = (int (*)(void *, int))dlsym(mBitrateCtrler.bcLib, "SetTolerantBitrate");
+            mBitrateCtrler.DeInitBC = (int (*)(void *))dlsym(mBitrateCtrler.bcLib, "DeInitBC");
+
+            mBitrateCtrler.InitBC(&mBitrateCtrler.bcHandle);
+            int32_t video_bitrate=1;
+            mOutputFormat->findInt32("bitrate", &video_bitrate);
+            if (mBitrateCtrler.bcHandle != NULL)
+            {
+                mBitrateCtrler.SetTolerantBitrate(mBitrateCtrler.bcHandle, video_bitrate);
+            }
+
+        }
+    }
+    else
+    {
+        mBitrateCtrler.bcLib = NULL;
+    }
+
+
+
+}
+void  Converter::bcDeinit(){
+    if (mBitrateCtrler.bcLib != NULL)
+    {
+        if (mBitrateCtrler.bcHandle != NULL)
+        {
+          mBitrateCtrler.DeInitBC(mBitrateCtrler.bcHandle);
+        }
+        dlclose(mBitrateCtrler.bcLib);
+    }
+}
+
+void Converter::bcSetOneFrameBits(int bitSize, bool syncFrame){
+    if (mBitrateCtrler.bcLib != NULL && mBitrateCtrler.SetOneFrameBits != NULL)
+    {
+                mBitrateCtrler.SetOneFrameBits(mBitrateCtrler.bcHandle, bitSize ,syncFrame);
+
+    }
+}
+void Converter::bcCheckSkip(){
+    if (mBitrateCtrler.bcLib != NULL && mBitrateCtrler.CheckSkip != NULL)
+    {
+        if (mBitrateCtrler.CheckSkip(mBitrateCtrler.bcHandle))
+        {
+
+            sp<AMessage> params = new AMessage;
+            params->setInt32("encSkip", 1);
+            mEncoder->setParameters(params);
+
+        }
+    }
+}
+
+void Converter::bcUpdownLevel(int level){
+    if (mBitrateCtrler.bcLib != NULL && mBitrateCtrler.UpdownLevel != NULL)
+    {
+        mBitrateCtrler.UpdownLevel(mBitrateCtrler.bcHandle, level);
+    }
+}
+int Converter::bcGetStatus(int type){
+    return mBitrateCtrler.GetStatus(mBitrateCtrler.bcHandle, type);
+}
+void Converter::bcSetTolerantBitrate(int bitrate){
+        if (mBitrateCtrler.bcHandle != NULL)
+        {
+          mBitrateCtrler.SetTolerantBitrate(mBitrateCtrler.bcHandle, bitrate);
+        }
+}
+#endif
+#endif
 
 }  // namespace android

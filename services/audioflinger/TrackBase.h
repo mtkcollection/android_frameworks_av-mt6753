@@ -146,6 +146,11 @@ protected:
     track_state         mState;
     const uint32_t      mSampleRate;    // initial sample rate only; for tracks which
                         // support dynamic rates, the current value is in control block
+//<MTK_AUDIO_ADD
+    bool                mReset;
+    unsigned int        mTrackCount;
+//MTK_AUDIO_ADD>
+
     const audio_format_t mFormat;
     const audio_channel_mask_t mChannelMask;
     const uint32_t      mChannelCount;

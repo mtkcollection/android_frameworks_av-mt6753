@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2012 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -50,6 +55,17 @@ private:
             int64_t timeUs, const MediaBuffer *textBuffer, Parcel *parcel);
 
     DISALLOW_EVIL_CONSTRUCTORS(TimedText3GPPSource);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+public:
+    virtual status_t parse(
+            uint8_t* text,
+            size_t size,
+            int64_t startTimeUs,
+            int64_t endTimeUs,
+            Parcel *parcel);
+#endif
+
 };
 
 }  // namespace android

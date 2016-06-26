@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  **
  ** Copyright 2010, The Android Open Source Project.
  **
@@ -34,7 +39,23 @@ enum camcorder_quality {
     CAMCORDER_QUALITY_1080P = 6,
     CAMCORDER_QUALITY_QVGA = 7,
     CAMCORDER_QUALITY_2160P = 8,
+#if defined(MTK_AOSP_ENHANCEMENT) || defined(MTK_EMULATOR_SUPPORT)
+    CAMCORDER_QUALITY_MTK_LOW              = 108,
+    CAMCORDER_QUALITY_MTK_MEDIUM           = 109,
+    CAMCORDER_QUALITY_MTK_HIGH             = 110,
+    CAMCORDER_QUALITY_MTK_FINE             = 111,
+    CAMCORDER_QUALITY_MTK_NIGHT_LOW        = 112,
+    CAMCORDER_QUALITY_MTK_NIGHT_MEDIUM     = 113,
+    CAMCORDER_QUALITY_MTK_NIGHT_HIGH       = 114,
+    CAMCORDER_QUALITY_MTK_NIGHT_FINE       = 115,
+    CAMCORDER_QUALITY_MTK_LIVE_EFFECT      = 116,
+    CAMCORDER_QUALITY_MTK_H264_HIGH        = 117,
+    CAMCORDER_QUALITY_MTK_MPEG4_1080P      = 118,
+    CAMCORDER_QUALITY_MTK_FINE_4K2K        = 123,
+    CAMCORDER_QUALITY_LIST_END             = 123,
+#else//not ( MTK_AOSP_ENHANCEMENT || MTK_EMULATOR_SUPPORT)
     CAMCORDER_QUALITY_LIST_END = 8,
+#endif//MTK_AOSP_ENHANCEMENT || MTK_EMULATOR_SUPPORT
 
     CAMCORDER_QUALITY_TIME_LAPSE_LIST_START = 1000,
     CAMCORDER_QUALITY_TIME_LAPSE_LOW  = 1000,
@@ -46,7 +67,23 @@ enum camcorder_quality {
     CAMCORDER_QUALITY_TIME_LAPSE_1080P = 1006,
     CAMCORDER_QUALITY_TIME_LAPSE_QVGA = 1007,
     CAMCORDER_QUALITY_TIME_LAPSE_2160P = 1008,
+#if defined(MTK_AOSP_ENHANCEMENT) || defined(MTK_EMULATOR_SUPPORT)
+    CAMCORDER_QUALITY_MTK_TIME_LAPSE_LOW              = 1108,
+    CAMCORDER_QUALITY_MTK_TIME_LAPSE_MEDIUM           = 1109,
+    CAMCORDER_QUALITY_MTK_TIME_LAPSE_HIGH             = 1110,
+    CAMCORDER_QUALITY_MTK_TIME_LAPSE_FINE             = 1111,
+    CAMCORDER_QUALITY_MTK_TIME_LAPSE_NIGHT_LOW        = 1112,
+    CAMCORDER_QUALITY_MTK_TIME_LAPSE_NIGHT_MEDIUM     = 1113,
+    CAMCORDER_QUALITY_MTK_TIME_LAPSE_NIGHT_HIGH       = 1114,
+    CAMCORDER_QUALITY_MTK_TIME_LAPSE_NIGHT_FINE       = 1115,
+    CAMCORDER_QUALITY_MTK_TIME_LAPSE_LIVE_EFFECT      = 1116,
+    CAMCORDER_QUALITY_MTK_TIME_LAPSE_H264_HIGH        = 1117,
+    CAMCORDER_QUALITY_MTK_TIME_LAPSE_MPEG4_1080P      = 1118,
+    CAMCORDER_QUALITY_MTK_TIME_LAPSE_FINE_4K2K        = 1123,
+    CAMCORDER_QUALITY_TIME_LAPSE_LIST_END             = 1123,
+#else//not ( MTK_AOSP_ENHANCEMENT || MTK_EMULATOR_SUPPORT)
     CAMCORDER_QUALITY_TIME_LAPSE_LIST_END = 1008,
+#endif//MTK_AOSP_ENHANCEMENT || MTK_EMULATOR_SUPPORT
 
     CAMCORDER_QUALITY_HIGH_SPEED_LIST_START = 2000,
     CAMCORDER_QUALITY_HIGH_SPEED_LOW  = 2000,
@@ -55,8 +92,37 @@ enum camcorder_quality {
     CAMCORDER_QUALITY_HIGH_SPEED_720P = 2003,
     CAMCORDER_QUALITY_HIGH_SPEED_1080P = 2004,
     CAMCORDER_QUALITY_HIGH_SPEED_2160P = 2005,
+#if defined(MTK_AOSP_ENHANCEMENT) || defined(MTK_EMULATOR_SUPPORT)
+    CAMCORDER_QUALITY_MTK_SLOW_MOTION_LIST_START    = 2219,
+    CAMCORDER_QUALITY_MTK_SLOW_MOTION_LOW           = 2219,
+    CAMCORDER_QUALITY_MTK_SLOW_MOTION_MEDIUM        = 2220,
+    CAMCORDER_QUALITY_MTK_SLOW_MOTION_HIGH          = 2221,
+    CAMCORDER_QUALITY_MTK_SLOW_MOTION_FINE          = 2222,
+
+    CAMCORDER_QUALITY_MTK_VGA_120                   = 2231,
+    CAMCORDER_QUALITY_MTK_720P_60                   = 2240,
+    CAMCORDER_QUALITY_MTK_720P_120                  = 2241,
+    CAMCORDER_QUALITY_MTK_720P_180                  = 2242,
+    CAMCORDER_QUALITY_MTK_1080P_60                  = 2250,
+    CAMCORDER_QUALITY_MTK_1080P_120                 = 2251,
+    CAMCORDER_QUALITY_MTK_SLOW_MOTION_LIST_END      = 2251,
+    CAMCORDER_QUALITY_HIGH_SPEED_LIST_END           = 2251,
+#else//not ( MTK_AOSP_ENHANCEMENT || MTK_EMULATOR_SUPPORT)
     CAMCORDER_QUALITY_HIGH_SPEED_LIST_END = 2005,
+#endif//MTK_AOSP_ENHANCEMENT || MTK_EMULATOR_SUPPORT
 };
+
+#ifdef MTK_AOSP_ENHANCEMENT
+enum camcorder_mode {
+    CAMCORDER_DAY_MODE   = 1,
+    CAMCORDER_NIGHT_MODE = 2,
+};
+
+enum camera_id {
+    BACK_CAMERA  = 0,
+    FRONT_CAMERA = 1,
+};
+#endif//MTK_AOSP_ENHANCEMENT
 
 enum video_decoder {
     VIDEO_DECODER_WMV,
@@ -168,6 +234,12 @@ public:
      * If the given camera Id does not exist, -1 will be returned.
      */
     int getStartTimeOffsetMs(int cameraId) const;
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    String8 getCamcorderProfilesCaps(int id = 0);
+    size_t getCamcorderProfilesNum(int id = 0);
+    void dumpProfiles();
+#endif//MTK_AOSP_ENHANCEMENT
 
 private:
     enum {
@@ -379,7 +451,6 @@ private:
     static void createDefaultCamcorderTimeLapseHighProfiles(
             MediaProfiles::CamcorderProfile **highTimeLapseProfile,
             MediaProfiles::CamcorderProfile **highSpecificTimeLapseProfile);
-
     static void createDefaultCamcorderProfiles(MediaProfiles *profiles);
     static void createDefaultVideoEncoders(MediaProfiles *profiles);
     static void createDefaultAudioEncoders(MediaProfiles *profiles);
@@ -445,6 +516,39 @@ private:
 
     RequiredProfiles *mRequiredProfileRefs;
     Vector<int>              mCameraIds;
+#ifdef MTK_AOSP_ENHANCEMENT
+    static uint32_t eChipName;
+    static video_encoder eHighestCodec;
+    static uint32_t sMaxWdith;
+    static uint32_t sMaxHeight;
+    static uint32_t sMaxBitrate;
+    static uint32_t sMaxFramerate;
+    static uint32_t sMemoryIsLarge;
+    static uint32_t eChipVariant;
+    static VideoEncoderCap* createDefaultH264VideoEncoderCap();
+    static VideoEncoderCap* createDefaultHEVCVideoEncoderCap();
+
+    static void createMTKCamcorderProfiles(MediaProfiles *profiles);
+    //divide functions for createMTKCamcorderProfiles
+    static void createStandardCamcorderProfiles(MediaProfiles *profiles);
+    static void createMTKLegacyCamcorderProfiles(MediaProfiles *profiles);
+    static void createMTKSlowMotionCamcorderProfiles(MediaProfiles *profiles);
+
+    static CamcorderProfile *createMTKCamcorderProfile
+        (camcorder_quality quality, camcorder_mode CamMode, camera_id CamId);
+    //new version
+    //divide functions for createMTKCamcorderProfile
+    static VideoCodec *createMTKLowVideoProfile(camcorder_mode CamMode, camera_id CamId);
+    static VideoCodec *createMTKMediumVideoProfile(camcorder_mode CamMode, camera_id CamId);
+    static VideoCodec *createMTKHighVideoProfile(camcorder_mode CamMode, camera_id CamId);
+    static VideoCodec *createMTKFineVideoProfile(camcorder_mode CamMode, camera_id CamId);
+
+    //for dump camcorder profile detail
+    static const char *findNameForTag(const NameToTagMap *map, size_t nMappings, int tag, char *name);
+    //enhance xml
+    static MediaProfiles *sInstanceMtkDefault;
+    static void xmlEnhancement(MediaProfiles *xmlProfiles);
+#endif//MTK_AOSP_ENHANCEMENT
 };
 
 }; // namespace android

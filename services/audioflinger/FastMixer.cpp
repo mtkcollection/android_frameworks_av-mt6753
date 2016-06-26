@@ -41,6 +41,10 @@
 #include "AudioMixer.h"
 #include "FastMixer.h"
 
+#ifdef MTK_AUDIO
+#include <audio_utils/pulse.h>
+#endif
+
 #define FCC_2                       2   // fixed channel count assumption
 
 namespace android {
@@ -425,6 +429,11 @@ void FastMixer::onWork()
             memcpy_by_audio_format(buffer, mFormat.mFormat, mMixerBuffer, mMixerBufferFormat,
                     frameCount * Format_channelCount(mFormat));
         }
+
+#ifdef MTK_LATENCY_DETECT_PULSE
+        detectPulse(4, 800, 0, (void *)buffer, frameCount, mFormat.mFormat, mSinkChannelCount, mSampleRate);
+#endif
+
         // if non-NULL, then duplicate write() to this non-blocking sink
         NBAIO_Sink* teeSink;
         if ((teeSink = current->mTeeSink) != NULL) {

@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2011 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -51,6 +56,7 @@ SoftAMR::SoftAMR(
       mNumSamplesOutput(0),
       mSignalledError(false),
       mOutputPortSettingsChange(NONE) {
+
     if (!strcmp(name, "OMX.google.amrwb.decoder")) {
         mMode = MODE_WIDE;
     } else {
@@ -283,11 +289,17 @@ void SoftAMR::onQueueFilled(OMX_U32 /* portIndex */) {
     }
 
     while (!inQueue.empty() && !outQueue.empty()) {
+
+
         BufferInfo *inInfo = *inQueue.begin();
         OMX_BUFFERHEADERTYPE *inHeader = inInfo->mHeader;
 
         BufferInfo *outInfo = *outQueue.begin();
         OMX_BUFFERHEADERTYPE *outHeader = outInfo->mHeader;
+
+#ifdef MTK_AOSP_ENHANCEMENT
+        outHeader->nTimeStamp = 0;//for short amr file springback
+#endif
 
         if (inHeader->nFlags & OMX_BUFFERFLAG_EOS) {
             inQueue.erase(inQueue.begin());

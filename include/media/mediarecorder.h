@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  ** Copyright (C) 2008 The Android Open Source Project
  **
  ** Licensed under the Apache License, Version 2.0 (the "License");
@@ -74,6 +79,13 @@ enum output_format {
     /* VP8/VORBIS data in a WEBM container */
     OUTPUT_FORMAT_WEBM = 9,
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    //MTK80721 2011-01-21 HP's definition is conflicted with OUTPUT_FORMAT_MPEG2TS in stagefrightrecorder.cpp
+    OUTPUT_FORMAT_WAV = 101,
+    //MTK80721 2011-08-08 Ogg
+    OUTPUT_FORMAT_OGG = 102,
+#endif
+
     OUTPUT_FORMAT_LIST_END // must be last - used to validate format type
 };
 
@@ -86,6 +98,13 @@ enum audio_encoder {
     AUDIO_ENCODER_AAC_ELD = 5,
     AUDIO_ENCODER_VORBIS = 6,
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    AUDIO_ENCODER_PCM = 101,            //by HP Cheng
+    AUDIO_ENCODER_MS_ADPCM = 102,       //by HP Cheng
+    AUDIO_ENCODER_DVI_IMA_ADPCM = 103,
+
+#endif
+
     AUDIO_ENCODER_LIST_END // must be the last - used to validate the audio encoder type
 };
 
@@ -95,6 +114,13 @@ enum video_encoder {
     VIDEO_ENCODER_H264 = 2,
     VIDEO_ENCODER_MPEG_4_SP = 3,
     VIDEO_ENCODER_VP8 = 4,
+
+#ifdef MTK_AOSP_ENHANCEMENT
+//#ifdef MTK_VIDEO_HEVC_SUPPORT
+    VIDEO_ENCODER_CTS_DUMMY = 101,
+    VIDEO_ENCODER_HEVC = 102,
+//#endif
+#endif
 
     VIDEO_ENCODER_LIST_END // must be the last - used to validate the video encoder type
 };
@@ -196,7 +222,34 @@ enum media_recorder_info_type {
     MEDIA_RECORDER_TRACK_INFO_DATA_KBYTES          = 1009,
 
     MEDIA_RECORDER_TRACK_INFO_LIST_END             = 2000,
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    MEDIA_RECORDER_INFO_RECORDING_SIZE = 895,
+    MEDIA_RECORDER_INFO_SESSIONID = 896,
+    MEDIA_RECORDER_INFO_FPS_ADJUSTED               = 897,
+    MEDIA_RECORDER_INFO_BITRATE_ADJUSTED           = 898,
+    MEDIA_RECORDER_INFO_WRITE_SLOW                 = 899,
+    MEDIA_RECORDER_INFO_START_TIMER                = 1998,
+    MEDIA_RECORDER_INFO_CAMERA_RELEASE             = 1999,
+
+#endif
 };
+
+#ifdef MTK_AOSP_ENHANCEMENT
+/* add for mtk defined infos in mediarecorder.h.
+media recorder info flags, used to check if ap set the parameters,
+if set, then notify the mtk defined info messages.
+*/
+enum media_recorder_info_flag {
+    RECORDING_SIZE_FLAG        = 1,
+    SESSIONID_FLAG             = 1 << 1,
+    FPS_ADJUSTED_FLAG          = 1 << 2,
+    BITRATE_ADJUSTED_FLAG      = 1 << 3,
+    WRITE_SLOW_FLAG            = 1 << 4,
+    START_TIMER_FLAG           = 1 << 5,
+    CAMERA_RELEASE_FLAG        = 1 << 6,
+};
+#endif
 
 // ----------------------------------------------------------------------------
 // ref-counted object for callbacks
@@ -239,6 +292,10 @@ public:
     void        notify(int msg, int ext1, int ext2);
     status_t    setInputSurface(const sp<PersistentSurface>& surface);
     sp<IGraphicBufferProducer>     querySurfaceMediaSourceFromMediaServer();
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    status_t    setParametersExtra(const String8& params);
+#endif
 
 private:
     void                    doCleanUp();

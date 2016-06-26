@@ -20,7 +20,11 @@
 //#define LOG_NDEBUG 0
 #include <utils/Log.h>
 #include <utils/Timers.h>
+#ifdef MTK_AUDIO
+#include <hardware/audio_effect_mtk.h>
+#else
 #include <hardware/audio_effect.h>
+#endif
 #include <audio_effects/effect_aec.h>
 #include <audio_effects/effect_agc.h>
 #include <audio_effects/effect_ns.h>

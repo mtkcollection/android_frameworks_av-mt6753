@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,6 +22,7 @@
 //#define LOG_NDEBUG 0
 #define LOG_TAG "WAVExtractor"
 #include <utils/Log.h>
+
 
 #include "include/WAVExtractor.h"
 
@@ -40,6 +46,11 @@ enum {
     WAVE_FORMAT_MULAW      = 0x0007,
     WAVE_FORMAT_MSGSM      = 0x0031,
     WAVE_FORMAT_EXTENSIBLE = 0xFFFE
+#ifdef MTK_AOSP_ENHANCEMENT
+    ,
+    WAVE_FORMAT_MSADPCM    = 0x0002,
+    WAVE_FORMAT_DVI_IMAADCPM = 0x0011
+#endif
 };
 
 static const char* WAVEEXT_SUBFORMAT = "\x00\x00\x00\x00\x10\x00\x80\x00\x00\xAA\x00\x38\x9B\x71";
@@ -85,6 +96,10 @@ private:
     bool mStarted;
     MediaBufferGroup *mGroup;
     off64_t mCurrentPos;
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_AUDIO_ADPCM_SUPPORT)
+    int64_t mBlockDurationUs;
+    int32_t mBlockAlign;
+#endif
 
     WAVSource(const WAVSource &);
     WAVSource &operator=(const WAVSource &);
@@ -94,12 +109,27 @@ WAVExtractor::WAVExtractor(const sp<DataSource> &source)
     : mDataSource(source),
       mValidFormat(false),
       mChannelMask(CHANNEL_MASK_USE_CHANNEL_ORDER) {
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_AUDIO_ADPCM_SUPPORT)
+      mAvgBytesPerSec = 0;
+      mBlockAlign = 0;
+      mExtraDataSize = 0;
+      mpExtraData = NULL;
+      mSamplesPerBlock = 0;
+      mSamplesNumberPerChannel = 0;
+      mBlockDurationUs = 0;
+#endif
     mInitCheck = init();
 }
 
 WAVExtractor::~WAVExtractor() {
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_AUDIO_ADPCM_SUPPORT)
+    if(NULL != mpExtraData)
+    {
+        free(mpExtraData);
+        mpExtraData = NULL;
+    }
+#endif
 }
-
 sp<MetaData> WAVExtractor::getMetaData() {
     sp<MetaData> meta = new MetaData;
 
@@ -147,6 +177,13 @@ status_t WAVExtractor::init() {
     }
 
     size_t totalSize = U32_LE_AT(&header[4]);
+#ifdef MTK_AOSP_ENHANCEMENT
+    off64_t streamSize;
+    if ( (mDataSource->getSize(&streamSize) == OK) && (streamSize - 8 > (off64_t)totalSize) ) {
+        ALOGD("totalSize(%zu), streamSize(%llu)", totalSize, (unsigned long long)streamSize);
+        totalSize = streamSize - 8;
+    }
+#endif
 
     off64_t offset = 12;
     size_t remainingSize = totalSize;
@@ -180,6 +217,10 @@ status_t WAVExtractor::init() {
                     && mWaveFormat != WAVE_FORMAT_ALAW
                     && mWaveFormat != WAVE_FORMAT_MULAW
                     && mWaveFormat != WAVE_FORMAT_MSGSM
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_AUDIO_ADPCM_SUPPORT)
+                    && mWaveFormat != WAVE_FORMAT_MSADPCM
+                    && mWaveFormat != WAVE_FORMAT_DVI_IMAADCPM
+#endif
                     && mWaveFormat != WAVE_FORMAT_EXTENSIBLE) {
                 return ERROR_UNSUPPORTED;
             }
@@ -197,11 +238,22 @@ status_t WAVExtractor::init() {
                 if (mNumChannels != 1 && mNumChannels != 2) {
                     ALOGW("More than 2 channels (%d) in non-WAVE_EXT, unknown channel mask",
                             mNumChannels);
+#ifdef MTK_AOSP_ENHANCEMENT
+                    if(mNumChannels == 0){
+                        return ERROR_UNSUPPORTED;
+                    }
+#endif
                 }
             } else {
                 if (mNumChannels < 1 && mNumChannels > 8) {
                     return ERROR_UNSUPPORTED;
                 }
+#ifdef MTK_AOSP_ENHANCEMENT
+                if (mNumChannels < 1 || mNumChannels > 8) {
+                        ALOGW("channel count is %d", mNumChannels);
+                        return ERROR_UNSUPPORTED;
+                }
+#endif
             }
 
             mSampleRate = U32_LE_AT(&formatSpec[4]);
@@ -209,15 +261,42 @@ status_t WAVExtractor::init() {
             if (mSampleRate == 0) {
                 return ERROR_MALFORMED;
             }
+            ALOGD("mNumChannels is %d, mSampleRate is %u", mNumChannels, mSampleRate);
+#ifdef MTK_AOSP_ENHANCEMENT
+            mAvgBytesPerSec = U32_LE_AT(&formatSpec[8]);
+            if(mAvgBytesPerSec <= 0)
+            {
+                return ERROR_MALFORMED;
+            }
+
+            mBlockAlign = U16_LE_AT(&formatSpec[12]);
+            if(mBlockAlign <= 0)
+            {
+                return ERROR_MALFORMED;
+            }
+
+            if(mWaveFormat == WAVE_FORMAT_MSADPCM || mWaveFormat == WAVE_FORMAT_DVI_IMAADCPM || mWaveFormat == WAVE_FORMAT_MSGSM)
+                ALOGD("mBlockAlign is %u", mBlockAlign);
+#endif
 
             mBitsPerSample = U16_LE_AT(&formatSpec[14]);
 
             if (mWaveFormat == WAVE_FORMAT_PCM
                     || mWaveFormat == WAVE_FORMAT_EXTENSIBLE) {
                 if (mBitsPerSample != 8 && mBitsPerSample != 16
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_AUDIO_RAW_SUPPORT)
+                    && mBitsPerSample != 32
+#endif
                     && mBitsPerSample != 24) {
                     return ERROR_UNSUPPORTED;
                 }
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_AUDIO_ADPCM_SUPPORT)
+            } else if(mWaveFormat == WAVE_FORMAT_MSADPCM || mWaveFormat == WAVE_FORMAT_DVI_IMAADCPM) {
+                if(mBitsPerSample != 4)
+                {
+                    return ERROR_UNSUPPORTED;
+                }
+#endif
             } else if (mWaveFormat == WAVE_FORMAT_MSGSM) {
                 if (mBitsPerSample != 0) {
                     return ERROR_UNSUPPORTED;
@@ -230,12 +309,39 @@ status_t WAVExtractor::init() {
                 }
             }
 
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_AUDIO_ADPCM_SUPPORT)
+            if(mWaveFormat == WAVE_FORMAT_MSADPCM || mWaveFormat == WAVE_FORMAT_DVI_IMAADCPM)
+            {
+                uint8_t extraData[2];
+                if (mDataSource->readAt(offset+16, extraData, 2) < 2) {
+                    return NO_INIT;
+                }
+
+                mExtraDataSize = U16_LE_AT(extraData);
+                if (mExtraDataSize < 2) {
+                    return ERROR_MALFORMED;
+                }
+
+                mpExtraData = (uint8_t*)malloc(mExtraDataSize);
+                if (NULL == mpExtraData) {
+                    ALOGE("ADPCM malloc extraDataSize failed !!!");
+                    return ERROR_IO;
+                } else {
+                    ALOGD("ADPCM mExtraDataSize is %u", mExtraDataSize);
+                    uint32_t n = mDataSource->readAt(offset+18, mpExtraData, mExtraDataSize);
+                    if (n < mExtraDataSize) {
+                        return ERROR_MALFORMED;
+                    }
+                }
+                mSamplesPerBlock = U16_LE_AT(mpExtraData);
+            }
+#endif
             if (mWaveFormat == WAVE_FORMAT_EXTENSIBLE) {
                 uint16_t validBitsPerSample = U16_LE_AT(&formatSpec[18]);
                 if (validBitsPerSample != mBitsPerSample) {
                     if (validBitsPerSample != 0) {
                         ALOGE("validBits(%d) != bitsPerSample(%d) are not supported",
-                                validBitsPerSample, mBitsPerSample);
+                                       validBitsPerSample, mBitsPerSample);
                         return ERROR_UNSUPPORTED;
                     } else {
                         // we only support valitBitsPerSample == bitsPerSample but some WAV_EXT
@@ -262,6 +368,13 @@ status_t WAVExtractor::init() {
                 // the sample format, using the same definitions as a regular WAV header
                 mWaveFormat = U16_LE_AT(&formatSpec[24]);
                 if (mWaveFormat != WAVE_FORMAT_PCM
+#ifdef MTK_AOSP_ENHANCEMENT
+#ifdef MTK_AUDIO_ADPCM_SUPPORT
+                        && mWaveFormat != WAVE_FORMAT_MSADPCM
+                        && mWaveFormat != WAVE_FORMAT_DVI_IMAADCPM
+#endif
+                        && mWaveFormat != WAVE_FORMAT_MSGSM
+#endif
                         && mWaveFormat != WAVE_FORMAT_ALAW
                         && mWaveFormat != WAVE_FORMAT_MULAW) {
                     return ERROR_UNSUPPORTED;
@@ -273,11 +386,32 @@ status_t WAVExtractor::init() {
             }
 
             mValidFormat = true;
+#ifdef MTK_AOSP_ENHANCEMENT
+        }else if(!memcmp(chunkHeader, "fact", 4)){
+            if (chunkSize != 4) {
+                ALOGD("fact chunk size is invailed, chunkSize is %u !!!", chunkSize);
+            }
+            uint8_t factChunkData[4];
+            mDataSource->readAt(offset, factChunkData, 4);
+
+            mSamplesNumberPerChannel = U32_LE_AT(factChunkData);
+            ALOGD("fact chunk ChannelCount is %d, SamplesNumberPerChannel is %u, SamplesPerBlock is %u",
+                            mNumChannels, mSamplesNumberPerChannel, mSamplesPerBlock);
+#endif
         } else if (!memcmp(chunkHeader, "data", 4)) {
             if (mValidFormat) {
                 mDataOffset = offset;
                 mDataSize = chunkSize;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+                off64_t streamSize;
+                if (mDataSource->getSize(&streamSize) == OK) {
+                    off64_t n = mDataSize + mDataOffset;
+                    if (n > streamSize) {
+                        mDataSize = streamSize - mDataOffset;
+                    }
+                }
+#endif
                 mTrackMeta = new MetaData;
 
                 switch (mWaveFormat) {
@@ -293,6 +427,16 @@ status_t WAVExtractor::init() {
                         mTrackMeta->setCString(
                                 kKeyMIMEType, MEDIA_MIMETYPE_AUDIO_MSGSM);
                         break;
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_AUDIO_ADPCM_SUPPORT)
+                    case WAVE_FORMAT_MSADPCM:
+                        mTrackMeta->setCString(
+                                kKeyMIMEType, MEDIA_MIMETYPE_AUDIO_MS_ADPCM);
+                        break;
+                    case WAVE_FORMAT_DVI_IMAADCPM:
+                        mTrackMeta->setCString(
+                                kKeyMIMEType, MEDIA_MIMETYPE_AUDIO_DVI_IMA_ADPCM);
+                        break;
+#endif
                     default:
                         CHECK_EQ(mWaveFormat, (uint16_t)WAVE_FORMAT_MULAW);
                         mTrackMeta->setCString(
@@ -303,12 +447,41 @@ status_t WAVExtractor::init() {
                 mTrackMeta->setInt32(kKeyChannelCount, mNumChannels);
                 mTrackMeta->setInt32(kKeyChannelMask, mChannelMask);
                 mTrackMeta->setInt32(kKeySampleRate, mSampleRate);
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_AUDIO_ADPCM_SUPPORT)
+                ALOGV("set value for metaData !!!");
+                mTrackMeta->setInt32(kKeyBlockAlign, mBlockAlign);
+                mTrackMeta->setInt32(kKeyBitsPerSample, (uint32_t)mBitsPerSample);
+                if (NULL != mpExtraData) {
+                    mTrackMeta->setData(kKeyExtraDataPointer, 0, mpExtraData, mExtraDataSize);
+                } else {
+                    ALOGV("mpExtraData pointer is NULL !!!");
+                }
+#endif
 
                 int64_t durationUs = 0;
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_AUDIO_ADPCM_SUPPORT)
+                ALOGV("set duration value for metaData !!!");
+                if(mWaveFormat == WAVE_FORMAT_MSADPCM || mWaveFormat == WAVE_FORMAT_DVI_IMAADCPM)
+                {
+                    ALOGV("mSamplesPerBlock %u, mSampleRate %u, mDataSize %zu, mBlockAlign %u",
+                                   mSamplesPerBlock, mSampleRate, mDataSize, mBlockAlign);
+                    mBlockDurationUs = 1000000LL * mSamplesPerBlock / mSampleRate;
+                    durationUs = (mDataSize / mBlockAlign) * mBlockDurationUs;
+                    ALOGV("mBlockDurationUs is %.2f secs, durationUs is %.2f secs",
+                                   mBlockDurationUs / 1E6, durationUs / 1E6);
+                }
+                else
+#endif
                 if (mWaveFormat == WAVE_FORMAT_MSGSM) {
+#ifdef  MTK_AOSP_ENHANCEMENT
+                    // Use the right sampleRate, not 8000;
+                    durationUs =
+                        1000000LL * (mDataSize / 65 * 320) / mSampleRate;
+#else
                     // 65 bytes decode to 320 8kHz samples
                     durationUs =
                         1000000LL * (mDataSize / 65 * 320) / 8000;
+#endif
                 } else {
                     size_t bytesPerSample = mBitsPerSample >> 3;
                     durationUs =
@@ -317,7 +490,19 @@ status_t WAVExtractor::init() {
                 }
 
                 mTrackMeta->setInt64(kKeyDuration, durationUs);
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_AUDIO_ADPCM_SUPPORT)
+                mTrackMeta->setInt64(kKeyBlockDurationUs, mBlockDurationUs);
+#endif
 
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_AUDIO_RAW_SUPPORT)
+                mTrackMeta->setInt32(kKeyEndian, 2);               //little
+                mTrackMeta->setInt32(kKeyBitWidth, mBitsPerSample);
+                mTrackMeta->setInt32(kKeyPCMType, 1);              //pcm_wave
+                if(mBitsPerSample == 8)
+                    mTrackMeta->setInt32(kKeyNumericalType, 2);        //unsigned
+                else
+                    mTrackMeta->setInt32(kKeyNumericalType, 1);        //signed
+#endif
                 return OK;
             }
         }
@@ -346,10 +531,26 @@ WAVSource::WAVSource(
       mSize(size),
       mStarted(false),
       mGroup(NULL) {
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_AUDIO_ADPCM_SUPPORT)
+    mBlockDurationUs = 0;
+    mBlockAlign = 0;
+#endif
+    ALOGV("mSize is %zu", mSize);
     CHECK(mMeta->findInt32(kKeySampleRate, &mSampleRate));
     CHECK(mMeta->findInt32(kKeyChannelCount, &mNumChannels));
 
     mMeta->setInt32(kKeyMaxInputSize, kMaxFrameSize);
+
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_AUDIO_ADPCM_SUPPORT)
+    CHECK(mMeta->findInt64(kKeyBlockDurationUs, &mBlockDurationUs));
+    CHECK(mMeta->findInt32(kKeyBlockAlign, &mBlockAlign));
+    ALOGV("mSize is %zu, mBlockDurationUs %lld, mBlockAlign %d",
+                    mSize, (long long)mBlockDurationUs, mBlockAlign);
+    if(mWaveFormat == WAVE_FORMAT_MSADPCM || mWaveFormat == WAVE_FORMAT_DVI_IMAADCPM)
+    {
+        mMeta->setInt32(kKeyMaxInputSize, kMaxFrameSize / 4);
+    }
+#endif
 }
 
 WAVSource::~WAVSource() {
@@ -406,6 +607,17 @@ status_t WAVSource::read(
     if (options != NULL && options->getSeekTo(&seekTimeUs, &mode)) {
         int64_t pos = 0;
 
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_AUDIO_ADPCM_SUPPORT)
+        if(mWaveFormat == WAVE_FORMAT_MSADPCM || mWaveFormat == WAVE_FORMAT_DVI_IMAADCPM)
+        {
+            pos = (seekTimeUs - (int64_t)(mBlockDurationUs >> 1)) / mBlockDurationUs * mBlockAlign;
+            if (pos < 0)
+                pos = 0;
+            ALOGD("ADPCM seekTimeUs is %.2f secs", seekTimeUs / 1E6);
+            ALOGD("ADPCM mOffset %llu, pos %lld", (unsigned long long)mOffset, (long long)pos);
+        }
+        else
+#endif
         if (mWaveFormat == WAVE_FORMAT_MSGSM) {
             // 65 bytes decode to 320 8kHz samples
             int64_t samplenumber = (seekTimeUs * mSampleRate) / 1000000;
@@ -425,18 +637,39 @@ status_t WAVSource::read(
     if (err != OK) {
         return err;
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+    size_t maxBytesToRead = mSampleRate / 50 * mNumChannels;   //20ms
+
+    maxBytesToRead =
+        mBitsPerSample == 8 ? maxBytesToRead / 2 :
+        (mBitsPerSample == 24 ? 3*(maxBytesToRead/3): maxBytesToRead);
+
+#ifdef MTK_AUDIO_ADPCM_SUPPORT
+    if(mWaveFormat == WAVE_FORMAT_MSADPCM || mWaveFormat == WAVE_FORMAT_DVI_IMAADCPM)
+    {
+        maxBytesToRead = (kMaxFrameSize / 4 / mBlockAlign) * mBlockAlign; // divide 4 to decrease component output buffer size
+    }
+#endif
+#else
 
     // make sure that maxBytesToRead is multiple of 3, in 24-bit case
     size_t maxBytesToRead =
         mBitsPerSample == 8 ? kMaxFrameSize / 2 : 
         (mBitsPerSample == 24 ? 3*(kMaxFrameSize/3): kMaxFrameSize);
-
+#endif
     size_t maxBytesAvailable =
         (mCurrentPos - mOffset >= (off64_t)mSize)
             ? 0 : mSize - (mCurrentPos - mOffset);
 
+
     if (maxBytesToRead > maxBytesAvailable) {
         maxBytesToRead = maxBytesAvailable;
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_AUDIO_ADPCM_SUPPORT)
+        if(mWaveFormat == WAVE_FORMAT_MSADPCM || mWaveFormat == WAVE_FORMAT_DVI_IMAADCPM)
+        {
+            maxBytesToRead = (maxBytesToRead / mBlockAlign) * mBlockAlign;
+        }
+#endif
     }
 
     if (mWaveFormat == WAVE_FORMAT_MSGSM) {
@@ -449,8 +682,16 @@ status_t WAVSource::read(
     } else {
         // read only integral amounts of audio unit frames.
         const size_t inputUnitFrameSize = mNumChannels * mBitsPerSample / 8;
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (inputUnitFrameSize != 0)
+        {
+#endif
         maxBytesToRead -= maxBytesToRead % inputUnitFrameSize;
+#ifdef MTK_AOSP_ENHANCEMENT
+        }
+#endif
     }
+    ALOGD("maxBytesToRead is %zu", maxBytesToRead);
 
     ssize_t n = mDataSource->readAt(
             mCurrentPos, buffer->data(),
@@ -465,6 +706,9 @@ status_t WAVSource::read(
 
     buffer->set_range(0, n);
 
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_AUDIO_RAW_SUPPORT)
+    ALOGV("PCM Data pass PCM Component !");
+#else
     if (mWaveFormat == WAVE_FORMAT_PCM || mWaveFormat == WAVE_FORMAT_EXTENSIBLE) {
         if (mBitsPerSample == 8) {
             // Convert 8-bit unsigned samples to 16-bit signed.
@@ -507,18 +751,32 @@ status_t WAVSource::read(
             buffer->set_range(buffer->range_offset(), 2 * numSamples);
         }
     }
+#endif
 
-    int64_t timeStampUs = 0;
-
-    if (mWaveFormat == WAVE_FORMAT_MSGSM) {
-        timeStampUs = 1000000LL * (mCurrentPos - mOffset) * 320 / 65 / mSampleRate;
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_AUDIO_ADPCM_SUPPORT)
+    if (mWaveFormat == WAVE_FORMAT_MSADPCM
+       || mWaveFormat == WAVE_FORMAT_DVI_IMAADCPM) {
+        ALOGV("ADPCM timestamp of this buffer, mBlockAlign is %d, mBlockDurationUs is %lld +++",
+                       mBlockAlign,  (long long)mBlockDurationUs);
+        int64_t keyTimeUs = ((mCurrentPos - mOffset) / mBlockAlign) * mBlockDurationUs;
+        buffer->meta_data()->setInt64(kKeyTime, keyTimeUs);
+        ALOGV("ADPCM timestamp of this buffer is %.2f secs, buffer length is %zd", keyTimeUs / 1E6, n);
     } else {
-        size_t bytesPerSample = mBitsPerSample >> 3;
-        timeStampUs = 1000000LL * (mCurrentPos - mOffset)
-                / (mNumChannels * bytesPerSample) / mSampleRate;
-    }
+#endif
+        int64_t timeStampUs = 0;
 
-    buffer->meta_data()->setInt64(kKeyTime, timeStampUs);
+        if (mWaveFormat == WAVE_FORMAT_MSGSM) {
+            timeStampUs = 1000000LL * (mCurrentPos - mOffset) * 320 / 65 / mSampleRate;
+        } else {
+            size_t bytesPerSample = mBitsPerSample >> 3;
+            timeStampUs = 1000000LL * (mCurrentPos - mOffset)
+                                     / (mNumChannels * bytesPerSample) / mSampleRate;
+        }
+
+        buffer->meta_data()->setInt64(kKeyTime, timeStampUs);
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_AUDIO_ADPCM_SUPPORT)
+    }
+#endif
 
     buffer->meta_data()->setInt32(kKeyIsSyncFrame, 1);
     mCurrentPos += n;

@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2012 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -27,6 +32,10 @@ enum {
     ON_DISPLAY_CONNECTED = IBinder::FIRST_CALL_TRANSACTION,
     ON_DISPLAY_DISCONNECTED,
     ON_DISPLAY_ERROR,
+#ifdef MTK_AOSP_ENHANCEMENT
+    ON_DISPLAY_KEY_EVENT,
+    ON_DISPLAY_RTSPGENERIC_EVENT,
+#endif
 };
 
 class BpRemoteDisplayClient: public BpInterface<IRemoteDisplayClient>
@@ -64,6 +73,24 @@ public:
         data.writeInt32(error);
         remote()->transact(ON_DISPLAY_ERROR, data, &reply, IBinder::FLAG_ONEWAY);
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+    void onDisplayKeyEvent(uint32_t uniCode, uint32_t flags){
+        Parcel data, reply;
+        data.writeInterfaceToken(IRemoteDisplayClient::getInterfaceDescriptor());
+        data.writeInt32(uniCode);
+        data.writeInt32(flags);
+        remote()->transact(ON_DISPLAY_KEY_EVENT, data, &reply, IBinder::FLAG_ONEWAY);
+    }
+
+    void onDisplayGenericMsgEvent(uint32_t event){
+        Parcel data, reply;
+        data.writeInterfaceToken(IRemoteDisplayClient::getInterfaceDescriptor());
+        data.writeInt32(event);
+        remote()->transact(ON_DISPLAY_RTSPGENERIC_EVENT, data, &reply, IBinder::FLAG_ONEWAY);
+    }
+
+#endif
+
 };
 
 IMPLEMENT_META_INTERFACE(RemoteDisplayClient, "android.media.IRemoteDisplayClient");
@@ -96,6 +123,21 @@ status_t BnRemoteDisplayClient::onTransact(
             onDisplayError(error);
             return NO_ERROR;
         }
+#ifdef MTK_AOSP_ENHANCEMENT
+        case ON_DISPLAY_KEY_EVENT: {
+            CHECK_INTERFACE(IRemoteDisplayClient, data, reply);
+            uint32_t uniCode = data.readInt32();
+            uint32_t flags = data.readInt32();
+            onDisplayKeyEvent(uniCode, flags);
+            return NO_ERROR;
+        }
+        case ON_DISPLAY_RTSPGENERIC_EVENT: {
+            CHECK_INTERFACE(IRemoteDisplayClient, data, reply);
+            uint32_t event = data.readInt32();
+            onDisplayGenericMsgEvent(event);
+            return NO_ERROR;
+        }
+#endif
         default:
             return BBinder::onTransact(code, data, reply, flags);
     }

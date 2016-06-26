@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
 **
 ** Copyright 2012, The Android Open Source Project
 **
@@ -38,6 +43,12 @@
 #include <media/nbaio/PipeReader.h>
 #include <audio_utils/minifloat.h>
 
+#ifdef MTK_AUDIO
+#include "AudioUtilmtk.h"
+#endif
+#ifdef DOLBY_UDC
+#include <media/AudioParameter.h>
+#endif // DOLBY_UDC
 // ----------------------------------------------------------------------------
 
 // Note: the following macro is used for extremely verbose logging message.  In
@@ -54,6 +65,15 @@
 #endif
 
 namespace android {
+
+#ifdef MTK_AUDIO
+    static   unsigned int mAllTrackCount = 0;
+#ifdef DEBUG_AUDIO_PCM
+//add by weiguo to dump pcm data
+    static   const char * gaf_track_pcm = "/sdcard/mtklog/audio_dump/af_track_pcm";
+    static   const char * gaf_track_propty = "af.track.pcm";
+#endif
+#endif
 
 // ----------------------------------------------------------------------------
 //      TrackBase
@@ -82,6 +102,10 @@ AudioFlinger::ThreadBase::TrackBase::TrackBase(
         mCblk(NULL),
         // mBuffer
         mState(IDLE),
+#ifdef MTK_AUDIO
+        mReset(false),
+        mTrackCount(mAllTrackCount++),
+#endif
         mSampleRate(sampleRate),
         mFormat(format),
         mChannelMask(channelMask),
@@ -202,6 +226,11 @@ AudioFlinger::ThreadBase::TrackBase::TrackBase(
 #endif
 
     }
+
+#ifdef MTK_AUDIO
+    ALOGD("track(%p): mIsOut %d, mFrameCount %d, mSampleRate %d, mFormat %d, mChannelCount %d, mTrackCount(%d)",
+        this, mIsOut, mFrameCount, mSampleRate, mFormat, mChannelCount, mTrackCount );
+#endif
 }
 
 status_t AudioFlinger::ThreadBase::TrackBase::initCheck() const
@@ -251,6 +280,19 @@ void AudioFlinger::ThreadBase::TrackBase::releaseBuffer(AudioBufferProvider::Buf
     if (mTeeSink != 0) {
         (void) mTeeSink->write(buffer->raw, buffer->frameCount);
     }
+#endif
+#ifdef MTK_AUDIO
+#ifdef DEBUG_AUDIO_PCM
+    if(!mIsOut){
+
+        const int SIZE = 256;
+        char fileName[SIZE];
+        sprintf(fileName,"%s_%p_in_%d.pcm",gaf_track_pcm,this, mTrackCount);
+        //AudioDump::dump(fileName,buffer->raw,buffer->frameCount*mFrameSize,gaf_track_propty);
+        AudioDump::threadDump(fileName,buffer->raw,buffer->frameCount*mFrameSize,gaf_track_propty,
+                mFormat, mSampleRate, mChannelCount);
+        }
+#endif
 #endif
 
     ServerProxy::Buffer buf;
@@ -432,10 +474,7 @@ AudioFlinger::PlaybackThread::Track::Track(
     }
     // only allocate a fast track index if we were able to allocate a normal track name
     if (flags & IAudioFlinger::TRACK_FAST) {
-        // FIXME: Not calling framesReadyIsCalledByMultipleThreads() exposes a potential
-        // race with setSyncEvent(). However, if we call it, we cannot properly start
-        // static fast tracks (SoundPool) immediately after stopping.
-        //mAudioTrackServerProxy->framesReadyIsCalledByMultipleThreads();
+        mAudioTrackServerProxy->framesReadyIsCalledByMultipleThreads();
         ALOG_ASSERT(thread->mFastTrackAvailMask != 0);
         int i = __builtin_ctz(thread->mFastTrackAvailMask);
         ALOG_ASSERT(0 < i && i < (int)FastMixerState::kMaxFastTracks);
@@ -492,6 +531,10 @@ void AudioFlinger::PlaybackThread::Track::destroy()
         if (isExternalTrack() && !wasActive) {
             AudioSystem::releaseOutput(mThreadIoHandle, mStreamType, (audio_session_t)mSessionId);
         }
+#ifdef DOLBY_UDC
+        // Notify effect DAP controller that processed audio is no longer available
+        EffectDapController::instance()->setProcessedAudioState(mId, false);
+#endif // DOLBY_END
     }
 }
 
@@ -603,6 +646,28 @@ status_t AudioFlinger::PlaybackThread::Track::getNextBuffer(
     if (buf.mFrameCount == 0) {
         mAudioTrackServerProxy->tallyUnderrunFrames(desiredFrames);
     }
+
+#ifdef MTK_AUDIO
+    if(NULL == buffer->raw)
+    {
+        ALOGE("%s, get null buffer", __FUNCTION__);
+    }
+
+#ifdef DEBUG_AUDIO_PCM
+    else{
+        if(mIsOut){
+
+            const int SIZE = 256;
+            char fileName[SIZE];
+            sprintf(fileName,"%s_%p_out_%d.pcm",gaf_track_pcm,this, mTrackCount);
+            //AudioDump::dump(fileName,buffer->raw,buffer->frameCount*mFrameSize,gaf_track_propty);
+            AudioDump::threadDump(fileName,buffer->raw,buffer->frameCount*mFrameSize,gaf_track_propty,
+                    mFormat, mSampleRate, mChannelCount);
+            }
+    }
+#endif
+#endif
+
     return status;
 }
 
@@ -677,6 +742,8 @@ status_t AudioFlinger::PlaybackThread::Track::start(AudioSystem::sync_event_t ev
         // initial state-stopping. next state-pausing.
         // What if resume is called ?
 
+        ALOGV("%s mState %d", __FUNCTION__, mState);
+
         if (state == PAUSED || state == PAUSING) {
             if (mResumeToStopping) {
                 // happened we need to resume to STOPPING_1
@@ -686,6 +753,10 @@ status_t AudioFlinger::PlaybackThread::Track::start(AudioSystem::sync_event_t ev
                 mState = TrackBase::RESUMING;
                 ALOGV("PAUSED => RESUMING (%d) on thread %p", mName, this);
             }
+#ifdef MTK_AUDIO
+        } else if(state == FLUSHED || state == IDLE) {
+            mState = TrackBase::RESUMING;
+#endif
         } else {
             mState = TrackBase::ACTIVE;
             ALOGV("? => ACTIVE (%d) on thread %p", mName, this);
@@ -708,6 +779,14 @@ status_t AudioFlinger::PlaybackThread::Track::start(AudioSystem::sync_event_t ev
         }
         // track was already in the active list, not a problem
         if (status == ALREADY_EXISTS) {
+            #ifdef MTK_AUDIO
+            if (mStreamType == AUDIO_STREAM_ENFORCED_AUDIBLE ){
+                ALOGD("enforc flush Shuttle sound ");
+                ServerProxy::Buffer buffer;
+                buffer.mFrameCount = 1;
+                (void) mAudioTrackServerProxy->obtainBuffer(&buffer, true /*ackFlush*/);
+                }
+            #endif
             status = NO_ERROR;
         } else {
             // Acknowledge any pending flush(), so that subsequent new data isn't discarded.
@@ -715,7 +794,6 @@ status_t AudioFlinger::PlaybackThread::Track::start(AudioSystem::sync_event_t ev
             // But in this case we know the mixer thread (whether normal mixer or fast mixer)
             // isn't looking at this track yet:  we still hold the normal mixer thread lock,
             // and for fast tracks the track is not yet in the fast mixer thread's active set.
-            // For static tracks, this is used to acknowledge change in position or loop.
             ServerProxy::Buffer buffer;
             buffer.mFrameCount = 1;
             (void) mAudioTrackServerProxy->obtainBuffer(&buffer, true /*ackFlush*/);
@@ -784,6 +862,20 @@ void AudioFlinger::PlaybackThread::Track::pause()
             break;
         }
     }
+
+#ifdef MTK_AUDIO
+    if (thread != 0) {
+        if (PAUSING == mState) {
+            //ALOGD("pause wait +");
+            Mutex::Autolock _l(mPauseCondLock);
+            mPauseFlag = true;
+            mPauseFlagCanRelease = false;
+            mPauseCond.waitRelative(mPauseCondLock, 100000000LL);   // timeout : 100ms
+            mPauseFlag = false;
+            //ALOGD("pause wait -");
+        }
+    }
+#endif
 }
 
 void AudioFlinger::PlaybackThread::Track::flush()
@@ -842,6 +934,15 @@ void AudioFlinger::PlaybackThread::Track::flush()
         // because the hardware buffer could hold a large amount of audio
         playbackThread->broadcast_l();
     }
+
+#ifdef MTK_AUDIO
+    if (thread != 0) {
+        char buf[10];
+        snprintf(buf, 10, "%d", mName);
+        thread->setParameters(String8("FlushShareBuffer=")+String8(buf));
+    }
+    mReset = true;
+#endif
 }
 
 // must be called with thread lock held
@@ -878,28 +979,44 @@ status_t AudioFlinger::PlaybackThread::Track::setParameters(const String8& keyVa
     } else if ((thread->type() == ThreadBase::DIRECT) ||
                     (thread->type() == ThreadBase::OFFLOAD)) {
         return thread->setParameters(keyValuePairs);
+    #ifdef TIME_STRETCH_ENABLE
+    }else if(thread->type() == ThreadBase::MIXER){
+          return   thread->setTimestretch(keyValuePairs,mName);
+        }
+    else
+        {
+            return PERMISSION_DENIED;
+        }
+    #else
     } else {
         return PERMISSION_DENIED;
     }
+    #endif
 }
 
 status_t AudioFlinger::PlaybackThread::Track::getTimestamp(AudioTimestamp& timestamp)
 {
     // Client should implement this using SSQ; the unpresented frame count in latch is irrelevant
     if (isFastTrack()) {
+        ALOGD("INVALID_OPERATION: isFastTrack == true");
         return INVALID_OPERATION;
     }
     sp<ThreadBase> thread = mThread.promote();
     if (thread == 0) {
+        ALOGD("INVALID_OPERATION: thread == 0");
         return INVALID_OPERATION;
     }
 
     Mutex::Autolock _l(thread->mLock);
+#if 0 //def MTK_AUDIO    //ship fix for gettimestamp
+    Mutex::Autolock _l2(thread->mMixLock);
+#endif
     PlaybackThread *playbackThread = (PlaybackThread *)thread.get();
 
     status_t result = INVALID_OPERATION;
     if (!isOffloaded() && !isDirect()) {
         if (!playbackThread->mLatchQValid) {
+            ALOGD("INVALID_OPERATION: mLatchQValid == false");
             return INVALID_OPERATION;
         }
         // FIXME Not accurate under dynamic changes of sample rate and speed.
@@ -926,7 +1043,8 @@ status_t AudioFlinger::PlaybackThread::Track::getTimestamp(AudioTimestamp& times
     } else { // offloaded or direct
         result = playbackThread->getTimestamp_l(timestamp);
     }
-
+    ALOGV("getTimestamp: timestamp: mPosition, mTime, %u, %ld.%03d",
+            timestamp.mPosition, timestamp.mTime.tv_sec, (int) timestamp.mTime.tv_nsec / 1000000);
     return result;
 }
 
@@ -1116,6 +1234,24 @@ void AudioFlinger::PlaybackThread::Track::resumeAck() {
         mResumeToStopping = false;
     }
 }
+
+void AudioFlinger::PlaybackThread::Track::releaseBuffer(AudioBufferProvider::Buffer* buffer)
+{
+    TrackBase::releaseBuffer(buffer);
+#ifdef MTK_AUDIO
+    {
+        Mutex::Autolock _l(mPauseCondLock);
+        if(mPauseFlag && mPauseFlagCanRelease)
+        {
+            mPauseFlag = false;
+            mPauseFlagCanRelease = false;
+            mPauseCond.signal();
+            ALOGD("pause signal - released");
+        }
+    }
+#endif
+}
+
 // ----------------------------------------------------------------------------
 
 sp<AudioFlinger::PlaybackThread::TimedTrack>

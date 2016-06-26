@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -56,7 +61,6 @@ status_t getNextNALUnit(
 
 class MetaData;
 sp<MetaData> MakeAVCCodecSpecificData(const sp<ABuffer> &accessUnit);
-
 bool IsIDR(const sp<ABuffer> &accessUnit);
 bool IsAVCReferenceFrame(const sp<ABuffer> &accessUnit);
 
@@ -76,6 +80,54 @@ bool GetMPEGAudioFrameSize(
         int *out_sampling_rate = NULL, int *out_channels = NULL,
         int *out_bitrate = NULL, int *out_num_samples = NULL);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+void MakeAVCCodecSpecificData2(const sp<ABuffer> &accessUnit, sp<MetaData> meta);
+struct MPEG4Info {
+    int progressive;
+    int cpcf;
+};
+int findVOLHeader(const uint8_t *start, int length);
+int decodeVOLHeader(const uint8_t *vol, size_t size, struct MPEG4Info* s);
+int decodeShortHeader(const uint8_t *vol, size_t size, struct MPEG4Info* s);
+#if 0  // def MTK_S3D_SUPPORT
+status_t ParseSpecificSEI(const uint8_t* sei, uint32_t size, struct SEIInfo *s);
+#endif
+
+// add support for HEVC Codec Config data ++
+
+enum {
+    kHEVCProfileMain                = 0x01,
+    kHEVCProfileMain10              = 0x02,
+    kHEVCProfileMainStillPicture    = 0x03,
+};
+const char *HEVCProfileToString(uint8_t profile);
+
+void FindHEVCDimensions(
+        const sp<ABuffer> &seqParamSet, int32_t *width, int32_t *height);
+/* no use now, keep code
+static sp<ABuffer> FindHEVCNAL(
+        const uint8_t *data, size_t size, unsigned nalType,
+        size_t *stopOffset); */
+
+sp<MetaData> MakeHEVCCodecSpecificData(const sp<ABuffer> &accessUnit);
+// add support for HEVC Codec Config data --
+
+sp<ABuffer> MakeESDS(const sp<ABuffer> &csd);
+void EncodeSize14_1(uint8_t **_ptr, size_t size);
+// is equal to EncodeSize14() before
+
+bool ExtractDimensionsFromVOLHeader_Mtk(
+        const uint8_t *data, size_t size, int32_t *width, int32_t *height);
+struct SPSInfo {
+    int32_t width;
+    int32_t height;
+    uint32_t profile;
+    uint32_t level;
+};
+signed parseSE(ABitReader *br);
+status_t FindAVCSPSInfo(
+        uint8_t *seqParamSet, size_t size, struct SPSInfo *pSPSInfo);
+#endif  // #ifdef MTK_AOSP_ENHANCEMENT
 }  // namespace android
 
 #endif  // AVC_UTILS_H_

@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2011 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,7 +22,9 @@
 #include "TextDescriptions.h"
 #include <media/stagefright/Utils.h>
 #include <media/stagefright/MediaErrors.h>
-
+#ifndef UNUSED
+#define UNUSED(a) (void)&a
+#endif
 namespace android {
 
 TextDescriptions::TextDescriptions() {
@@ -28,6 +35,43 @@ status_t TextDescriptions::getParcelOfDescriptions(
         uint32_t flags, int timeMs, Parcel *parcel) {
     parcel->freeData();
 
+#ifdef MTK_SUBTITLE_SUPPORT
+    uint32_t SP_Type;
+    SP_Type = flags & 0xFF;
+    switch (SP_Type) {
+    case IN_BAND_TEXT_3GPP:
+        if (flags & GLOBAL_DESCRIPTIONS) {
+            return extract3GPPGlobalDescriptions(data, size, parcel);
+        } else if (flags & LOCAL_DESCRIPTIONS) {
+            return extract3GPPLocalDescriptions(data, size, timeMs, parcel);
+        }
+        break;
+    case OUT_OF_BAND_TEXT_ASS:
+    case IN_BAND_TEXT_ASS:
+        if (flags & GLOBAL_DESCRIPTIONS) {
+            return extractASSGlobalDescriptions(data, size, parcel, 0);
+        } else if (flags & LOCAL_DESCRIPTIONS) {
+            return extractASSLocalDescriptions(data, size, timeMs, parcel, 0);
+        }
+        break;
+    case OUT_OF_BAND_TEXT_SSA:
+    case IN_BAND_TEXT_SSA:
+        if (flags & GLOBAL_DESCRIPTIONS) {
+            return extractSSAGlobalDescriptions(data, size, parcel, 0);
+        } else if (flags & LOCAL_DESCRIPTIONS) {
+            return extractSSALocalDescriptions(data, size, timeMs, parcel, 0);
+        }
+        break;
+    case OUT_OF_BAND_TEXT_TXT:
+    case IN_BAND_TEXT_TXT:
+        if (flags & GLOBAL_DESCRIPTIONS) {
+            return extractTXTGlobalDescriptions(data, size, parcel, 0);
+        } else if (flags & LOCAL_DESCRIPTIONS) {
+            return extractTXTLocalDescriptions(data, size, timeMs, parcel, 0);
+        }
+        break;
+    }
+#else
     if (flags & IN_BAND_TEXT_3GPP) {
         if (flags & GLOBAL_DESCRIPTIONS) {
             return extract3GPPGlobalDescriptions(data, size, parcel);
@@ -39,7 +83,7 @@ status_t TextDescriptions::getParcelOfDescriptions(
             return extractSRTLocalDescriptions(data, size, timeMs, parcel);
         }
     }
-
+#endif
     return ERROR_UNSUPPORTED;
 }
 
@@ -505,4 +549,187 @@ status_t TextDescriptions::extract3GPPGlobalDescriptions(
     return OK;
 }
 
+#ifdef MTK_SUBTITLE_SUPPORT
+status_t TextDescriptions::getParcelOfDescriptions(
+    int32_t fd, ssize_t width, ssize_t height,
+    uint32_t flags, int timeMs, Parcel *parcel)
+{
+    parcel->freeData();
+
+    uint32_t SP_Type;
+    SP_Type = flags & 0xFF;
+    switch (SP_Type)
+    {
+    case IN_BAND_TEXT_VOBSUB:
+        if (flags & LOCAL_DESCRIPTIONS)
+        {
+            return extractVOBSUBLocalDescriptions(fd, width, height, timeMs, parcel);
+        }
+        break;
+    case IN_BAND_TEXT_DVB:
+        if (flags & LOCAL_DESCRIPTIONS)
+        {
+            return extractDVBBLocalDescriptions(fd, width, height, timeMs, parcel);
+        }
+        break;
+
+    }
+
+    return ERROR_UNSUPPORTED;
+}
+
+status_t TextDescriptions::extractTXTGlobalDescriptions(
+    const uint8_t * data, ssize_t size, Parcel *parcel, int depth)
+{
+    UNUSED(data);
+    UNUSED(size);
+    UNUSED(parcel);
+    UNUSED(depth);
+    /* parcel->writeInt32(KEY_STRUCT_TEXT);
+     // write the size of the text sample
+     parcel->writeInt32(size);
+     // write the text sample as a byte array
+     parcel->writeInt32(size);
+     parcel->write(data, size);
+     */
+    return OK;
+}
+
+status_t TextDescriptions::extractTXTLocalDescriptions(
+    const uint8_t *data, ssize_t size,
+    int timeMs, Parcel *parcel, int depth)
+{
+    UNUSED(depth);
+    parcel->writeInt32(KEY_LOCAL_SETTING);
+    parcel->writeInt32(KEY_START_TIME);
+    parcel->writeInt32(timeMs);
+
+    parcel->writeInt32(KEY_STRUCT_TEXT);
+    // write the size of the text sample
+    parcel->writeInt32(size);
+    // write the text sample as a byte array
+    parcel->writeInt32(size);
+    parcel->write(data, size);
+
+    return OK;
+}
+
+
+status_t TextDescriptions::extractASSGlobalDescriptions(
+    const uint8_t *data, ssize_t size, Parcel *parcel, int depth)
+{
+    UNUSED(data);
+    UNUSED(size);
+    UNUSED(parcel);
+    UNUSED(depth);
+    /*parcel->writeInt32(KEY_STRUCT_TEXT);
+    // write the size of the text sample
+    parcel->writeInt32(size);
+    // write the text sample as a byte array
+    parcel->writeInt32(size);
+    parcel->write(data, size);*/
+
+    //In current stage, we do not need to care about the global relative information
+
+    return OK;
+}
+status_t TextDescriptions::extractASSLocalDescriptions(
+    const uint8_t *data, ssize_t size,
+    int timeMs, Parcel *parcel, int depth)
+{
+    UNUSED(depth);
+    parcel->writeInt32(KEY_LOCAL_SETTING);
+    parcel->writeInt32(KEY_START_TIME);
+    parcel->writeInt32(timeMs);
+
+    parcel->writeInt32(KEY_STRUCT_TEXT);
+    // write the size of the text sample
+    parcel->writeInt32(size);
+    // write the text sample as a byte array
+    parcel->writeInt32(size);
+    parcel->write(data, size);
+
+    return OK;
+}
+status_t TextDescriptions::extractSSAGlobalDescriptions(
+    const uint8_t *data, ssize_t size, Parcel *parcel, int depth)
+{
+    UNUSED(data);
+    UNUSED(size);
+    UNUSED(parcel);
+    UNUSED(depth);
+    /* parcel->writeInt32(KEY_STRUCT_TEXT);
+      // write the size of the text sample
+      parcel->writeInt32(size);
+      // write the text sample as a byte array
+      parcel->writeInt32(size);
+      parcel->write(data, size);
+      */
+    return OK;
+}
+
+status_t TextDescriptions::extractSSALocalDescriptions(
+    const uint8_t *data, ssize_t size,
+    int timeMs, Parcel *parcel, int depth)
+{
+    UNUSED(depth);
+    parcel->writeInt32(KEY_LOCAL_SETTING);
+    parcel->writeInt32(KEY_START_TIME);
+    parcel->writeInt32(timeMs);
+
+    parcel->writeInt32(KEY_STRUCT_TEXT);
+    // write the size of the text sample
+    parcel->writeInt32(size);
+    // write the text sample as a byte array
+    parcel->writeInt32(size);
+    parcel->write(data, size);
+
+    return OK;
+}
+status_t TextDescriptions::extractVOBSUBLocalDescriptions(
+    int32_t fd, ssize_t width, ssize_t height, int timeMs, Parcel *parcel)
+{
+    parcel->writeInt32(KEY_LOCAL_SETTING);
+    parcel->writeInt32(KEY_START_TIME);
+    parcel->writeInt32(timeMs);
+
+    // write redundant data to be accorded for parsing
+    parcel->writeInt32(KEY_STRUCT_TEXT);
+    // write the size of the text sample
+    parcel->writeInt32(0);
+    // write the text sample as a byte array
+    parcel->writeInt32(0);
+    parcel->write(&fd, 0);
+
+    parcel->writeInt32(KEY_STRUCT_BITMAP);
+    parcel->writeInt32(width);
+    parcel->writeInt32(height);
+    parcel->writeInt32(fd);
+
+    return OK;
+}
+status_t TextDescriptions::extractDVBBLocalDescriptions(
+    int32_t fd, ssize_t width, ssize_t height, int timeMs, Parcel *parcel)
+{
+    parcel->writeInt32(KEY_LOCAL_SETTING);
+    parcel->writeInt32(KEY_START_TIME);
+    parcel->writeInt32(timeMs);
+
+    // write redundant data to be accorded for parsing
+    parcel->writeInt32(KEY_STRUCT_TEXT);
+    // write the size of the text sample
+    parcel->writeInt32(0);
+    // write the text sample as a byte array
+    parcel->writeInt32(0);
+    parcel->write(&fd, 0);
+
+    parcel->writeInt32(KEY_STRUCT_BITMAP);
+    parcel->writeInt32(width);
+    parcel->writeInt32(height);
+    parcel->writeInt32(fd);
+
+    return OK;
+}
+#endif
 }  // namespace android
+

@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright 2012, The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -52,7 +57,26 @@
 #include <utils/Log.h>
 #include <utils/Singleton.h>
 
+#include <media/MtkMMLog.h>
 namespace android {
+#ifdef MTK_AOSP_ENHANCEMENT
+
+
+void setRenderBufferInfo(sp<ABuffer> &bufferFrom, const sp<AMessage> &msgTo){
+    int64_t realTimeUs = -1;
+    int64_t delaytimeus = -1;
+    int64_t AvSyncRefTimeUs = -1;
+    if(bufferFrom->meta()->findInt64("realtimeus", &realTimeUs) && realTimeUs != -1){
+         msgTo->setInt64("realtimeus", realTimeUs);
+    }
+    if(bufferFrom->meta()->findInt64("delaytimeus", &delaytimeus) && delaytimeus != -1){
+          msgTo->setInt64("delaytimeus", delaytimeus);
+    }
+    if(bufferFrom->meta()->findInt64("AvSyncRefTimeUs", &AvSyncRefTimeUs) && AvSyncRefTimeUs != -1){
+         msgTo->setInt64("AvSyncRefTimeUs", AvSyncRefTimeUs);
+    }
+}
+#endif
 
 static int64_t getId(sp<IResourceManagerClient> client) {
     return (int64_t) client.get();
@@ -63,7 +87,6 @@ static bool isResourceError(status_t err) {
 }
 
 static const int kMaxRetry = 2;
-static const int kMaxReclaimWaitTimeInUs = 500000;  // 0.5s
 
 struct ResourceManagerClient : public BnResourceManagerClient {
     ResourceManagerClient(MediaCodec* codec) : mMediaCodec(codec) {}
@@ -75,12 +98,6 @@ struct ResourceManagerClient : public BnResourceManagerClient {
             return true;
         }
         status_t err = codec->reclaim();
-        if (err == WOULD_BLOCK) {
-            ALOGD("Wait for the client to release codec.");
-            usleep(kMaxReclaimWaitTimeInUs);
-            ALOGD("Try to reclaim again.");
-            err = codec->reclaim(true /* force */);
-        }
         if (err != OK) {
             ALOGW("ResourceManagerClient failed to release codec with err %d", err);
         }
@@ -178,18 +195,20 @@ sp<MediaCodec> MediaCodec::CreateByType(
     if (err != NULL) {
         *err = ret;
     }
+    MM_LOGI("%s",mime);
     return ret == OK ? codec : NULL; // NULL deallocates codec.
 }
 
 // static
 sp<MediaCodec> MediaCodec::CreateByComponentName(
-        const sp<ALooper> &looper, const char *name, status_t *err, pid_t pid) {
+            const sp<ALooper> &looper, const char *name, status_t *err, pid_t pid) {
     sp<MediaCodec> codec = new MediaCodec(looper, pid);
 
     const status_t ret = codec->init(name, false /* nameIsType */, false /* encoder */);
     if (err != NULL) {
         *err = ret;
     }
+        MM_LOGI("%s", name);
     return ret == OK ? codec : NULL; // NULL deallocates codec.
 }
 
@@ -267,6 +286,7 @@ MediaCodec::MediaCodec(const sp<ALooper> &looper, pid_t pid)
 }
 
 MediaCodec::~MediaCodec() {
+    MM_LOGI("[%s][mState %d]+++",mComponentName.c_str(),mState);
     CHECK_EQ(mState, UNINITIALIZED);
     mResourceManagerService->removeResource(getId(mResourceManagerClient));
 }
@@ -493,6 +513,7 @@ status_t MediaCodec::createInputSurface(
         sp<IGraphicBufferProducer>* bufferProducer) {
     sp<AMessage> msg = new AMessage(kWhatCreateInputSurface, this);
 
+    MM_LOGI("[%s][mState %d]+++",mComponentName.c_str(),mState);
     sp<AMessage> response;
     status_t err = PostAndAwaitResponse(msg, &response);
     if (err == NO_ERROR) {
@@ -573,43 +594,22 @@ status_t MediaCodec::start() {
 
 status_t MediaCodec::stop() {
     sp<AMessage> msg = new AMessage(kWhatStop, this);
+     MM_LOGI("[%s]+++",mComponentName.c_str());
 
     sp<AMessage> response;
     return PostAndAwaitResponse(msg, &response);
 }
 
-bool MediaCodec::hasPendingBuffer(int portIndex) {
-    const Vector<BufferInfo> &buffers = mPortBuffers[portIndex];
-    for (size_t i = 0; i < buffers.size(); ++i) {
-        const BufferInfo &info = buffers.itemAt(i);
-        if (info.mOwnedByClient) {
-            return true;
-        }
-    }
-    return false;
-}
-
-bool MediaCodec::hasPendingBuffer() {
-    return hasPendingBuffer(kPortIndexInput) || hasPendingBuffer(kPortIndexOutput);
-}
-
-status_t MediaCodec::reclaim(bool force) {
-    ALOGD("MediaCodec::reclaim(%p) %s", this, mInitName.c_str());
+status_t MediaCodec::reclaim() {
     sp<AMessage> msg = new AMessage(kWhatRelease, this);
     msg->setInt32("reclaimed", 1);
-    msg->setInt32("force", force ? 1 : 0);
-
     sp<AMessage> response;
-    status_t ret = PostAndAwaitResponse(msg, &response);
-    if (ret == -ENOENT) {
-        ALOGD("MediaCodec looper is gone, skip reclaim");
-        ret = OK;
-    }
-    return ret;
+    return PostAndAwaitResponse(msg, &response);
 }
 
 status_t MediaCodec::release() {
     sp<AMessage> msg = new AMessage(kWhatRelease, this);
+     MM_LOGI("[%s]+++",mComponentName.c_str());
 
     sp<AMessage> response;
     return PostAndAwaitResponse(msg, &response);
@@ -662,6 +662,9 @@ status_t MediaCodec::queueInputBuffer(
     }
 
     sp<AMessage> msg = new AMessage(kWhatQueueInputBuffer, this);
+
+    MM_LOGV("[%s][mState %d]index %zu size %zu presentationTimeUs %" PRId64 "us  flags %x+++",mComponentName.c_str(),mState,
+        index , size,presentationTimeUs,flags);
     msg->setSize("index", index);
     msg->setSize("offset", offset);
     msg->setSize("size", size);
@@ -687,7 +690,8 @@ status_t MediaCodec::queueSecureInputBuffer(
     if (errorDetailMsg != NULL) {
         errorDetailMsg->clear();
     }
-
+    MM_LOGV("[%s][mState %d]index %zu numSubSamples %zu presentationTimeUs %" PRId64 "us flags %x+++",mComponentName.c_str(),mState,
+        index , numSubSamples,presentationTimeUs,flags);
     sp<AMessage> msg = new AMessage(kWhatQueueInputBuffer, this);
     msg->setSize("index", index);
     msg->setSize("offset", offset);
@@ -710,6 +714,7 @@ status_t MediaCodec::dequeueInputBuffer(size_t *index, int64_t timeoutUs) {
     sp<AMessage> msg = new AMessage(kWhatDequeueInputBuffer, this);
     msg->setInt64("timeoutUs", timeoutUs);
 
+   MM_LOGV("[%s][mState %d]+++",mComponentName.c_str(),mState);
     sp<AMessage> response;
     status_t err;
     if ((err = PostAndAwaitResponse(msg, &response)) != OK) {
@@ -718,6 +723,7 @@ status_t MediaCodec::dequeueInputBuffer(size_t *index, int64_t timeoutUs) {
 
     CHECK(response->findSize("index", index));
 
+    MM_LOGV("[%s][mState %d]index %zu ---",mComponentName.c_str(),mState,*index );
     return OK;
 }
 
@@ -729,6 +735,7 @@ status_t MediaCodec::dequeueOutputBuffer(
         uint32_t *flags,
         int64_t timeoutUs) {
     sp<AMessage> msg = new AMessage(kWhatDequeueOutputBuffer, this);
+    MM_LOGV("[%s][mState %d]+++",mComponentName.c_str(),mState);
     msg->setInt64("timeoutUs", timeoutUs);
 
     sp<AMessage> response;
@@ -742,7 +749,8 @@ status_t MediaCodec::dequeueOutputBuffer(
     CHECK(response->findSize("size", size));
     CHECK(response->findInt64("timeUs", presentationTimeUs));
     CHECK(response->findInt32("flags", (int32_t *)flags));
-
+   MM_LOGV("[%s][mState %d]index %zu  size %zu presentationTimeUs %" PRId64 "us flags %x---",mComponentName.c_str(),mState,
+    *index , *size,*presentationTimeUs,*flags );
     return OK;
 }
 
@@ -750,6 +758,7 @@ status_t MediaCodec::renderOutputBufferAndRelease(size_t index) {
     sp<AMessage> msg = new AMessage(kWhatReleaseOutputBuffer, this);
     msg->setSize("index", index);
     msg->setInt32("render", true);
+   MM_LOGV("[%s][mState %d]index %zu",mComponentName.c_str(),mState,index  );
 
     sp<AMessage> response;
     return PostAndAwaitResponse(msg, &response);
@@ -768,13 +777,14 @@ status_t MediaCodec::renderOutputBufferAndRelease(size_t index, int64_t timestam
 status_t MediaCodec::releaseOutputBuffer(size_t index) {
     sp<AMessage> msg = new AMessage(kWhatReleaseOutputBuffer, this);
     msg->setSize("index", index);
-
+   MM_LOGV("[%s][mState %d]index %zu",mComponentName.c_str(),mState,index  );
     sp<AMessage> response;
     return PostAndAwaitResponse(msg, &response);
 }
 
 status_t MediaCodec::signalEndOfInputStream() {
     sp<AMessage> msg = new AMessage(kWhatSignalEndOfInputStream, this);
+    MM_LOGI("[%s]+++",mComponentName.c_str());
 
     sp<AMessage> response;
     return PostAndAwaitResponse(msg, &response);
@@ -782,6 +792,7 @@ status_t MediaCodec::signalEndOfInputStream() {
 
 status_t MediaCodec::getOutputFormat(sp<AMessage> *format) const {
     sp<AMessage> msg = new AMessage(kWhatGetOutputFormat, this);
+    MM_LOGI("[%s]+++",mComponentName.c_str());
 
     sp<AMessage> response;
     status_t err;
@@ -834,6 +845,8 @@ status_t MediaCodec::getWidevineLegacyBuffers(Vector<sp<ABuffer> > *buffers) con
 
 status_t MediaCodec::getInputBuffers(Vector<sp<ABuffer> > *buffers) const {
     sp<AMessage> msg = new AMessage(kWhatGetBuffers, this);
+     //MM_LOGI("[%s]+++",mComponentName.c_str());
+     //in case some app will use NDK interface , NDK will use the getInputBuffers to get each buffer
     msg->setInt32("portIndex", kPortIndexInput);
     msg->setPointer("buffers", buffers);
 
@@ -843,6 +856,7 @@ status_t MediaCodec::getInputBuffers(Vector<sp<ABuffer> > *buffers) const {
 
 status_t MediaCodec::getOutputBuffers(Vector<sp<ABuffer> > *buffers) const {
     sp<AMessage> msg = new AMessage(kWhatGetBuffers, this);
+   //  MM_LOGI("[%s]+++",mComponentName.c_str());
     msg->setInt32("portIndex", kPortIndexOutput);
     msg->setPointer("buffers", buffers);
 
@@ -905,6 +919,7 @@ status_t MediaCodec::getBufferAndFormat(
 
 status_t MediaCodec::flush() {
     sp<AMessage> msg = new AMessage(kWhatFlush, this);
+     MM_LOGI("[%s]+++",mComponentName.c_str());
 
     sp<AMessage> response;
     return PostAndAwaitResponse(msg, &response);
@@ -912,6 +927,7 @@ status_t MediaCodec::flush() {
 
 status_t MediaCodec::requestIDRFrame() {
     (new AMessage(kWhatRequestIDRFrame, this))->post();
+     MM_LOGI("[%s]+++",mComponentName.c_str());
 
     return OK;
 }
@@ -1012,7 +1028,24 @@ bool MediaCodec::handleDequeueOutputBuffer(const sp<AReplyToken> &replyID, bool 
         if (omxFlags & OMX_BUFFERFLAG_EOS) {
             flags |= BUFFER_FLAG_EOS;
         }
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (omxFlags & OMX_BUFFERFLAG_ENDOFFRAME) {
+           // flags |= BUFFER_FLAG_ENDOFFRAME;
+        }
+        if (omxFlags & OMX_BUFFERFLAG_DUMMY_NALU) {
+            flags |= BUFFER_FLAG_DUMMY;
+        }
+        if (omxFlags & OMX_BUFFERFLAG_MULTISLICE) {
+            ALOGD("Set multi slice BS flag = true");
+            flags |= BUFFER_FLAG_MULTISLICE;
+        }
 
+#ifdef MTK_CLEARMOTION_SUPPORT
+        if (omxFlags & OMX_BUFFERFLAG_INTERPOLATE_FRAME) {
+             flags |= BUFFER_FLAG_INTERPOLATE_FRAME;
+     }
+#endif
+#endif //MTK_AOSP_ENHANCEMENT
         response->setInt32("flags", flags);
         response->postReply(replyID);
     }
@@ -1026,7 +1059,6 @@ void MediaCodec::onMessageReceived(const sp<AMessage> &msg) {
         {
             int32_t what;
             CHECK(msg->findInt32("what", &what));
-
             switch (what) {
                 case CodecBase::kWhatError:
                 {
@@ -1162,6 +1194,7 @@ void MediaCodec::onMessageReceived(const sp<AMessage> &msg) {
 
                 case CodecBase::kWhatComponentAllocated:
                 {
+                 MM_LOGI("[%s][what=kWhatComponentAllocated][state %d][msg='%s' ]", mComponentName.c_str(),mState,msg->debugString().c_str());
                     CHECK_EQ(mState, INITIALIZING);
                     setState(INITIALIZED);
                     mFlags |= kFlagIsComponentAllocated;
@@ -1183,10 +1216,8 @@ void MediaCodec::onMessageReceived(const sp<AMessage> &msg) {
                         resourceType = String8(kResourceNonSecureCodec);
                     }
 
-                    if (mIsVideo) {
-                        // audio codec is currently ignored.
-                        addResource(resourceType, String8(kResourceVideoCodec), 1);
-                    }
+                    const char *subtype = mIsVideo ? kResourceVideoCodec : kResourceAudioCodec;
+                    addResource(resourceType, String8(subtype), 1);
 
                     (new AMessage)->postReply(mReplyID);
                     break;
@@ -1200,6 +1231,7 @@ void MediaCodec::onMessageReceived(const sp<AMessage> &msg) {
                         ALOGW("configure interrupted by error, current state %d", mState);
                         break;
                     }
+                    MM_LOGI("[%s][what=kWhatComponentConfigured][state %d][msg='%s' ]", mComponentName.c_str(),mState,msg->debugString().c_str());
                     CHECK_EQ(mState, CONFIGURING);
 
                     // reset input surface flag
@@ -1220,6 +1252,8 @@ void MediaCodec::onMessageReceived(const sp<AMessage> &msg) {
 
                 case CodecBase::kWhatInputSurfaceCreated:
                 {
+                    // response to ACodec::kWhatCreateInputSurface
+                    MM_LOGI("[%s][what=kWhatInputSurfaceCreated][state %d][msg='%s' ]", mComponentName.c_str(),mState,msg->debugString().c_str());
                     // response to initiateCreateInputSurface()
                     status_t err = NO_ERROR;
                     sp<AMessage> response = new AMessage;
@@ -1252,6 +1286,7 @@ void MediaCodec::onMessageReceived(const sp<AMessage> &msg) {
 
                 case CodecBase::kWhatSignaledInputEOS:
                 {
+                     MM_LOGI("[%s][what=kWhatSignaledInputEOS][state %d][msg='%s' ]", mComponentName.c_str(),mState,msg->debugString().c_str());
                     // response to signalEndOfInputStream()
                     sp<AMessage> response = new AMessage;
                     status_t err;
@@ -1265,6 +1300,7 @@ void MediaCodec::onMessageReceived(const sp<AMessage> &msg) {
 
                 case CodecBase::kWhatBuffersAllocated:
                 {
+                  MM_LOGI("[%s][what=kWhatBuffersAllocated][state %d][msg='%s' ]", mComponentName.c_str(),mState,msg->debugString().c_str());
                     Mutex::Autolock al(mBufferLock);
                     int32_t portIndex;
                     CHECK(msg->findInt32("portIndex", &portIndex));
@@ -1402,7 +1438,7 @@ void MediaCodec::onMessageReceived(const sp<AMessage> &msg) {
                         break;
                     }
 
-                    if (!mCSD.empty()) {
+                        if (!mCSD.empty()) {
                         ssize_t index = dequeuePortBuffer(kPortIndexInput);
                         CHECK_GE(index, 0);
 
@@ -1465,7 +1501,12 @@ void MediaCodec::onMessageReceived(const sp<AMessage> &msg) {
 
                     buffer->meta()->setInt32("omxFlags", omxFlags);
 
-                    if (mFlags & kFlagGatherCodecSpecificData) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (!(omxFlags & OMX_BUFFERFLAG_DUMMY_NALU)) {
+              buffer->meta()->setInt64("MCodecFBD", ALooper::GetNowUs()/1000);
+        }
+#endif
+         if (mFlags & kFlagGatherCodecSpecificData) {
                         // This is the very first output buffer after a
                         // format change was signalled, it'll either contain
                         // the one piece of codec specific data we can expect
@@ -1507,17 +1548,27 @@ void MediaCodec::onMessageReceived(const sp<AMessage> &msg) {
                 {
                     // We already notify the client of this by using the
                     // corresponding flag in "onOutputBufferReady".
+                    MM_LOGI("[%s][what=kWhatEOS][state %d] ", mComponentName.c_str(),mState);
                     break;
                 }
 
                 case CodecBase::kWhatShutdownCompleted:
                 {
+                 MM_LOGI("[%s][what=kWhatShutdownCompleted][state %d][msg='%s' ]", mComponentName.c_str(),mState,msg->debugString().c_str());
                     if (mState == STOPPING) {
                         setState(INITIALIZED);
                     } else {
-                        CHECK_EQ(mState, RELEASING);
-                        setState(UNINITIALIZED);
-                        mComponentName.clear();
+#ifdef MTK_AOSP_ENHANCEMENT
+                        if (mState!=UNINITIALIZED) { // prevent release twice
+#endif
+                            CHECK_EQ(mState, RELEASING);
+                            setState(UNINITIALIZED);
+                            mComponentName.clear();
+#ifdef MTK_AOSP_ENHANCEMENT
+                        } else {
+                            MM_LOGI("[what=kWhatShutdownCompleted] Warning, no need release again, check upper flow");
+                        }
+#endif
                     }
                     mFlags &= ~kFlagIsComponentAllocated;
 
@@ -1529,6 +1580,7 @@ void MediaCodec::onMessageReceived(const sp<AMessage> &msg) {
 
                 case CodecBase::kWhatFlushCompleted:
                 {
+                    MM_LOGI("[%s][what=kWhatFlushCompleted][state %d][msg='%s' ]", mComponentName.c_str(),mState,msg->debugString().c_str());
                     if (mState != FLUSHING) {
                         ALOGW("received FlushCompleted message in state %d",
                                 mState);
@@ -1555,6 +1607,7 @@ void MediaCodec::onMessageReceived(const sp<AMessage> &msg) {
         case kWhatInit:
         {
             sp<AReplyToken> replyID;
+         MM_LOGI("[%s][what=kWhatInit][state %d][msg='%s' ]", mComponentName.c_str(),mState,msg->debugString().c_str());
             CHECK(msg->senderAwaitsResponse(&replyID));
 
             if (mState != UNINITIALIZED) {
@@ -1600,6 +1653,7 @@ void MediaCodec::onMessageReceived(const sp<AMessage> &msg) {
         case kWhatSetCallback:
         {
             sp<AReplyToken> replyID;
+         MM_LOGI("[%s][what=kWhatConfigure][state %d][msg='%s' ]", mComponentName.c_str(),mState,msg->debugString().c_str());
             CHECK(msg->senderAwaitsResponse(&replyID));
 
             if (mState == UNINITIALIZED
@@ -1681,6 +1735,18 @@ void MediaCodec::onMessageReceived(const sp<AMessage> &msg) {
 
             extractCSD(format);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+            if (flags & CONFIGURE_FLAG_16X_SLOWMOTION) {
+                format->setInt32("slowmotion-16x", 1);
+            }
+            if(mCrypto != NULL){
+                MM_LOGI("[DRM]set IsSecureVideo ");
+                format->setInt32("IsSecureVideo", 1);
+            }
+            if (flags & CONFIGURE_FLAG_ENABLE_THUMBNAIL_OPTIMIZATION) {
+                format->setInt32("enableThumbnailOptimzation", 1);
+            }
+#endif
             mCodec->initiateConfigureComponent(format);
             break;
         }
@@ -1815,23 +1881,6 @@ void MediaCodec::onMessageReceived(const sp<AMessage> &msg) {
             msg->findInt32("reclaimed", &reclaimed);
             if (reclaimed) {
                 mReleasedByResourceManager = true;
-
-                int32_t force = 0;
-                msg->findInt32("force", &force);
-                if (!force && hasPendingBuffer()) {
-                    ALOGW("Can't reclaim codec right now due to pending buffers.");
-
-                    // return WOULD_BLOCK to ask resource manager to retry later.
-                    sp<AMessage> response = new AMessage;
-                    response->setInt32("err", WOULD_BLOCK);
-                    response->postReply(replyID);
-
-                    // notify the async client
-                    if (mFlags & kFlagIsAsync) {
-                        onError(DEAD_OBJECT, ACTION_CODE_FATAL);
-                    }
-                    break;
-                }
             }
 
             if (!((mFlags & kFlagIsComponentAllocated) && targetState == UNINITIALIZED) // See 1
@@ -1855,6 +1904,7 @@ void MediaCodec::onMessageReceived(const sp<AMessage> &msg) {
                     mComponentName.clear();
                 }
                 response->postReply(replyID);
+           MM_LOGI("[%s][what=kWhatStopk or Release][state %d][msg='%s' ]", mComponentName.c_str(),mState,msg->debugString().c_str());
                 break;
             }
 
@@ -2096,6 +2146,7 @@ void MediaCodec::onMessageReceived(const sp<AMessage> &msg) {
         case kWhatFlush:
         {
             sp<AReplyToken> replyID;
+            MM_LOGI("[%s][what=kWhatFlush][state %d][msg='%s' ]", mComponentName.c_str(),mState,msg->debugString().c_str());
             CHECK(msg->senderAwaitsResponse(&replyID));
 
             if (!isExecuting()) {
@@ -2221,6 +2272,7 @@ status_t MediaCodec::queueCSDInputBuffer(size_t bufferIndex) {
         (mCrypto != NULL) ? info->mEncryptedData : info->mData;
 
     if (csd->size() > codecInputData->capacity()) {
+        MM_LOGI("[error] csd->size()  %zu  > codecInputData->capacity() %zu", csd->size() , codecInputData->capacity());
         return -EINVAL;
     }
 
@@ -2270,7 +2322,6 @@ void MediaCodec::setState(State newState) {
         // another component.. and the cycle continues.
         mFlags &= ~kFlagSawMediaServerDie;
     }
-
     mState = newState;
 
     cancelPendingDequeueOperations();
@@ -2370,6 +2421,7 @@ status_t MediaCodec::onQueueInputBuffer(const sp<AMessage> &msg) {
         }
     } else {
         if (mCrypto == NULL) {
+            MM_LOGI("[error VAL] mCrypto == NULL" );
             return -EINVAL;
         }
 
@@ -2391,16 +2443,20 @@ status_t MediaCodec::onQueueInputBuffer(const sp<AMessage> &msg) {
     }
 
     if (index >= mPortBuffers[kPortIndexInput].size()) {
+       // MM_LOGI("[error RANGE]index %zu > mPortBuffers[%d].size() %zu",
+         //       index , kPortIndexInput,mPortBuffers[kPortIndexInput].size());
         return -ERANGE;
     }
 
     BufferInfo *info = &mPortBuffers[kPortIndexInput].editItemAt(index);
 
     if (info->mNotify == NULL || !info->mOwnedByClient) {
+        MM_LOGI("[error access]%d,%d",(info->mNotify == NULL),(!info->mOwnedByClient));
         return -EACCES;
     }
 
     if (offset + size > info->mData->capacity()) {
+        MM_LOGI("[error VAL] offset=%zu , size %zu >info->mData->capacity() %zu  ",offset,size,info->mData->capacity());
         return -EINVAL;
     }
 
@@ -2415,9 +2471,18 @@ status_t MediaCodec::onQueueInputBuffer(const sp<AMessage> &msg) {
     if (flags & BUFFER_FLAG_CODECCONFIG) {
         info->mData->meta()->setInt32("csd", true);
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (flags & BUFFER_FLAG_INVALID_PTS) {
+        info->mData->meta()->setInt32("invt", true);
+    }
+    if (flags & BUFFER_FLAG_PARTAIL_FRAME) {
+        info->mData->meta()->setInt32("eof", false);
+    }
 
+#endif
     if (mCrypto != NULL) {
         if (size > info->mEncryptedData->capacity()) {
+            MM_LOGI("[error RANGE] size %zu >info->mEncryptedData->capacity() %zu ",size,info->mEncryptedData->capacity());
             return -ERANGE;
         }
 
@@ -2482,17 +2547,20 @@ status_t MediaCodec::onReleaseOutputBuffer(const sp<AMessage> &msg) {
         render = 0;
     }
 
-    if (!isExecuting()) {
+        if (!isExecuting()) {
+           MM_LOGI("[error] mState != isExecuting");
         return -EINVAL;
     }
 
     if (index >= mPortBuffers[kPortIndexOutput].size()) {
+        MM_LOGI("[error]index >size  ");
         return -ERANGE;
     }
 
     BufferInfo *info = &mPortBuffers[kPortIndexOutput].editItemAt(index);
 
     if (info->mNotify == NULL || !info->mOwnedByClient) {
+        MM_LOGI("[error]%d,%d", (info->mNotify == NULL),(!info->mOwnedByClient));
         return -EACCES;
     }
 
@@ -2501,6 +2569,9 @@ status_t MediaCodec::onReleaseOutputBuffer(const sp<AMessage> &msg) {
         Mutex::Autolock al(mBufferLock);
         info->mOwnedByClient = false;
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+        setRenderBufferInfo(info->mData,info->mNotify);
+#endif
 
     if (render && info->mData != NULL && info->mData->size() != 0) {
         info->mNotify->setInt32("render", true);
@@ -2611,6 +2682,14 @@ status_t MediaCodec::disconnectFromSurface() {
         // Resetting generation is not technically needed, but there is no need to keep it either
         mSurface->setGenerationNumber(0);
         err = native_window_api_disconnect(mSurface.get(), NATIVE_WINDOW_API_MEDIA);
+#ifdef MTK_AOSP_ENHANCEMENT
+        if(err == -EEXIST ||err == -EINVAL)
+        {
+          ALOGD("setNativeWindow error handle, err=%d", err);
+          native_window_api_disconnect(mSurface.get(),NATIVE_WINDOW_API_MEDIA);
+          err = native_window_api_connect(mSurface.get(),NATIVE_WINDOW_API_MEDIA);
+        }
+#endif
         if (err != OK) {
             ALOGW("native_window_api_disconnect returned an error: %s (%d)", strerror(-err), err);
         }
@@ -2674,6 +2753,23 @@ void MediaCodec::onOutputBufferAvailable() {
             flags |= BUFFER_FLAG_EOS;
         }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (omxFlags & OMX_BUFFERFLAG_ENDOFFRAME) {
+            //flags |= BUFFER_FLAG_ENDOFFRAME;//some 3rd app not recognize it.
+        }
+        if (omxFlags & OMX_BUFFERFLAG_DUMMY_NALU) {
+            flags |= BUFFER_FLAG_DUMMY;
+        }
+        if (omxFlags & OMX_BUFFERFLAG_MULTISLICE) {
+            ALOGD("Set multi slice BS flag = true");
+            flags |= BUFFER_FLAG_MULTISLICE;
+        }
+#ifdef MTK_CLEARMOTION_SUPPORT
+        if (omxFlags & OMX_BUFFERFLAG_INTERPOLATE_FRAME) {
+             flags |= BUFFER_FLAG_INTERPOLATE_FRAME;
+     }
+#endif
+#endif //MTK_AOSP_ENHANCEMENT
         msg->setInt32("flags", flags);
 
         msg->post();
@@ -2777,6 +2873,7 @@ status_t MediaCodec::amendOutputFormatWithCodecSpecificData(
         }
 
         if (csdIndex != 2) {
+         MM_LOGI("[%s][state %d] csdIndex = %u", mComponentName.c_str(),mState, csdIndex);
             return ERROR_MALFORMED;
         }
     } else {

@@ -73,6 +73,10 @@ private:
     bool isConfigured() const;
 
     DISALLOW_EVIL_CONSTRUCTORS(SoftVorbis);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    int64_t mLastTimeStamp;
+#endif
 };
 
 }  // namespace android

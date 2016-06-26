@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2012 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,7 +23,9 @@
 
 #define LOG_TAG "MonoPipe"
 //#define LOG_NDEBUG 0
-
+#if defined(MTK_AUDIO)
+#include <common_time/local_clock.h>
+#endif
 #include <common_time/cc_helper.h>
 #include <cutils/atomic.h>
 #include <cutils/compiler.h>
@@ -116,6 +123,11 @@ ssize_t MonoPipe::availableToWrite() const
 
 ssize_t MonoPipe::write(const void *buffer, size_t count)
 {
+#ifdef MTK_AOSP_ENHANCEMENT
+    uint32_t try_count = 0;
+    uint32_t block_ns = 0;
+    ALOGV("+%s",__FUNCTION__);
+#endif
     if (CC_UNLIKELY(!mNegotiated)) {
         return NEGOTIATE;
     }
@@ -213,8 +225,18 @@ ssize_t MonoPipe::write(const void *buffer, size_t count)
             }
         }
         mWriteTsValid = nowTsValid;
+#ifdef MTK_AOSP_ENHANCEMENT
+        block_ns += ns;
+        if (++try_count>=2){
+            ALOGW("%s is try count %d,blocked (%ldns), , please check if MonoPipeReader::read is normal",__FUNCTION__,try_count,block_ns);
+            break;
+        }
+#endif
     }
     mFramesWritten += totalFramesWritten;
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGV("-%s",__FUNCTION__);
+#endif
     return totalFramesWritten;
 }
 

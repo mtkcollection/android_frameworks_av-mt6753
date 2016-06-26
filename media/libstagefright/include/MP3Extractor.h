@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -36,25 +41,35 @@ public:
     virtual size_t countTracks();
     virtual sp<MediaSource> getTrack(size_t index);
     virtual sp<MetaData> getTrackMetaData(size_t index, uint32_t flags);
-
     virtual sp<MetaData> getMetaData();
 
 private:
     status_t mInitCheck;
-
     sp<DataSource> mDataSource;
     off64_t mFirstFramePos;
     sp<MetaData> mMeta;
     uint32_t mFixedHeader;
     sp<MP3Seeker> mSeeker;
-
     MP3Extractor(const MP3Extractor &);
     MP3Extractor &operator=(const MP3Extractor &);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+public:
+virtual void getGeneralDuration(int bitrate);
+#endif
+
 };
 
 bool SniffMP3(
         const sp<DataSource> &source, String8 *mimeType, float *confidence,
         sp<AMessage> *meta);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+bool FastSniffMP3(
+    const sp<DataSource> &source, String8 *mimeType,
+    float *confidence, sp<AMessage> *meta);
+//static status_t ComputeDurationFromNRandomFrames(const sp<DataSource> &source,off64_t FirstFramePos,uint32_t FixedHeader,int32_t *Averagebr,int32_t *isSingle);
+#endif
 
 }  // namespace android
 

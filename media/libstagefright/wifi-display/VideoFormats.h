@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright 2013, The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -90,6 +95,10 @@ struct VideoFormats {
             ResolutionType type, size_t index,
             size_t *width, size_t *height, size_t *framesPerSecond,
             bool *interlaced);
+
+    //@M: For WFD Source UIBC SQC
+    static void setPortraitSink(bool enable);
+    //@M }}
 
     static bool GetProfileLevel(
             ProfileType profile, LevelType level,

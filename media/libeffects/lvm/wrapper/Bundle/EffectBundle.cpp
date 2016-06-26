@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010-2010 NXP Software
  * Copyright (C) 2009 The Android Open Source Project
  *
@@ -741,7 +746,11 @@ int LvmBundle_process(LVM_INT16        *pIn,
     fwrite(pIn, frameCount*sizeof(LVM_INT16)*2, 1, pContext->pBundledContext->PcmInPtr);
     fflush(pContext->pBundledContext->PcmInPtr);
     #endif
-
+    //
+    //FILE *fp1 = fopen("sdcard/bundle_in.pcm","ab");
+    //fwrite(pIn, frameCount*sizeof(LVM_INT16)*2, 1, fp1);
+    //fclose(fp1);
+    //
     //ALOGV("Calling LVM_Process");
 
     /* Process the samples */
@@ -758,7 +767,9 @@ int LvmBundle_process(LVM_INT16        *pIn,
     fwrite(pOutTmp, frameCount*sizeof(LVM_INT16)*2, 1, pContext->pBundledContext->PcmOutPtr);
     fflush(pContext->pBundledContext->PcmOutPtr);
     #endif
-
+    //FILE *fp2 = fopen("sdcard/bundle_out.pcm","ab");
+    //fwrite(pOutTmp, frameCount*sizeof(LVM_INT16)*2, 1, fp2);
+    //fclose(fp2);
     if (pContext->config.outputCfg.accessMode == EFFECT_BUFFER_ACCESS_ACCUMULATE){
         for (int i=0; i<frameCount*2; i++){
             pOut[i] = clamp16((LVM_INT32)pOut[i] + (LVM_INT32)pOutTmp[i]);
@@ -2983,7 +2994,7 @@ int Effect_process(effect_handle_t     self,
             for (size_t i=0; i < outBuffer->frameCount*2; i++){
                 outBuffer->s16[i] =
                         clamp16((LVM_INT32)outBuffer->s16[i] + (LVM_INT32)inBuffer->s16[i]);
-            }
+                    }
         } else if (outBuffer->raw != inBuffer->raw) {
             memcpy(outBuffer->raw, inBuffer->raw, outBuffer->frameCount*sizeof(LVM_INT16)*2);
         }
@@ -3091,10 +3102,7 @@ int Effect_command(effect_handle_t  self,
             //ALOGV("\tEffect_command cmdCode Case: EFFECT_CMD_GET_PARAM start");
 
             effect_param_t *p = (effect_param_t *)pCmdData;
-            if (SIZE_MAX - sizeof(effect_param_t) < (size_t)p->psize) {
-                android_errorWriteLog(0x534e4554, "26347509");
-                return -EINVAL;
-            }
+
             if (pCmdData == NULL || cmdSize < sizeof(effect_param_t) ||
                     cmdSize < (sizeof(effect_param_t) + p->psize) ||
                     pReplyData == NULL || replySize == NULL ||
@@ -3381,6 +3389,9 @@ int Effect_command(effect_handle_t  self,
         case EFFECT_CMD_SET_VOLUME:
         {
             uint32_t leftVolume, rightVolume;
+#ifdef MTK_AUDIO
+            uint32_t firstVolume;
+#endif
             int16_t  leftdB, rightdB;
             int16_t  maxdB, pandB;
             int32_t  vol_ret[2] = {1<<24,1<<24}; // Apply no volume
@@ -3393,12 +3404,30 @@ int Effect_command(effect_handle_t  self,
                 break;
             }
 
+#ifdef MTK_AUDIO
+            if (pCmdData == NULL ||
+                    (cmdSize != 2 * sizeof(uint32_t) && cmdSize != 3 * sizeof(uint32_t)) ||
+                    pReplyData == NULL || replySize == NULL || *replySize < 2 * sizeof(int32_t)) {
+                ALOGV("\tLVM_ERROR : Effect_command cmdCode Case: "
+                        "EFFECT_CMD_SET_VOLUME: ERROR");
+                return -EINVAL;
+            }
+            if (cmdSize == 3 * sizeof(uint32_t)) {
+                firstVolume = ((*((uint32_t *)pCmdData + 2)));
+                if (firstVolume) {
+                    pContext->pBundledContext->firstVolume = LVM_TRUE;
+                }
+            }
+
+#else
             if (pCmdData == NULL || cmdSize != 2 * sizeof(uint32_t) || pReplyData == NULL ||
                     replySize == NULL || *replySize < 2*sizeof(int32_t)) {
                 ALOGV("\tLVM_ERROR : Effect_command cmdCode Case: "
                         "EFFECT_CMD_SET_VOLUME: ERROR");
                 return -EINVAL;
             }
+
+#endif
 
             leftVolume  = ((*(uint32_t *)pCmdData));
             rightVolume = ((*((uint32_t *)pCmdData + 1)));
@@ -3449,6 +3478,19 @@ int Effect_command(effect_handle_t  self,
          }
         case EFFECT_CMD_SET_AUDIO_MODE:
             break;
+
+        //MTK80721 2011-05-22 fix: CR:ALPS00041097
+#ifdef MTK_AOSP_ENHANCEMENT
+        case EFFECT_CMD_CLEARBUF:
+        {
+            LVM_ReturnStatus_en lstatus_c = LVM_SUCCESS;
+            lstatus_c = LVM_ClearAudioBuffers(pContext->pBundledContext->hInstance);
+            if(lstatus_c != LVM_SUCCESS)
+                return -EINVAL;
+            break;
+        }
+#endif
+
         default:
             return -EINVAL;
     }

@@ -1,4 +1,10 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -72,6 +78,21 @@ private:
     void submitAccessUnit();
 
     DISALLOW_EVIL_CONSTRUCTORS(AMPEG4ElementaryAssembler);
+#ifdef MTK_AOSP_ENHANCEMENT
+public:
+    virtual void setNextExpectedSeqNo(uint32_t rtpSeq) {
+        mNextExpectedSeqNo = rtpSeq;
+        mNextExpectedSeqNoValid = true;
+    }
+protected:
+    virtual void evaluateDuration(const sp<ARTPSource> &source,
+            const sp<ABuffer> &buffer);
+
+private:
+    bool mIsAAC;
+    unsigned mConstantSize;
+    void getConstantSize(const AString &params);
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
 };
 
 }  // namespace android

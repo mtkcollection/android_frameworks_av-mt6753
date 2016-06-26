@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
 **
 ** Copyright 2012, The Android Open Source Project
 **
@@ -29,6 +34,9 @@
 #include "AudioFlinger.h"
 #include "ServiceUtilities.h"
 
+#ifdef DEBUG_MIXER_PCM
+#include "AudioUtilmtk.h"
+#endif
 // ----------------------------------------------------------------------------
 
 // Note: the following macro is used for extremely verbose logging message.  In
@@ -54,6 +62,12 @@ namespace android {
 
 #undef LOG_TAG
 #define LOG_TAG "AudioFlinger::EffectModule"
+#ifdef MTK_AUDIO
+#ifdef DEBUG_AUDIO_PCM
+static   const char * gaf_effect_pcm = "/sdcard/mtklog/audio_dump/af_effect.pcm";
+static   const char * gaf_effect_propty = "af.effect.pcm";
+#endif
+#endif
 
 AudioFlinger::EffectModule::EffectModule(ThreadBase *thread,
                                         const wp<AudioFlinger::EffectChain>& chain,
@@ -73,6 +87,10 @@ AudioFlinger::EffectModule::EffectModule(ThreadBase *thread,
 {
     ALOGV("Constructor %p", this);
     int lStatus;
+
+#ifdef MTK_AUDIO
+      mFirstVolume = false;
+#endif
 
     // create effect engine from effect factory
     mStatus = EffectCreate(&desc->uuid, sessionId, thread->id(), &mEffectInterface);
@@ -277,9 +295,23 @@ void AudioFlinger::EffectModule::process()
         }
 
         // do the actual processing in the effect engine
+#ifdef MTK_AUDIO
+#ifdef DEBUG_AUDIO_PCM
+        const int SIZE = 256;
+        char fileName[SIZE];
+        sprintf(fileName,"%s_session%d_%d_in.pcm",gaf_effect_pcm,mSessionId, mId);
+        AudioDump::dump(fileName,mConfig.inputCfg.buffer.s16,mConfig.inputCfg.buffer.frameCount*2*2,gaf_effect_propty);
+#endif
+#endif
         int ret = (*mEffectInterface)->process(mEffectInterface,
                                                &mConfig.inputCfg.buffer,
                                                &mConfig.outputCfg.buffer);
+#ifdef MTK_AUDIO
+#ifdef DEBUG_AUDIO_PCM
+            sprintf(fileName,"%s_session%d_%d_out.pcm",gaf_effect_pcm,mSessionId, mId);
+            AudioDump::dump(fileName,mConfig.outputCfg.buffer.s16,mConfig.outputCfg.buffer.frameCount*2*2,gaf_effect_propty);
+#endif
+#endif
 
         // force transition to IDLE state when engine is ready
         if (mState == STOPPED && ret == -ENODATA) {
@@ -298,14 +330,41 @@ void AudioFlinger::EffectModule::process()
         sp<EffectChain> chain = mChain.promote();
         if (chain != 0 && chain->activeTrackCnt() != 0) {
             size_t frameCnt = mConfig.inputCfg.buffer.frameCount * 2;  //always stereo here
+#ifdef MTK_AUDIO
+#ifdef DEBUG_AUDIO_PCM
+            const int SIZE = 256;
+            char fileName[SIZE];
+            sprintf(fileName,"%s_session%d_%d_in.pcm",gaf_effect_pcm,mSessionId, mId);
+            AudioDump::dump(fileName,mConfig.inputCfg.buffer.s16,mConfig.inputCfg.buffer.frameCount*2*2,gaf_effect_propty);
+#endif
+#endif
             int16_t *in = mConfig.inputCfg.buffer.s16;
             int16_t *out = mConfig.outputCfg.buffer.s16;
             for (size_t i = 0; i < frameCnt; i++) {
                 out[i] = clamp16((int32_t)out[i] + (int32_t)in[i]);
             }
+#ifdef MTK_AUDIO
+#ifdef DEBUG_AUDIO_PCM
+            sprintf(fileName,"%s_session%d_%d_out.pcm",gaf_effect_pcm,mSessionId, mId);
+            AudioDump::dump(fileName,mConfig.outputCfg.buffer.s16,mConfig.outputCfg.buffer.frameCount*2*2,gaf_effect_propty);
+#endif
+#endif
         }
     }
 }
+
+
+#ifdef MTK_HIFI_AUDIO
+void AudioFlinger::EffectModule::resetandConfigure()
+{
+    Mutex::Autolock _l(mLock);
+
+    reset_l();
+    configure();
+    return;
+}
+#endif
+
 
 void AudioFlinger::EffectModule::reset_l()
 {
@@ -352,8 +411,29 @@ status_t AudioFlinger::EffectModule::configure()
 
     mConfig.inputCfg.format = AUDIO_FORMAT_PCM_16_BIT;
     mConfig.outputCfg.format = AUDIO_FORMAT_PCM_16_BIT;
+
+
+#ifdef MTK_HIFI_AUDIO
+    if(OUTPUT_RATE_192 == thread->sampleRate() || OUTPUT_RATE_96 == thread->sampleRate())
+    {
+        ALOGD("effect configure sampling rate 48000");
+        mConfig.inputCfg.samplingRate = OUTPUT_RATE_48;
+        mConfig.outputCfg.samplingRate = OUTPUT_RATE_48;
+    }
+    else if(OUTPUT_RATE_176_4 == thread->sampleRate() || OUTPUT_RATE_88_2 == thread->sampleRate())
+    {
+
+        ALOGD("effect configure sampling rate 44100");
+        mConfig.inputCfg.samplingRate = OUTPUT_RATE_44_1;
+        mConfig.outputCfg.samplingRate = OUTPUT_RATE_44_1;
+    }
+    else
+#endif
+    {
     mConfig.inputCfg.samplingRate = thread->sampleRate();
     mConfig.outputCfg.samplingRate = mConfig.inputCfg.samplingRate;
+    }
+
     mConfig.inputCfg.bufferProvider.cookie = NULL;
     mConfig.inputCfg.bufferProvider.getBuffer = NULL;
     mConfig.inputCfg.bufferProvider.releaseBuffer = NULL;
@@ -377,8 +457,27 @@ status_t AudioFlinger::EffectModule::configure()
     }
     mConfig.inputCfg.mask = EFFECT_CONFIG_ALL;
     mConfig.outputCfg.mask = EFFECT_CONFIG_ALL;
+
+
+#ifdef MTK_HIFI_AUDIO
+    if(OUTPUT_RATE_192 == thread->sampleRate() || OUTPUT_RATE_96 == thread->sampleRate() || OUTPUT_RATE_176_4 == thread->sampleRate() || OUTPUT_RATE_88_2 == thread->sampleRate())
+    {
+        size_t framecount = thread->frameCount();
+        if(OUTPUT_RATE_192 == thread->sampleRate() || OUTPUT_RATE_176_4 == thread->sampleRate())
+            framecount = framecount >> 2;
+        else
+            framecount = framecount >> 1;
+
+        ALOGD("effect configure framecount %d", framecount);
+        mConfig.inputCfg.buffer.frameCount = framecount;
+        mConfig.outputCfg.buffer.frameCount = framecount;
+    }
+    else
+#endif
+    {
     mConfig.inputCfg.buffer.frameCount = thread->frameCount();
     mConfig.outputCfg.buffer.frameCount = mConfig.inputCfg.buffer.frameCount;
+    }
 
     ALOGV("configure() %p thread %p buffer %p framecount %d",
             this, thread.get(), mConfig.inputCfg.buffer.raw, mConfig.inputCfg.buffer.frameCount);
@@ -542,6 +641,36 @@ status_t AudioFlinger::EffectModule::remove_effect_from_hal_l()
     }
     return NO_ERROR;
 }
+//<MTK_AUDIO_ADD
+//FIX CR:ALPS00041097
+#ifdef MTK_AUDIO
+status_t AudioFlinger::EffectModule::clearbuf_l()
+{
+    if (mEffectInterface == NULL)
+    {
+        return NO_INIT;
+    }
+    status_t cmdStatus;
+    uint32_t size = sizeof(status_t);
+    status_t status = (*mEffectInterface)->command(mEffectInterface,
+                      EFFECT_CMD_CLEARBUF,
+                      0,
+                      NULL,
+                      &size,
+                      &cmdStatus);
+    if (status == 0)
+    {
+        status = cmdStatus;
+    }
+    return status;
+}
+#else
+status_t AudioFlinger::EffectModule::clearbuf_l()
+{
+    return NO_INIT;
+}
+#endif
+//MTK_AUDIO_ADD>
 
 status_t AudioFlinger::EffectModule::command(uint32_t cmdCode,
                                              uint32_t cmdSize,
@@ -678,11 +807,19 @@ status_t AudioFlinger::EffectModule::setVolume(uint32_t *left, uint32_t *right, 
             ((mDescriptor.flags & EFFECT_FLAG_VOLUME_MASK) == EFFECT_FLAG_VOLUME_CTRL ||
             (mDescriptor.flags & EFFECT_FLAG_VOLUME_MASK) == EFFECT_FLAG_VOLUME_IND)) {
         status_t cmdStatus;
+#ifdef MTK_AUDIO
+        uint32_t volume[3];
+#else
         uint32_t volume[2];
+#endif
         uint32_t *pVolume = NULL;
         uint32_t size = sizeof(volume);
         volume[0] = *left;
         volume[1] = *right;
+#ifdef MTK_AUDIO
+        volume[2] = mFirstVolume;
+        mFirstVolume = false;
+#endif
         if (controller) {
             pVolume = volume;
         }
@@ -770,6 +907,9 @@ status_t AudioFlinger::EffectModule::setAudioSource(audio_source_t source)
 
 void AudioFlinger::EffectModule::setSuspended(bool suspended)
 {
+#ifdef DOLBY_DAP
+    EffectDapController::instance()->effectSuspended(this, suspended);
+#endif // DOLBY_END
     Mutex::Autolock _l(mLock);
     mSuspended = suspended;
 }
@@ -835,6 +975,14 @@ bool AudioFlinger::EffectModule::isOffloaded() const
     Mutex::Autolock _l(mLock);
     return mOffloaded;
 }
+
+//<MTK_AUDIO_ADD
+// To identify the volume applied is the frist value or not.
+void AudioFlinger::EffectModule::setFirstVolume( bool firstVolume ){
+    mFirstVolume = firstVolume;
+}
+//MTK_AUDIO_ADD>
+
 
 String8 effectFlagsToString(uint32_t flags) {
     String8 s;
@@ -1583,8 +1731,12 @@ status_t AudioFlinger::EffectChain::addEffect_l(const sp<EffectModule>& effect)
         ALOGV("addEffect_l() effect %p, added in chain %p at rank %d", effect.get(), this,
                 idx_insert);
     }
+#ifdef DOLBY_DAP
+    return effect->configure();
+#else // DOLBY_END
     effect->configure();
     return NO_ERROR;
+#endif // LINE_ADDED_BY_DOLBY
 }
 
 // removeEffect_l() must be called with PlaybackThread::mLock held
@@ -1682,6 +1834,12 @@ bool AudioFlinger::EffectChain::setVolume_l(uint32_t *left, uint32_t *right)
 
     // second get volume update from volume controller
     if (ctrlIdx >= 0) {
+#ifdef MTK_AUDIO
+        if( mNewLeftVolume== -1 && mNewRightVolume == -1 ){
+            ALOGD("set first volume");
+            mEffects[ctrlIdx]->setFirstVolume( true );
+        }
+#endif
         mEffects[ctrlIdx]->setVolume(&newLeft, &newRight, true);
         mNewLeftVolume = newLeft;
         mNewRightVolume = newRight;
@@ -1708,6 +1866,24 @@ bool AudioFlinger::EffectChain::setVolume_l(uint32_t *left, uint32_t *right)
 
     return hasControl;
 }
+//<MTK_AUDIO_ADD
+//FIX CR: ALPS00041097
+#ifdef MTK_AUDIO
+void AudioFlinger::EffectChain::clearBuf()
+{
+    size_t size = mEffects.size();
+    for (size_t i = 0; i < size; i++)
+    {
+        if (mEffects[i]->isEnabled())
+            mEffects[i]->clearbuf_l();
+    }
+}
+#else
+void AudioFlinger::EffectChain::clearBuf()
+{
+}
+#endif
+//MTK_AUDIO_ADD>
 
 void AudioFlinger::EffectChain::syncHalEffectsState()
 {
@@ -1853,9 +2029,21 @@ void AudioFlinger::EffectChain::setEffectSuspendedAll_l(bool suspend)
             for (size_t i = 0; i < types.size(); i++) {
                 setEffectSuspended_l(types[i], false);
             }
+#ifdef MTK_AUDIO // for ALPS2023218
+            ALOGD("setEffectSuspendedAll_l, try to remove index = %d", index);
+            ssize_t newIndex = mSuspendedEffects.indexOfKey((int)kKeyForSuspendAll);
+            ALOGD("setEffectSuspendedAll_l, update index = %d before delete", newIndex);
+            if (newIndex >= 0) {
+                ALOGV("setEffectSuspendedAll_l() remove entry for %08x",mSuspendedEffects.keyAt(newIndex));
+                mSuspendedEffects.removeItem((int)kKeyForSuspendAll);
+            } else {
+                ALOGD("setEffectSuspendedAll_l index = %d, someone already delete the index", newIndex);
+            }
+#else
             ALOGV("setEffectSuspendedAll_l() remove entry for %08x",
                     mSuspendedEffects.keyAt(index));
             mSuspendedEffects.removeItem((int)kKeyForSuspendAll);
+#endif
         }
     }
 }

@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -26,6 +31,10 @@
 #include <utils/List.h>
 #include <utils/Vector.h>
 #include <utils/String8.h>
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <include/SampleTable.h>
+#include <media/stagefright/MetaData.h>
+#endif
 
 namespace android {
 
@@ -38,6 +47,15 @@ struct SidxEntry {
     size_t mSize;
     uint32_t mDurationUs;
 };
+
+struct MfraEntry{ //playready
+    uint32_t trackid;
+    uint64_t mTime;
+    uint64_t mMoofOffset;
+    uint32_t mTrafNumber;
+    uint32_t mTrunNumber;
+    uint32_t mSampleNumber;
+}; //playready
 
 struct Trex {
     uint32_t track_ID;
@@ -55,7 +73,6 @@ public:
     virtual size_t countTracks();
     virtual sp<MediaSource> getTrack(size_t index);
     virtual sp<MetaData> getTrackMetaData(size_t index, uint32_t flags);
-
     virtual sp<MetaData> getMetaData();
     virtual uint32_t flags() const;
 
@@ -79,6 +96,43 @@ private:
         sp<SampleTable> sampleTable;
         bool includes_expensive_metadata;
         bool skipTrack;
+#ifdef MTK_AOSP_ENHANCEMENT
+        uint32_t timescaleFactor; // check timescale too large
+    uint32_t sampleCount;//added by hai.li to check unsupport video
+    int64_t durationUs;
+    bool mIsVideo;
+    bool mIsAudio;
+    bool mIsH263;
+        size_t mMaxSize;
+
+    struct ElstEntry {//added by hai.li to support time offset
+        uint64_t SegDuration;
+        int64_t MediaTime;
+        int16_t MediaRateInt;
+        int16_t MediaRateFrac;
+    };
+    ElstEntry *mElstEntries;
+    uint32_t mElstEntryCount;
+    uint32_t mStartTimeOffset;//in movie time scale
+
+    Track() {
+        mElstEntries = NULL;
+        mElstEntryCount = 0;
+        sampleCount = 0;
+        durationUs = 0;
+        mStartTimeOffset = 0;
+        mIsVideo = false;
+        mIsAudio = false;
+        mIsH263 = false;
+                mMaxSize = 0;
+                timescaleFactor = 0;
+    }
+    //protected:
+    virtual ~Track() {
+        if (mElstEntries && mElstEntryCount)
+        delete mElstEntries;
+    }
+#endif
     };
 
     Vector<SidxEntry> mSidxEntries;
@@ -140,6 +194,23 @@ private:
 
     MPEG4Extractor(const MPEG4Extractor &);
     MPEG4Extractor &operator=(const MPEG4Extractor &);
+#ifdef MTK_AOSP_ENHANCEMENT
+public:
+    KeyedVector<unsigned, Vector<MfraEntry> > mMfraEntries; // playready
+    Vector<MfraEntry> mMfraEntry;        //   playready,  used for not mfra box, only for null argv
+    bool mIsPlayReady;   // playready
+    uint64_t mHeaderDurationUs; //playready,   file duration
+    // set new dataSource for mpeg4source, used by http streaming
+    void changeDataSource(const sp<MediaSource> &mp4Source, const sp<DataSource> &dataSource);
+
+private:
+    bool mHasAudio;
+    status_t parseDrmSINFTrack(off64_t *offset, off64_t data_offset); // playReady
+    status_t parseDrmSINFMOOV(off64_t *offset, off64_t data_offset); // playReady
+    status_t parseMovieFragment(off64_t data_offset, size_t data_size); // playReady
+    status_t setCodecInfoFromFirstFrame(Track *track);
+    status_t setMetaData();
+#endif
 };
 
 bool SniffMPEG4(

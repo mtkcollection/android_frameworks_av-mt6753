@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2011 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -43,6 +48,11 @@ HTTPBase::HTTPBase()
 void HTTPBase::addBandwidthMeasurement(
         size_t numBytes, int64_t delayUs) {
     Mutex::Autolock autoLock(mLock);
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (numBytes <= 0) {
+        return;
+    }
+#endif
 
     BandwidthEntry entry;
     entry.mDelayUs = delayUs;
@@ -50,7 +60,9 @@ void HTTPBase::addBandwidthMeasurement(
     mTotalTransferTimeUs += delayUs;
     mTotalTransferBytes += numBytes;
 
+
     mBandwidthHistory.push_back(entry);
+
     if (++mNumBandwidthHistoryItems > mMaxBandwidthHistoryItems) {
         BandwidthEntry *entry = &*mBandwidthHistory.begin();
         mTotalTransferTimeUs -= entry->mDelayUs;
@@ -139,4 +151,31 @@ void HTTPBase::UnRegisterSocketUserMark(int sockfd) {
     RegisterSocketUserMark(sockfd, geteuid());
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+bool HTTPBase::estimateBandwidth(int32_t countdepth, int32_t *bandwidth_bps) {
+    Mutex::Autolock autoLock(mLock);
+
+    if (mNumBandwidthHistoryItems < (size_t)countdepth) {
+        ALOGD("mNumBandwidthHistoryItems[%zu] < countdepth[%d] return false ", mNumBandwidthHistoryItems, countdepth);
+        return false;
+    }
+    if (countdepth > 200) countdepth = 200;
+
+
+    size_t numBytes = 0;
+    int64_t delayUs = 0;
+    // int32_t count = mBandwidthHistory.size();
+    List<BandwidthEntry>::iterator it = mBandwidthHistory.end();
+    it--;
+    for (int i = 0; i < countdepth; i++) {
+        numBytes += it->mNumBytes;
+        delayUs += it->mDelayUs;
+        it--;
+    }
+
+    *bandwidth_bps = ((double)numBytes * 8E6 / delayUs);
+
+    return true;
+}
+#endif
 }  // namespace android

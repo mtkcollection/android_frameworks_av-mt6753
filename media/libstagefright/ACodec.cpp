@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,9 +18,20 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
-//#define LOG_NDEBUG 0
-#define LOG_TAG "ACodec"
+#ifdef MTK_AOSP_ENHANCEMENT
+    #define LOG_TAG "ACodec"
+    #include <cutils/log.h>
+    #undef ALOGV
+    #define ALOGV ALOGD
+    #define ATRACE_TAG ATRACE_TAG_VIDEO
+    #ifdef HAVE_AEE_FEATURE
+    #include "aee.h"
+    #endif
+#else
+//  #define LOG_NDEBUG 0
+    #define LOG_TAG "ACodec"
+    #include <utils/Log.h>
+#endif
 
 #ifdef __LP64__
 #define OMX_ANDROID_COMPILE_AS_32BIT_ON_64BIT_PLATFORMS
@@ -54,6 +70,33 @@
 
 #include "include/avc_utils.h"
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#define DUMP_PROFILE 0
+#include <ctype.h>
+#include <linux/rtpm_prio.h>
+#include <utils/threads.h>
+#include <cutils/properties.h>
+#include <utils/CallStack.h> //Callstack
+#include "graphics_mtk_defs.h"
+#include "gralloc_mtk_defs.h"
+#include <media/stagefright/MetaData.h>
+//FIXME
+//#include "stringprintf.h"
+
+#define MTK_BUF_ADDR_ALIGNMENT_VALUE 512
+
+#define MEM_ALIGN_32 32
+#define ROUND_16(X)     ((X + 0xF) & (~0xF))
+#define ROUND_32(X)     ((X + 0x1F) & (~0x1F))
+#define YUV_SIZE(W,H)   (W * H * 3 >> 1)
+
+#define MP3_MULTI_FRAME_COUNT_IN_ONE_INPUTBUFFER_FOR_PURE_AUDIO 20
+#define MP3_MULTI_FRAME_COUNT_IN_ONE_INPUTBUFFER_FOR_VIDEO 1
+#define MP3_MULTI_FRAME_COUNT_IN_ONE_OUTPUTBUFFER_FOR_PURE_AUDIO 20
+#define MP3_MULTI_FRAME_COUNT_IN_ONE_OUTPUTBUFFER_FOR_VIDEO 1
+static int16_t mp3FrameCountInBuffer = 1;
+#endif
+
 namespace android {
 
 // OMX errors are directly mapped into status_t range if
@@ -70,6 +113,14 @@ namespace android {
 
 // returns true if err is a recognized OMX error code.
 // as OMX error is OMX_S32, this is an int32_t type
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    //for ape seek on acodec
+    uint32_t *newframe_p = NULL;
+    uint32_t *seekbyte_p = NULL;
+#endif //MTK_AOSP_ENHANCEMENT
+
+
 static inline bool isOMXError(int32_t err) {
     return (ERROR_CODEC_MIN <= err && err <= ERROR_CODEC_MAX);
 }
@@ -179,6 +230,11 @@ struct CodecObserver : public BnOMXObserver {
                             omx_msg.u.extended_buffer_data.timestamp);
                     msg->setInt32(
                             "fence_fd", omx_msg.fenceFd);
+#ifdef MTK_AOSP_ENHANCEMENT
+                    msg->setInt32(
+                            "ticks",
+                            omx_msg.u.extended_buffer_data.token_tick);
+#endif//MTK_AOSP_ENHANCEMENT
                     break;
                 }
 
@@ -251,12 +307,20 @@ private:
             IOMX::buffer_id bufferID,
             size_t rangeOffset, size_t rangeLength,
             OMX_U32 flags,
+#ifdef MTK_AOSP_ENHANCEMENT
+            int64_t timeUs, OMX_U32 ticks,
+#else//not MTK_AOSP_ENHANCEMENT
             int64_t timeUs,
+#endif//MTK_AOSP_ENHANCEMENT
             int fenceFd);
 
     virtual bool onOMXFrameRendered(int64_t mediaTimeUs, nsecs_t systemNano);
 
     void getMoreInputDataIfPossible();
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    void setAVSyncTime(int64_t time);
+#endif
 
     DISALLOW_EVIL_CONSTRUCTORS(BaseState);
 };
@@ -457,6 +521,327 @@ private:
 };
 
 ////////////////////////////////////////////////////////////////////////////////
+#ifdef MTK_AOSP_ENHANCEMENT
+bool ACodec::mIsProfileBufferActivity = false;
+static int32_t getProperty(const char* propertyName, const char* defaultValue)
+{
+    char value[PROPERTY_VALUE_MAX];
+    int32_t ret = -1;
+
+    property_get(propertyName, value, defaultValue);
+    ret = atoi(value);
+
+    return ret;
+}
+
+static int64_t getTickCountMs()
+{
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (int64_t)(tv.tv_sec * 1000LL + tv.tv_usec / 1000);
+}
+
+static int64_t getTickCountUs()
+{
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (int64_t)(tv.tv_sec * 1000000LL + tv.tv_usec);
+}
+
+status_t ACodec::profileAndDequeueNativeWindow(
+    ANativeWindow *anw,
+    struct ANativeWindowBuffer** anb,
+    int *fenceFd)
+{
+    if (true == mIsProfileNWqueueBuffer){
+        ALOGD("+dequeueBuffer");
+    }
+
+    int64_t startTime = getTickCountUs();
+    status_t err = mNativeWindow->dequeueBuffer(anw, anb, fenceFd);
+    int64_t duration = getTickCountUs() - startTime;
+
+    if (true == mIsProfileNWqueueBuffer){
+        ALOGD("-dequeueBuffer (%lld)", (long long)duration);
+    }
+
+    //Log waning on long duration. 10ms is an empirical value.
+    if (duration >= 10000){
+        ALOGW("mNativeWindow->dequeueBuffer() took %lld us",
+            (long long)duration);
+    }
+    return err;
+}
+
+status_t ACodec::profileAndQueueBuffer2NativeWindow(
+    struct ANativeWindow* window,
+    struct ANativeWindowBuffer* buffer,
+    int fenceFd)
+{
+    ATRACE_NAME("Acode_NW_QB");
+    if (true == mIsProfileFPS){
+        if (0 == mFrameCount){
+            mLastPostBufferTime = mFirstPostBufferTime = getTickCountMs();
+        }else{
+            if (0 == (mFrameCount % 60)){
+                int64_t _i8CurrentMs = getTickCountMs();
+                int64_t _diff = _i8CurrentMs - mFirstPostBufferTime;
+                int64_t _60Framediff = _i8CurrentMs - mLastPostBufferTime;
+
+                mLastPostBufferTime = _i8CurrentMs;
+                double fps = (double)1000 * mFrameCount / _diff;
+                double slotfps = (double)1000 * 60 / _60Framediff;
+                ALOGD("FPS = %.2f, Slot FPS = %.2f", fps, slotfps);
+            }
+        }
+    }
+    ++mFrameCount;
+
+    if (true == mIsProfileNWqueueBuffer){
+        ALOGD("+queueBuffer [%d]", mFrameCount);
+    }
+
+    int64_t startTime = getTickCountUs();
+    status_t err = mNativeWindow->queueBuffer(window, buffer, fenceFd);
+    int64_t duration = getTickCountUs() - startTime;
+
+    if (true == mIsProfileNWqueueBuffer){
+        ALOGD("-queueBuffer (%lld)", (long long)duration);
+    }
+
+    //Log waning on long duration. 10ms is an empirical value.
+    if (duration >= 10000){
+        ALOGW("NativeWindow->queueBuffer() took %lld us for frame#%d",
+            (long long)duration, mFrameCount);
+    }
+
+    return err;
+}
+
+static inline bool IsWhoIAm(const char* who, const char* me)
+{
+    bool ret = false;
+    if (!strncmp(who, me, strlen(me))){
+        ret = true;
+    }
+    return ret;
+}
+static inline bool IsMTKComponent(const char* componentName)
+{
+    #define IAM_MTK_COMP "OMX.MTK."
+    return IsWhoIAm(componentName, IAM_MTK_COMP);
+}
+
+static inline bool IsMTKVideoDecoderComponent(const char* componentName)
+{
+    #define IAM_MTK_VDEC "OMX.MTK.VIDEO.DECODER"
+    return IsWhoIAm(componentName, IAM_MTK_VDEC);
+}
+
+static inline bool IsMTKVideoEncoderComponent(const char* componentName)
+{
+    #define IAM_MTK_VENC "OMX.MTK.VIDEO.ENCODER"
+    return IsWhoIAm(componentName, IAM_MTK_VENC);
+}
+
+
+// This function should be called whenever the SM speed is changed.
+status_t ACodec::setSlowMotionSpeed(unsigned int u4SlowMotionSpeed)
+{
+#ifdef MTK_16X_SLOWMOTION_VIDEO_SUPPORT
+    if (mIsVideoDecoder){
+        if (IsMTKComponent(mComponentName.c_str())){
+            unsigned int u4NewPlaySpeed = ((unsigned int)u4SlowMotionSpeed);
+
+            status_t err = mOMX->setConfig(mNode,
+                OMX_IndexVendorMtkOmxVdecSlowMotionSpeed,
+                &u4NewPlaySpeed, sizeof(void *));
+
+            if (err != OK){
+                return err;
+            }
+        }
+    }
+    return OK;
+#else   //#ifdef MTK_16X_SLOWMOTION_VIDEO_SUPPORT
+    u4SlowMotionSpeed = 0;
+    ALOGD("setSlowMotionSpeed ERROR_UNSUPPORTED");
+    return ERROR_UNSUPPORTED;
+#endif  //#ifdef MTK_16X_SLOWMOTION_VIDEO_SUPPORT
+}
+
+status_t ACodec::setSlowMotionSection(int64_t i64StartTime, int64_t i64EndTime)
+{
+#ifdef MTK_16X_SLOWMOTION_VIDEO_SUPPORT
+    if (mIsVideoDecoder){
+        if (IsMTKComponent(mComponentName.c_str())){
+            OMX_MTK_SLOWMOTION_SECTION eSection;
+            eSection.StartTime  = i64StartTime;
+            eSection.EndTime    = i64EndTime;
+
+            status_t err = mOMX->setConfig(mNode,
+                OMX_IndexVendorMtkOmxVdecSlowMotionSection,
+                &eSection, sizeof(void *));
+            if (err != OK){
+                return err;
+            }
+        }
+    }
+    return OK;
+#else   //#ifdef MTK_16X_SLOWMOTION_VIDEO_SUPPORT
+    i64StartTime = 0;
+    i64EndTime = 0;
+    ALOGD("setSlowMotionSection ERROR_UNSUPPORTED");
+    return ERROR_UNSUPPORTED;
+#endif  //#ifdef MTK_16X_SLOWMOTION_VIDEO_SUPPORT
+
+}
+
+void ACodec::configureInputDump()
+{
+    //FIXME
+#if 0
+    int32_t dummy = 0;
+    char value[PROPERTY_VALUE_MAX];
+    property_get("acodec.video.bstrdump", value, "0");
+    dummy = atof(value);
+    if (dummy > 0) {
+        mIsDumpFile = true;
+        struct timeval tv;
+        struct tm *tm;
+        gettimeofday(&tv, NULL);
+        tm = localtime(&tv.tv_sec);
+        AString sName = StringPrintf("/sdcard/ACodec.%s.%02d%02d", mComponentName.c_str(), tm->tm_hour, tm->tm_min);
+        mDumpFile = fopen(sName.c_str(), "wb");
+        if (mDumpFile == NULL) {
+            ALOGE("dump file cannot create %s", sName.c_str());
+        }
+    }
+    ALOGD ("acodec.video.bstrdump %x", dummy);
+#endif
+}
+
+void ACodec::dumpInput(sp<ABuffer> buffer)
+{
+    if ( (true == this->mIsDumpFile ) && (buffer != NULL) ) {
+        int64_t tt;
+        int32_t isCSD = false;
+        buffer->meta()->findInt64("timeUs", &tt);
+        ALOGD("[%s]buffer to be empty, %lld, %p, size = %d",
+            this->mComponentName.c_str(), (long long)tt, buffer->data(), (int)buffer->size());
+        buffer->meta()->findInt32("csd", &isCSD) ;
+        if (buffer->size() >= 4) {
+            ALOGD("[%s]\t\t %s, %02x %02x %02x %02x",
+                    this->mComponentName.c_str(),
+                    isCSD ? "codec_cfg":"",
+                    buffer->data()[0], buffer->data()[1] , buffer->data()[2] , buffer->data()[3]);
+        }
+
+        if (this->mDumpFile != NULL) {
+            if (!isCSD) {
+                char nal_prefix[] = {0, 0, 0, 1};
+                fwrite(nal_prefix, 1, 4, this->mDumpFile);
+            }
+            size_t nWrite = fwrite(buffer->data(), 1, buffer->size(), this->mDumpFile);
+            ALOGD("written %lld bytes, ftell = %d", (long long)nWrite, (int)ftell(this->mDumpFile));
+        }
+    }
+}
+
+
+void ACodec::configureOutputDump()
+{
+    //FIXME
+#if 0
+    int32_t dummy = 0;
+    char value[PROPERTY_VALUE_MAX];
+    property_get("acodec.video.rawdump", value, "0");
+    dummy = atof(value);
+    if (dummy > 0) {
+        mIsDumpRawFile = true;
+        struct timeval tv;
+        struct tm *tm;
+        gettimeofday(&tv, NULL);
+        tm = localtime(&tv.tv_sec);
+        AString sName = StringPrintf("//sdcard/ACodecRaw.%02d%02d%02d.yuv", tm->tm_hour, tm->tm_min, tm->tm_sec);
+        mDumpRawFile = fopen(sName.c_str(), "wb");
+        if (mDumpRawFile == NULL) {
+            ALOGE("dump raw file cannot create %s", sName.c_str());
+        }
+        else
+            ALOGI("open file %s done", sName.c_str());
+    }
+    ALOGD ("acodec.video.rawdump %x", dummy);
+    dummy = 0;
+    property_get("acodec.video.profiledump", value, "0");
+    dummy = atof(value);
+    if (dummy > 0) {
+        mIsDumpProflingFile = true;
+        ALOGD ("acodec.video.profiledump %x", dummy);
+    }
+#endif
+}
+
+void ACodec::dumpOutputOnOMXFBD(BufferInfo *info, size_t rangeLength)
+{
+    if ( (true == this->mIsDumpRawFile)
+            && (this->mNativeWindow == NULL)
+            && (info->mData->data() != NULL)) {
+        //if dump MTK blk yuv, size: YUV_SIZE(ROUND_16(videoDef->nFrameWidth), ROUND_32(videoDef->nFrameHeight))
+        if ( ( 0 != rangeLength )
+            && (this->mDumpRawFile != NULL)
+            && (IsMTKVideoDecoderComponent(this->mComponentName.c_str()))) {
+        size_t nWrite = fwrite(info->mData->data(), 1, info->mData->capacity(),  this->mDumpRawFile);
+        // info->mData->capacity() is different from info->mData->size()
+        ALOGD("Raw written %lld bytes, capacity = %lld, ftell = %d", (long long)nWrite,
+            (long long)info->mData->capacity(), (int)ftell(this->mDumpRawFile));
+        }
+    }
+}
+
+void ACodec::dumpOutputOnOutputBufferDrained(BufferInfo *info)
+{
+    if ( true == this->mIsDumpRawFile) {
+        const uint8_t *rawbuffer = NULL;
+        info->mGraphicBuffer.get()->lock(GRALLOC_USAGE_SW_READ_OFTEN | GRALLOC_USAGE_SW_WRITE_OFTEN, (void**)(&rawbuffer));
+        if (NULL == rawbuffer)
+        {
+            info->mGraphicBuffer.get()->unlock();
+        }
+        else if ( ( 0 != info->mData->capacity() ) && (this->mDumpRawFile != NULL) ) {
+            if( storingMetadataInDecodedBuffers() )
+            {
+                uint32_t mWidth;
+                uint32_t mHeight;
+                uint32_t mStride;
+
+                mWidth = info->mGraphicBuffer->getWidth();
+                mHeight = info->mGraphicBuffer->getHeight();
+                mStride = info->mGraphicBuffer->getStride();
+
+                ALOGD("getWidth:%d, Height:%d, Stride:%d, PixelFormat:%d", mWidth,
+                    mHeight, mStride,
+                    info->mGraphicBuffer->getPixelFormat());
+
+                size_t nWrite = fwrite(rawbuffer, 1, mStride*mHeight*3/2,  this->mDumpRawFile);
+                ALOGD("RawBuf %p, written %lld bytes, %lld, mRangeLength = %lld, ftell = %d",
+                    rawbuffer, (long long)nWrite, (long long)info->mData->size(), (long long)info->mData->capacity(), (int)ftell(this->mDumpRawFile));
+            }
+            else
+            {
+                size_t nWrite = fwrite(rawbuffer, 1, info->mData->size(),  this->mDumpRawFile);
+                ALOGD("RawBuf %p, written %lld bytes, %lld, mRangeLength = %lld, ftell = %d",
+                    rawbuffer, (long long)nWrite, (long long)info->mData->size(), (long long)info->mData->capacity(), (int)ftell(this->mDumpRawFile));
+            }
+        }
+        if (NULL != rawbuffer)
+        {
+            info->mGraphicBuffer.get()->unlock();
+        }
+    }
+}
+#endif //#ifdef MTK_AOSP_ENHANCEMENT
+////////////////////////////////////////////////////////////////////////////////
 
 void ACodec::BufferInfo::setWriteFence(int fenceFd, const char *dbg) {
     if (mFenceFd >= 0) {
@@ -516,7 +901,39 @@ ACodec::ACodec()
       mTimePerFrameUs(-1ll),
       mTimePerCaptureUs(-1ll),
       mCreateInputBuffersSuspended(false),
-      mTunneled(false) {
+      mTunneled(false),
+#ifdef MTK_AOSP_ENHANCEMENT
+      mSupportsPartialFrames(false),
+      mIsVideoDecoder(false),
+      mIsVideoEncoder(false),
+      mLeftOverBuffer(NULL),
+      mMaxQueueBufferNum(-1),
+      mDumpFile(NULL),
+      mIsDumpFile(false),
+      mVideoAspectRatioWidth(1),
+      mVideoAspectRatioHeight(1),
+      mDumpRawFile(NULL),
+      mIsDumpRawFile(false),
+      mAlignedSize(0),
+      mM4UBufferHandle(NULL),
+      mIsDumpProflingFile(false),
+      mIsVideoEncoderInputSurface(0),
+#if APPLY_CHECKING_FLUSH_COMPLETED
+      mTotalTimeDuringCheckFlush(0),
+      mPortsFlushComplete(0),
+#endif //APPLY_CHECKING_FLUSH_COMPLETED
+      mOMXLivesLocally(false),
+      mIsProfileFPS(false),
+      mIsProfileNWqueueBuffer(false),
+      mFrameCount(0),
+      mFirstPostBufferTime(0),
+      mLastPostBufferTime(0),
+      mIsSlowmotion(false),
+      mAnchorTimeRealUs(0),
+      mFirstDrainBufferTime(-1ll),
+      mFirstTimeStamp(-1ll)
+#endif //MTK_AOSP_ENHANCEMENT
+{
     mUninitializedState = new UninitializedState(this);
     mLoadedState = new LoadedState(this);
     mLoadedToIdleState = new LoadedToIdleState(this);
@@ -533,10 +950,45 @@ ACodec::ACodec()
     mPortEOS[kPortIndexInput] = mPortEOS[kPortIndexOutput] = false;
     mInputEOSResult = OK;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    //Profiling native window queueBuffer time by default
+    int32_t ret = getProperty("sf.showfps", "1");
+    if (ret) {
+        mIsProfileFPS = true;
+    }
+
+    //NOT profiling native window queueBuffer time by default
+    ret = getProperty("sf.postbuffer.prof", "0");
+    if (ret) {
+        mIsProfileNWqueueBuffer = true;
+    }
+
+    //NOT profiling buffer activity by default
+    ret = getProperty("buf.activity.prof", "0");
+    if (ret) {
+        mIsProfileBufferActivity = true;
+    }
+
+    mIsAudioBufferLogSwitchOn = false;
+#endif
+
     changeState(mUninitializedState);
 }
 
 ACodec::~ACodec() {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("~ACodec");
+   if (mDumpFile != NULL) {
+        fclose(mDumpFile);
+        mDumpFile = NULL;
+        ALOGD("dump file closed");
+    }
+    if (mDumpRawFile != NULL) {
+        fclose(mDumpRawFile);
+        mDumpRawFile = NULL;
+        ALOGD("dump raw file closed");
+    }
+#endif //MTK_AOSP_ENHANCEMENT
 }
 
 void ACodec::setNotificationMessage(const sp<AMessage> &msg) {
@@ -600,11 +1052,14 @@ void ACodec::initiateStart() {
 }
 
 void ACodec::signalFlush() {
-    ALOGV("[%s] signalFlush", mComponentName.c_str());
+    ALOGD("[%s] signalFlush", mComponentName.c_str());
     (new AMessage(kWhatFlush, this))->post();
 }
 
 void ACodec::signalResume() {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("[%s] signalResume", mComponentName.c_str());
+#endif //MTK_AOSP_ENHANCEMENT
     (new AMessage(kWhatResume, this))->post();
 }
 
@@ -712,6 +1167,12 @@ status_t ACodec::handleSetSurface(const sp<Surface> &surface) {
     // for non-meta mode, we must move all registered buffers
     for (size_t i = 0; i < buffers.size(); ++i) {
         const BufferInfo &info = buffers[i];
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (info.mGraphicBuffer == NULL) {
+            ALOGE("mGraphicBuffer is NULL in BufferInfo (%p); skip this round.", &info);
+            continue;
+        }
+#endif
         // skip undequeued buffers for meta data mode
         if (storingMetadataInDecodedBuffers()
                 && !mLegacyAdaptiveExperiment
@@ -761,6 +1222,57 @@ status_t ACodec::handleSetSurface(const sp<Surface> &surface) {
     return OK;
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#if APPLY_CHECKING_FLUSH_COMPLETED
+void ACodec::signalVDecFlushDoneCheck(int delayTime, int mTimeOut) {
+    sp<AMessage> msg = new AMessage(kWhatMtkVdecCheckFlushDone, this);
+    msg->setInt32("MtkVDecFlushDoneCheckDelayTime", delayTime);
+    msg->setInt32("MtkVDecFlushDoneCheckTimeOut", mTimeOut);
+    msg->post(delayTime);
+    ALOGD("signalVDecFlushDoneCheck");
+}
+
+status_t ACodec::setVDecCheckFlushDone(int delayTime, int mTimeOut) {
+    if (mIsEncoder) {
+        return ERROR_UNSUPPORTED;
+    }
+    if (IsMTKVideoDecoderComponent(mComponentName.c_str())) {
+        ALOGV("check Flushing, mInputEOSResult %d, %d, mTotalTimeDuringCheckFlush %d, mPortsFlushComplete %d, %d",
+            mInputEOSResult, delayTime, mTotalTimeDuringCheckFlush, mPortsFlushComplete, mTimeOut);
+
+        if( (mTotalTimeDuringCheckFlush+delayTime) >= (uint32_t)mTimeOut )
+        {
+            ALOGW("[%s] Timeout and log call stack after flushing %d, > %d us",
+                    mComponentName.c_str(), mTotalTimeDuringCheckFlush, mTimeOut);
+            android::CallStack stack(LOG_TAG);
+            //trigger NE
+#ifdef HAVE_AEE_FEATURE
+            aee_system_exception("ACodec", NULL, DB_OPT_FTRACE, "[%s] Flush timeout [%d]\nCRDISPATCH_KEY:%s", mComponentName.c_str(), mTotalTimeDuringCheckFlush, mComponentName.c_str());
+#else
+            CHECK_EQ(mTotalTimeDuringCheckFlush, mTimeOut);
+#endif
+        }
+        #if 1//first seek with mInputEOSResult = OK
+        else if( (mTotalTimeDuringCheckFlush > 0) && (mPortsFlushComplete == 1) )
+        {
+            ALOGD("flushing done %d, stop checking", mTotalTimeDuringCheckFlush);
+        }
+        #endif
+        else
+        {
+            sp<AMessage> msg = new AMessage(kWhatMtkVdecCheckFlushDone, this);
+            msg->setInt32("MtkVDecFlushDoneCheckDelayTime", delayTime);
+            msg->setInt32("MtkVDecFlushDoneCheckTimeOut", mTimeOut);
+            msg->post(delayTime);
+            mTotalTimeDuringCheckFlush += delayTime;
+            ALOGD("signalVDecFlushDoneCheck again after %d us", mTotalTimeDuringCheckFlush);
+        }
+    }
+    return OK;
+}
+#endif //APPLY_CHECKING_FLUSH_COMPLETED
+#endif //MTK_AOSP_ENHANCEMENT
+
 status_t ACodec::allocateBuffersOnPort(OMX_U32 portIndex) {
     CHECK(portIndex == kPortIndexInput || portIndex == kPortIndexOutput);
 
@@ -808,12 +1320,21 @@ status_t ACodec::allocateBuffersOnPort(OMX_U32 portIndex) {
                     def.nBufferCountActual, bufSize, allottedSize, def.nBufferSize, asString(type),
                     portIndex == kPortIndexInput ? "input" : "output");
 
+#ifdef MTK_AOSP_ENHANCEMENT
+            //MemoryDealer would eat memory on each allocation
+            OMX_U32 memoryAlign = 32;
+            size_t totalSize = def.nBufferCountActual *
+                ((bufSize + (memoryAlign - 1))&(~(memoryAlign - 1)));
+#else
             size_t totalSize = def.nBufferCountActual * bufSize;
+#endif
             mDealer[portIndex] = new MemoryDealer(totalSize, "ACodec");
 
             for (OMX_U32 i = 0; i < def.nBufferCountActual && err == OK; ++i) {
                 sp<IMemory> mem = mDealer[portIndex]->allocate(bufSize);
                 if (mem == NULL || mem->pointer() == NULL) {
+                    ALOGE("Failed to allocate memory from mDealer for %d from %zu",
+                            bufSize, totalSize);
                     return NO_MEMORY;
                 }
 
@@ -826,7 +1347,6 @@ status_t ACodec::allocateBuffersOnPort(OMX_U32 portIndex) {
                     (portIndex == kPortIndexInput)
                         ? OMXCodec::kRequiresAllocateBufferOnInputPorts
                         : OMXCodec::kRequiresAllocateBufferOnOutputPorts;
-
                 if ((portIndex == kPortIndexInput && (mFlags & kFlagIsSecure))
                         || (portIndex == kPortIndexOutput && usingMetadataOnEncoderOutput())) {
                     mem.clear();
@@ -836,21 +1356,46 @@ status_t ACodec::allocateBuffersOnPort(OMX_U32 portIndex) {
                             mNode, portIndex, bufSize, &info.mBufferID,
                             &ptr);
 
+                    ALOGD("@debug: bufSize %d, mFlags %x, %d", bufSize, mFlags, usingMetadataOnEncoderOutput());
+
                     info.mData = new ABuffer(ptr, bufSize);
                 } else if (mQuirks & requiresAllocateBufferBit) {
+#ifdef MTK_AOSP_ENHANCEMENT
+                    if (mOMXLivesLocally) {
+                        mem.clear();
+                        void *ptr;
+                        err = mOMX->allocateBuffer(
+                                mNode, portIndex, bufSize, &info.mBufferID, &ptr);
+                        info.mData = new ABuffer(ptr, bufSize);
+                        ALOGD("@debug: allocateBuffer locally[%d], mBufferID(%u)", (int)i, info.mBufferID);
+                    }else {
+                        err = mOMX->allocateBufferWithBackup(
+                        mNode, portIndex, mem, &info.mBufferID, bufSize);
+                        ALOGD("@debug: allocateBufferWithBackup[%d], mBufferID(%u)", (int)i, info.mBufferID);
+                    }
+#else
                     err = mOMX->allocateBufferWithBackup(
-                            mNode, portIndex, mem, &info.mBufferID, allottedSize);
+                            mNode, portIndex, mem, &info.mBufferID, bufSize);
+                    ALOGD("@debug: allocateBufferWithBackup[%d], mBufferID(%p)", (int)i, info.mBufferID);
+#endif
                 } else {
-                    err = mOMX->useBuffer(mNode, portIndex, mem, &info.mBufferID, allottedSize);
+                    err = mOMX->useBuffer(mNode, portIndex, mem, &info.mBufferID, bufSize);
+                    ALOGD("@debug: useBuffer[%d], mBufferID(%u)", (int)i, info.mBufferID);
                 }
 
                 if (mem != NULL) {
                     info.mData = new ABuffer(mem->pointer(), bufSize);
+                    ALOGD("@debug: buffer = %p, size = %d",mem->pointer(), bufSize);//print buffer address
                     if (type == kMetadataBufferTypeANWBuffer) {
                         ((VideoNativeMetadata *)mem->pointer())->nFenceFd = -1;
                     }
                 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+                if (true == mIsProfileBufferActivity && this->mIsVideo) {
+                    ALOGD("T(%p) I(%u) S(%d) P(%d), allocateBuffersOnPort", this, info.mBufferID, (int)(info.mStatus), portIndex);
+                }
+#endif
                 mBuffers[portIndex].push(info);
             }
         }
@@ -905,10 +1450,22 @@ status_t ACodec::setupNativeWindowSizeFormatAndUsage(
         usage |= GRALLOC_USAGE_PROTECTED;
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (mFlags & kFlagIsProtect) {
+        usage |= GRALLOC_USAGE_PROTECTED;
+        ALOGD("mFlags & kFlagIsProtect: %d, usage %x", kFlagIsProtect, usage);
+    }
+#endif //MTK_AOSP_ENHANCEMENT
     usage |= kVideoGrallocUsage;
     *finalUsage = usage;
 
     ALOGV("gralloc usage: %#x(OMX) => %#x(ACodec)", omxUsage, usage);
+
+    ALOGD ("setNativeWindowSizeFormatAndUsage W(%d), H(%d), Stride(%d), SliceH(%d), eHalColorFormat(%x)",
+        def.format.video.nFrameWidth, def.format.video.nFrameHeight,
+        def.format.video.nStride, def.format.video.nSliceHeight,
+        def.format.video.eColorFormat);
+
     return setNativeWindowSizeFormatAndUsage(
             nativeWindow,
             def.format.video.nFrameWidth,
@@ -916,6 +1473,7 @@ status_t ACodec::setupNativeWindowSizeFormatAndUsage(
             def.format.video.eColorFormat,
             mRotationDegrees,
             usage);
+
 }
 
 status_t ACodec::configureOutputBuffersFromNativeWindow(
@@ -935,7 +1493,6 @@ status_t ACodec::configureOutputBuffersFromNativeWindow(
         mNativeWindowUsageBits = 0;
         return err;
     }
-
     // Exits here for tunneled video playback codecs -- i.e. skips native window
     // buffer allocation step as this is managed by the tunneled OMX omponent
     // itself and explicitly sets def.nBufferCountActual to 0.
@@ -956,11 +1513,39 @@ status_t ACodec::configureOutputBuffersFromNativeWindow(
             mNativeWindow.get(), NATIVE_WINDOW_MIN_UNDEQUEUED_BUFFERS,
             (int *)minUndequeuedBuffers);
 
+    ALOGD("From NW, minUndequeuedBuffers(%d)", *minUndequeuedBuffers);
+
     if (err != 0) {
         ALOGE("NATIVE_WINDOW_MIN_UNDEQUEUED_BUFFERS query failed: %s (%d)",
                 strerror(-err), -err);
         return err;
     }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    //Need to cancel 1 more buffer for buffer queue in async mode
+    //TODO: Now it is assumed that slowmotion video use async mode
+    //      Make this explicit command from Player
+    if (mIsSlowmotion)
+    {
+        *minUndequeuedBuffers += 1; // Slowmotion will use Async mode
+        ALOGD("minUndequeuedBuffers+=1 for slow motion");
+    }
+
+#ifdef MTK_CLEARMOTION_SUPPORT
+    // For better fluency of High Frame Rate
+    //*minUndequeuedBuffers += 3;
+    //ALOGD("HRF Adjusted. minUndequeuedBuffers(%d)", *minUndequeuedBuffers);
+#endif
+
+    mOMX->setParameter(mNode, OMX_IndexVendorMtkOmxVdecGetMinUndequeuedBufs, minUndequeuedBuffers, sizeof(void *));
+    err = mOMX->getParameter(
+            mNode, OMX_IndexParamPortDefinition, &def, sizeof(def));
+    if (err != OK)
+    {
+        ALOGE("getParameter(OMX_IndexParamPortDefinition) failed: %d", err);
+        return err;
+    }
+#endif //MTK_AOSP_ENHANCEMENT
 
     // FIXME: assume that surface is controlled by app (native window
     // returns the number for the case when surface is not controlled by app)
@@ -974,10 +1559,16 @@ status_t ACodec::configureOutputBuffersFromNativeWindow(
     // 2. try to allocate two (2) additional buffers to reduce starvation from
     //    the consumer
     //    plus an extra buffer to account for incorrect minUndequeuedBufs
+
     for (OMX_U32 extraBuffers = 2 + 1; /* condition inside loop */; extraBuffers--) {
         OMX_U32 newBufferCount =
             def.nBufferCountMin + *minUndequeuedBuffers + extraBuffers;
         def.nBufferCountActual = newBufferCount;
+
+        ALOGW("nBufferCountActual %x",
+                def.nBufferCountActual);
+
+
         err = mOMX->setParameter(
                 mNode, OMX_IndexParamPortDefinition, &def, sizeof(def));
 
@@ -1003,6 +1594,10 @@ status_t ACodec::configureOutputBuffersFromNativeWindow(
         return err;
     }
 
+    ALOGD("nBufferCountActual %d, minUndequeuedBuffers %d",
+            def.nBufferCountActual, *minUndequeuedBuffers);
+
+
     *bufferCount = def.nBufferCountActual;
     *bufferSize =  def.nBufferSize;
     return err;
@@ -1021,14 +1616,18 @@ status_t ACodec::allocateOutputBuffersFromNativeWindow() {
                 ->getIGraphicBufferProducer()->allowAllocation(true);
     }
 
-    ALOGV("[%s] Allocating %u buffers from a native window of size %u on "
-         "output port",
-         mComponentName.c_str(), bufferCount, bufferSize);
+    ALOGD("[%s] Allocating %u buffers from a native window of size %u on "
+         "output port, minUndequeuedBuffers %d",
+         mComponentName.c_str(), bufferCount, bufferSize, minUndequeuedBuffers);
 
     // Dequeue buffers and send them to OMX
     for (OMX_U32 i = 0; i < bufferCount; i++) {
         ANativeWindowBuffer *buf;
+#ifdef MTK_AOSP_ENHANCEMENT
+        int fenceFd = -1;
+#else
         int fenceFd;
+#endif
         err = mNativeWindow->dequeueBuffer(mNativeWindow.get(), &buf, &fenceFd);
         if (err != 0) {
             ALOGE("dequeueBuffer failed: %s (%d)", strerror(-err), -err);
@@ -1050,11 +1649,17 @@ status_t ACodec::allocateOutputBuffersFromNativeWindow() {
                 &bufferId);
         if (err != 0) {
             ALOGE("registering GraphicBuffer %u with OMX IL component failed: "
-                 "%d", i, err);
+                 "%x", i, err);
             break;
         }
 
         mBuffers[kPortIndexOutput].editItemAt(i).mBufferID = bufferId;
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (true == mIsProfileBufferActivity && this->mIsVideo) {
+            ALOGD("T(%p) I(%u) S(%d) P(%d), allocateOutputBuffersFromNativeWindow", this, info.mBufferID, (int)(info.mStatus), kPortIndexOutput);
+        }
+#endif
+
 
         ALOGV("[%s] Registered graphic buffer with ID %u (pointer = %p)",
              mComponentName.c_str(),
@@ -1101,7 +1706,7 @@ status_t ACodec::allocateOutputMetadataBuffers() {
         return err;
     mNumUndequeuedBuffers = minUndequeuedBuffers;
 
-    ALOGV("[%s] Allocating %u meta buffers on output port",
+    ALOGD("[%s] Allocating %u meta buffers on output port",
          mComponentName.c_str(), bufferCount);
 
     size_t bufSize = mOutputMetadataType == kMetadataBufferTypeANWBuffer ?
@@ -1131,9 +1736,14 @@ status_t ACodec::allocateOutputMetadataBuffers() {
         err = mOMX->useBuffer(
                 mNode, kPortIndexOutput, mem, &info.mBufferID, mem->size());
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (true == mIsProfileBufferActivity && this->mIsVideo) {
+            ALOGD("T(%p) I(%u) S(%d) P(%d), allocateOutputMetaDataBuffers", this, info.mBufferID, (int)(info.mStatus), kPortIndexOutput);
+        }
+#endif
         mBuffers[kPortIndexOutput].push(info);
 
-        ALOGV("[%s] allocated meta buffer with ID %u (pointer = %p)",
+        ALOGD("[%s] allocated meta buffer with ID %u (pointer = %p)",
              mComponentName.c_str(), info.mBufferID, mem->pointer());
     }
 
@@ -1151,7 +1761,11 @@ status_t ACodec::allocateOutputMetadataBuffers() {
             BufferInfo *info = &mBuffers[kPortIndexOutput].editItemAt(i);
 
             ANativeWindowBuffer *buf;
+#ifdef MTK_AOSP_ENHANCEMENT
+            int fenceFd = -1;
+#else
             int fenceFd;
+#endif
             err = mNativeWindow->dequeueBuffer(mNativeWindow.get(), &buf, &fenceFd);
             if (err != 0) {
                 ALOGE("dequeueBuffer failed: %s (%d)", strerror(-err), -err);
@@ -1194,7 +1808,7 @@ status_t ACodec::submitOutputMetadataBuffer() {
         return ERROR_IO;
     }
 
-    ALOGV("[%s] submitting output meta buffer ID %u for graphic buffer %p",
+    ALOGD("[%s] submitting output meta buffer ID %u for graphic buffer %p",
           mComponentName.c_str(), info->mBufferID, info->mGraphicBuffer.get());
 
     --mMetadataBuffersToSubmit;
@@ -1204,7 +1818,11 @@ status_t ACodec::submitOutputMetadataBuffer() {
     if (err == OK) {
         info->mStatus = BufferInfo::OWNED_BY_COMPONENT;
     }
-
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (true == mIsProfileBufferActivity && this->mIsVideo) {
+        ALOGD("T(%p) I(%u) S(%d) P(%d), submitOutputMetadataBuffer", this, info->mBufferID, (int)(info->mStatus), kPortIndexOutput);
+    }
+#endif
     return err;
 }
 
@@ -1247,8 +1865,8 @@ void ACodec::dumpBuffers(OMX_U32 portIndex) {
 status_t ACodec::cancelBufferToNativeWindow(BufferInfo *info) {
     CHECK_EQ((int)info->mStatus, (int)BufferInfo::OWNED_BY_US);
 
-    ALOGV("[%s] Calling cancelBuffer on buffer %u",
-         mComponentName.c_str(), info->mBufferID);
+    ALOGD("[%s] cancelBuffer on buffer %u, mGraphicBuffer %p",
+         mComponentName.c_str(), info->mBufferID, info->mGraphicBuffer.get());
 
     info->checkWriteFence("cancelBufferToNativeWindow");
     int err = mNativeWindow->cancelBuffer(
@@ -1257,9 +1875,28 @@ status_t ACodec::cancelBufferToNativeWindow(BufferInfo *info) {
 
     ALOGW_IF(err != 0, "[%s] can not return buffer %u to native window",
             mComponentName.c_str(), info->mBufferID);
-    // change ownership even if cancelBuffer fails
-    info->mStatus = BufferInfo::OWNED_BY_NATIVE_WINDOW;
 
+    // change ownership even if cancelBuffer fails
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (err != 0) {
+        ALOGE("failed to cancel buffer from native window: %p, err = %d", mNativeWindow.get(), err);
+        info->mStatus = BufferInfo::OWNED_BY_UNEXPECTED;
+
+        if (true == mIsProfileBufferActivity && this->mIsVideo) {
+            ALOGD("T(%p) I(%u) S(%d) P(%d), cancelBufferToNativeWindow", this, info->mBufferID, (int)(info->mStatus), kPortIndexOutput);
+        }
+    }
+    else{
+
+        info->mStatus = BufferInfo::OWNED_BY_NATIVE_WINDOW;
+
+        if (true == mIsProfileBufferActivity && this->mIsVideo) {
+            ALOGD("T(%p) I(%u) S(%d) P(%d), cancelBufferToNativeWindow", this, info->mBufferID, (int)(info->mStatus), kPortIndexOutput);
+        }
+    }
+#else
+    info->mStatus = BufferInfo::OWNED_BY_NATIVE_WINDOW;
+#endif //MTK_AOSP_ENHANCEMENT
     return err;
 }
 
@@ -1304,6 +1941,7 @@ void ACodec::notifyOfRenderedFrames(bool dropIncomplete, FrameRenderTracker::Inf
 }
 
 ACodec::BufferInfo *ACodec::dequeueBufferFromNativeWindow() {
+    ATRACE_CALL();
     ANativeWindowBuffer *buf;
     CHECK(mNativeWindow.get() != NULL);
 
@@ -1320,7 +1958,11 @@ ACodec::BufferInfo *ACodec::dequeueBufferFromNativeWindow() {
 
     int fenceFd = -1;
     do {
+#ifdef MTK_AOSP_ENHANCEMENT
+        status_t err = profileAndDequeueNativeWindow(mNativeWindow.get(), &buf, &fenceFd);
+#else
         status_t err = mNativeWindow->dequeueBuffer(mNativeWindow.get(), &buf, &fenceFd);
+#endif
         if (err != 0) {
             ALOGE("dequeueBuffer failed: %s(%d).", asString(err), err);
             return NULL;
@@ -1345,10 +1987,15 @@ ACodec::BufferInfo *ACodec::dequeueBufferFromNativeWindow() {
                     break;
                 }
 
-                ALOGV("dequeued buffer %p", info->mGraphicBuffer->getNativeBuffer());
+                ALOGV("dequeued buffer %p, fenceFd %d", info->mGraphicBuffer->getNativeBuffer(), fenceFd);
                 info->mStatus = BufferInfo::OWNED_BY_US;
                 info->setWriteFence(fenceFd, "dequeueBufferFromNativeWindow");
                 updateRenderInfoForDequeuedBuffer(buf, fenceFd, info);
+#ifdef MTK_AOSP_ENHANCEMENT
+                if (true == mIsProfileBufferActivity && this->mIsVideo) {
+                    ALOGD("T(%p) I(%u) S(%d) P(%d), dequeueBufferFromNativeWindow", this, info->mBufferID, (int)(info->mStatus), kPortIndexOutput);
+                }
+#endif //MTK_AOSP_ENHANCEMENT
                 return info;
             }
         }
@@ -1395,6 +2042,12 @@ ACodec::BufferInfo *ACodec::dequeueBufferFromNativeWindow() {
     mRenderTracker.untrackFrame(oldest->mRenderInfo);
     oldest->mRenderInfo = NULL;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (true == mIsProfileBufferActivity && this->mIsVideo) {
+        ALOGD("T(%p) I(%u) S(%d) P(%d), dequeueBufferFromNativeWindow", this, oldest->mBufferID, (int)(oldest->mStatus), kPortIndexOutput);
+    }
+#endif //MTK_AOSP_ENHANCEMENT
+
     mOMX->updateGraphicBufferInMeta(
             mNode, kPortIndexOutput, oldest->mGraphicBuffer,
             oldest->mBufferID);
@@ -1423,6 +2076,9 @@ ACodec::BufferInfo *ACodec::dequeueBufferFromNativeWindow() {
 
 status_t ACodec::freeBuffersOnPort(OMX_U32 portIndex) {
     status_t err = OK;
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGD("freeBuffersOnPort portIndex ++ %d", portIndex);
+#endif
     for (size_t i = mBuffers[portIndex].size(); i > 0;) {
         i--;
         status_t err2 = freeBuffer(portIndex, i);
@@ -1430,6 +2086,7 @@ status_t ACodec::freeBuffersOnPort(OMX_U32 portIndex) {
             err = err2;
         }
     }
+    ALOGI("freeBuffersOnPort portIndex %d", portIndex);
 
     // clear mDealer even on an error
     mDealer[portIndex].clear();
@@ -1448,6 +2105,11 @@ status_t ACodec::freeOutputBuffersNotOwnedByComponent() {
         if (info->mStatus != BufferInfo::OWNED_BY_COMPONENT &&
             info->mStatus != BufferInfo::OWNED_BY_DOWNSTREAM) {
             status_t err2 = freeBuffer(kPortIndexOutput, i);
+#ifdef MTK_AOSP_ENHANCEMENT
+            if (true == mIsProfileBufferActivity && this->mIsVideo) {
+                ALOGD("T(%p) I(%u) S(%d) P(%d), freeOutputBuffersNotOwnedByComponent", this, info->mBufferID, (int)(info->mStatus), kPortIndexOutput);
+            }
+#endif //MTK_AOSP_ENHANCEMENT
             if (err == OK) {
                 err = err2;
             }
@@ -1570,10 +2232,46 @@ status_t ACodec::setComponentRole(
             "audio_decoder.gsm", "audio_encoder.gsm" },
         { MEDIA_MIMETYPE_VIDEO_MPEG2,
             "video_decoder.mpeg2", "video_encoder.mpeg2" },
+#ifdef MTK_AOSP_ENHANCEMENT
+        { MEDIA_MIMETYPE_AUDIO_APE,
+            "audio_decoder.ape", "audio_encoder.ape" },
+        { MEDIA_MIMETYPE_VIDEO_WMV,
+            "video_decoder.wmv", "video_encoder.wmv" },
+        { MEDIA_MIMETYPE_VIDEO_DIVX,
+            "video_decoder.divx", "video_encoder.divx" },
+        { MEDIA_MIMETYPE_VIDEO_DIVX3,
+            "video_decoder.divx3", "video_encoder.divx3" },
+        { MEDIA_MIMETYPE_VIDEO_XVID,
+            "video_decoder.xvid", "video_encoder.xvid" },
+        { MEDIA_MIMETYPE_VIDEO_SORENSON_SPARK,
+            "video_decoder.s263", "video_encoder.s263" },
+#ifdef MTK_AUDIO_ADPCM_SUPPORT
+        { MEDIA_MIMETYPE_AUDIO_MS_ADPCM,
+            "audio_decoder.adpcm", "audio_encoder.adpcm" },
+        { MEDIA_MIMETYPE_AUDIO_DVI_IMA_ADPCM,
+            "audio_decoder.adpcm.dvi", "audio_encoder.adpcm.dvi" },
+#endif
+#ifdef MTK_WMV_PLAYBACK_SUPPORT
+        { MEDIA_MIMETYPE_AUDIO_WMA,
+            "audio_decoder.wma", "audio_encoder.wma" },
+#ifdef MTK_SWIP_WMAPRO
+        { MEDIA_MIMETYPE_AUDIO_WMAPRO,
+            "audio_decoder.wma", "audio_encoder.wma" },
+#endif  //MTK_SWIP_WMAPRO
+#endif  //MTK_WMV_PLAYBACK_SUPPORT
+#ifdef MTK_AUDIO_ALAC_SUPPORT
+        { MEDIA_MIMETYPE_AUDIO_ALAC,
+            "audio_decoder.alac", "audio_encoder.alac"},
+#endif  //MTK_AUDIO_ALAC_SUPPORT
+#endif //MTK_AOSP_ENHANCEMENT
         { MEDIA_MIMETYPE_AUDIO_AC3,
             "audio_decoder.ac3", "audio_encoder.ac3" },
         { MEDIA_MIMETYPE_AUDIO_EAC3,
             "audio_decoder.eac3", "audio_encoder.eac3" },
+#ifdef MTK_AUDIO_DDPLUS_SUPPORT
+        { MEDIA_MIMETYPE_AUDIO_EAC3,
+            "audio_decoder.ec3", "audio_encoder.ec3" },
+#endif
     };
 
     static const size_t kNumMimeToRole =
@@ -1629,6 +2327,11 @@ status_t ACodec::configureCodec(
     sp<AMessage> outputFormat = mNotify->dup(); // will use this for kWhatOutputFormatChanged
 
     mIsEncoder = encoder;
+#ifdef MTK_AOSP_ENHANCEMENT
+#ifdef USE_VIDEO_ION
+    mNoION = false; // prevent meta mode encoder input to use ion buffer
+#endif //#ifdef USE_VIDEO_ION
+#endif //#ifdef MTK_AOSP_ENHANCEMENT
 
     mInputMetadataType = kMetadataBufferTypeInvalid;
     mOutputMetadataType = kMetadataBufferTypeInvalid;
@@ -1636,6 +2339,9 @@ status_t ACodec::configureCodec(
     status_t err = setComponentRole(encoder /* isEncoder */, mime);
 
     if (err != OK) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGE("setComponentRole err %x", err);
+#endif
         return err;
     }
 
@@ -1650,11 +2356,12 @@ status_t ACodec::configureCodec(
     if (encoder
             && msg->findInt32("store-metadata-in-buffers", &storeMeta)
             && storeMeta != 0) {
+
         err = mOMX->storeMetaDataInBuffers(mNode, kPortIndexInput, OMX_TRUE, &mInputMetadataType);
+
         if (err != OK) {
             ALOGE("[%s] storeMetaDataInBuffers (input) failed w/ err %d",
                     mComponentName.c_str(), err);
-
             return err;
         }
         // For this specific case we could be using camera source even if storeMetaDataInBuffers
@@ -1698,12 +2405,28 @@ status_t ACodec::configureCodec(
             return err;
         }
     }
-
     // Only enable metadata mode on encoder output if encoder can prepend
     // sps/pps to idr frames, since in metadata mode the bitstream is in an
     // opaque handle, to which we don't have access.
     int32_t video = !strncasecmp(mime, "video/", 6);
     mIsVideo = video;
+#ifdef MTK_AOSP_ENHANCEMENT
+    mIsVideo = (video != 0);
+    if (mIsVideo) {
+        //Profiling all buffer activity by default (0/1/2=all/decoder/encoder)
+        int32_t ret = getProperty("buf.activity.prof.select", "0");
+        if (ret) {
+            switch (ret) {
+            case 1: // decoder
+                mIsVideo = (encoder == 0);
+                break;
+            case 2: // encoder
+                mIsVideo = (encoder != 0);
+                break;
+            }
+        }
+    }
+#endif
     if (encoder && video) {
         OMX_BOOL enable = (OMX_BOOL) (prependSPSPPS
             && msg->findInt32("store-metadata-in-buffers-output", &storeMeta)
@@ -1711,7 +2434,7 @@ status_t ACodec::configureCodec(
 
         err = mOMX->storeMetaDataInBuffers(mNode, kPortIndexOutput, enable, &mOutputMetadataType);
         if (err != OK) {
-            ALOGE("[%s] storeMetaDataInBuffers (output) failed w/ err %d",
+            ALOGE("[%s] storeMetaDataInBuffers (output) failed w/ err %x",
                 mComponentName.c_str(), err);
         }
 
@@ -1744,7 +2467,9 @@ status_t ACodec::configureCodec(
     sp<RefBase> obj;
     bool haveNativeWindow = msg->findObject("native-window", &obj)
             && obj != NULL && video && !encoder;
+
     mLegacyAdaptiveExperiment = false;
+
     if (video && !encoder) {
         inputFormat->setInt32("adaptive-playback", false);
 
@@ -1911,6 +2636,13 @@ status_t ACodec::configureCodec(
             haveNativeWindow = false;
         }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        int32_t slowmotion = 0;
+        if (msg->findInt32("slow-motion-speed-value", &slowmotion)){
+            mIsSlowmotion = true;
+        }
+#endif//#ifdef MTK_AOSP_ENHANCEMENT
+
         if (encoder) {
             err = setupVideoEncoder(mime, msg);
         } else {
@@ -1983,7 +2715,12 @@ status_t ACodec::configureCodec(
         if (usingSwRenderer) {
             outputFormat->setInt32("using-sw-renderer", 1);
         }
-    } else if (!strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_MPEG)) {
+    }
+#ifdef MTK_AOSP_ENHANCEMENT
+    else if ((!strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_MPEG)) || (!strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_MPEG_LAYER_II))) {//add mp2 support
+#else
+    else if (!strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_MPEG)) {
+#endif
         int32_t numChannels, sampleRate;
         if (!msg->findInt32("channel-count", &numChannels)
                 || !msg->findInt32("sample-rate", &sampleRate)) {
@@ -1996,6 +2733,111 @@ status_t ACodec::configureCodec(
                     sampleRate,
                     numChannels);
         }
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (!strcmp(mComponentName.c_str(), "OMX.MTK.AUDIO.DECODER.MP3"))
+        {
+            OMX_AUDIO_PARAM_MP3TYPE profileMp3;
+            InitOMXParams(&profileMp3);
+            profileMp3.nPortIndex = kPortIndexInput;
+
+            status_t errMp3 = mOMX->getParameter(
+                mNode, OMX_IndexParamAudioMp3, &profileMp3, sizeof(profileMp3));
+
+            int32_t ch=0, saR=0, isFromMP3Extractor=0;
+            msg->findInt32("channel-count", &ch);
+            msg->findInt32("sample-rate", &saR);
+
+            OMX_MP3_CONFIG_TYPE defmp3;
+            status_t err;
+            err = mOMX->getParameter(
+                mNode, OMX_IndexVendorMtkMP3Decode, &defmp3, sizeof(defmp3));
+
+            msg->findInt32("is-from-mp3extractor", &isFromMP3Extractor);
+            if(isFromMP3Extractor == 1)
+            {
+                mp3FrameCountInBuffer = MP3_MULTI_FRAME_COUNT_IN_ONE_INPUTBUFFER_FOR_PURE_AUDIO;
+                defmp3.nMaxBufFrameNum = MP3_MULTI_FRAME_COUNT_IN_ONE_OUTPUTBUFFER_FOR_PURE_AUDIO;
+                ALOGD("The frame is from MP3Extractor and set mp3FrameCountInBuffer is %d", mp3FrameCountInBuffer);
+            }
+            else
+            {
+                mp3FrameCountInBuffer = MP3_MULTI_FRAME_COUNT_IN_ONE_INPUTBUFFER_FOR_VIDEO;
+                defmp3.nMaxBufFrameNum = MP3_MULTI_FRAME_COUNT_IN_ONE_OUTPUTBUFFER_FOR_VIDEO;
+                ALOGD("The frame is not from MP3Extractor and mp3FrameCountInBuffer use default value is %d", mp3FrameCountInBuffer);
+            }
+            err = mOMX->setParameter(
+                mNode, OMX_IndexVendorMtkMP3Decode, &defmp3, sizeof(defmp3));
+
+            //CODEC_LOGI("Set MP3 Frame Count in one output buffer %d",defmp3.nMaxBufFrameNum);
+
+            profileMp3.nChannels=ch;
+            profileMp3.nSampleRate=saR;
+            errMp3 = mOMX->setParameter(
+                mNode, OMX_IndexParamAudioMp3, &profileMp3, sizeof(profileMp3));
+        }
+    } else if (!strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_APE)) {
+
+        OMX_AUDIO_PARAM_APETYPE profile;
+        InitOMXParams(&profile);
+        profile.nPortIndex = OMX_DirInput;
+
+        status_t err = mOMX->getParameter(
+                mNode, OMX_IndexParamAudioApe, &profile, sizeof(profile));
+
+
+        int64_t frame;
+        msg->findInt64("newframe", &frame);//for ape seek on acodec
+        newframe_p = (uint32_t *)frame;
+
+        int64_t byte;
+        msg->findInt64("seekbyte", &byte);//for ape seek on acodec
+        seekbyte_p = (uint32_t *)byte;
+
+        msg->findInt32("ape-chl", (int32_t *)&profile.channels);
+        msg->findInt32("ape-bit-rate", (int32_t *)&profile.Bitrate);
+        msg->findInt32("ape-buffer-size", (int32_t *)&profile.SourceBufferSize);
+        msg->findInt32("sample-rate", (int32_t *)&profile.SampleRate);
+
+        if(profile.SampleRate >0)
+            profile.bps = (unsigned short) (profile.Bitrate /(profile.channels*profile.SampleRate));
+        else
+            profile.bps = 0;
+        msg->findInt32("ape-file-type", (int32_t *)&profile.fileversion);
+        msg->findInt32("ape-compression-type", (int32_t *)&profile.compressiontype);
+        msg->findInt32("ape-sample-per-frame", (int32_t *)&profile.blocksperframe);
+        msg->findInt32("ape-total-frame", (int32_t *)&profile.totalframes);
+        msg->findInt32("ape-final-sample", (int32_t *)&profile.finalframeblocks);
+
+        err = mOMX->setParameter(
+                mNode, OMX_IndexParamAudioApe, &profile, sizeof(profile));
+        ///LOGD("err= %d",err);
+
+        OMX_PARAM_PORTDEFINITIONTYPE def;
+        InitOMXParams(&def);
+        def.nPortIndex = OMX_DirInput;
+
+        err = mOMX->getParameter(
+                mNode, OMX_IndexParamPortDefinition, &def, sizeof(def));
+
+        if(profile.SourceBufferSize != 0)
+        {
+          def.nBufferSize = profile.SourceBufferSize;
+        }
+        err = mOMX->setParameter(
+                mNode, OMX_IndexParamPortDefinition, &def, sizeof(def));
+
+#ifdef MTK_HIGH_RESOLUTION_AUDIO_SUPPORT
+        if (profile.bps == 24)
+        {
+            InitOMXParams(&def);
+            def.nPortIndex = OMX_DirOutput;
+            err = mOMX->getParameter(mNode, OMX_IndexParamPortDefinition, &def, sizeof(def));
+
+            def.nBufferSize <<= 1;
+            err = mOMX->setParameter(mNode, OMX_IndexParamPortDefinition, &def, sizeof(def));
+        }
+#endif
+#endif //#ifdef MTK_AOSP_ENHANCEMENT
     } else if (!strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_AAC)) {
         int32_t numChannels, sampleRate;
         if (!msg->findInt32("channel-count", &numChannels)
@@ -2045,10 +2887,32 @@ status_t ACodec::configureCodec(
                 drc.targetRefLevel = -1;
             }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+            if (!msg->findInt32("bitrate", &bitRate)) {
+                bitRate = 0;
+                ALOGE("cannot find aac bit rate");
+
+            }
+#endif //MTK_AOSP_ENHANCEMENT
             err = setupAACCodec(
                     encoder, numChannels, sampleRate, bitRate, aacProfile,
                     isADTS != 0, sbrMode, maxOutputChannelCount, drc,
                     pcmLimiterEnable);
+#ifdef MTK_AOSP_ENHANCEMENT
+            int32_t isAviRawAac;
+            if (msg->findInt32("is-rawAacInAvi", &isAviRawAac))
+            {
+                OMX_AUDIO_PARAM_AACPROFILETYPE profileAAC;
+                InitOMXParams(&profileAAC);
+                profileAAC.nPortIndex = kPortIndexInput;
+                err = mOMX->getParameter(
+                    mNode, OMX_IndexParamAudioAac, &profileAAC, sizeof(profileAAC));
+
+                profileAAC.eAACStreamFormat = OMX_AUDIO_AACStreamFormatRAW;
+                err = mOMX->setParameter(
+                    mNode, OMX_IndexParamAudioAac, &profileAAC, sizeof(profileAAC));
+            }
+#endif
         }
     } else if (!strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_AMR_NB)) {
         err = setupAMRCodec(encoder, false /* isWAMR */, bitRate);
@@ -2067,6 +2931,12 @@ status_t ACodec::configureCodec(
             if (!msg->findInt32("sample-rate", &sampleRate)) {
                 sampleRate = 8000;
             }
+#ifdef MTK_AOSP_ENHANCEMENT
+            // Just for MTK G711 Component.
+            if (!strncmp(mComponentName.c_str(), "OMX.MTK.AUDIO.DECODER.G711", 26)) {
+                err = setupMtkG711Codec(sampleRate, numChannels, mime);
+            } else
+#endif
             err = setupG711Codec(encoder, sampleRate, numChannels);
         }
     } else if (!strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_FLAC)) {
@@ -2094,6 +2964,10 @@ status_t ACodec::configureCodec(
                           compressionLevel);
                     compressionLevel = 8;
                 }
+#ifdef MTK_AOSP_ENHANCEMENT
+            } else {
+                setupMtkFlacCodec(numChannels, sampleRate, msg);
+#endif
             }
             err = setupFlacCodec(
                     encoder, numChannels, sampleRate, compressionLevel);
@@ -2105,7 +2979,11 @@ status_t ACodec::configureCodec(
                 || !msg->findInt32("sample-rate", &sampleRate)) {
             err = INVALID_OPERATION;
         } else {
+#ifdef MTK_AOSP_ENHANCEMENT
+            err = setupMtkRawCodec(numChannels, sampleRate, msg);
+#else
             err = setupRawAudioFormat(kPortIndexInput, sampleRate, numChannels);
+#endif
         }
     } else if (!strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_AC3)) {
         int32_t numChannels;
@@ -2116,6 +2994,7 @@ status_t ACodec::configureCodec(
         } else {
             err = setupAC3Codec(encoder, numChannels, sampleRate);
         }
+#if 0
     } else if (!strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_EAC3)) {
         int32_t numChannels;
         int32_t sampleRate;
@@ -2125,11 +3004,94 @@ status_t ACodec::configureCodec(
         } else {
             err = setupEAC3Codec(encoder, numChannels, sampleRate);
         }
+#endif
+#ifdef MTK_AOSP_ENHANCEMENT
+    } else if (!strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_WMA) ||
+                    !strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_WMAPRO) ) {
+        int32_t numChannels;
+        int32_t sampleRate;
+        if (!msg->findInt32("channel-count", &numChannels)
+                || !msg->findInt32("sample-rate", &sampleRate)) {
+            err = INVALID_OPERATION;
+        } else {
+            err = setupWMACodec(encoder, numChannels, sampleRate);
+        }
+    } else if(!strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_MS_ADPCM) ||
+                    !strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_DVI_IMA_ADPCM)) {
+        err = setupADPCMCodec(mime, msg);
+    } else if (!strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_MSGSM)) {
+        int32_t numChannels;
+        int32_t sampleRate;
+        if (!msg->findInt32("channel-count", &numChannels)
+                || !msg->findInt32("sample-rate", &sampleRate)) {
+            err = INVALID_OPERATION;
+        } else {
+            err = setupRawAudioFormat(kPortIndexInput, sampleRate, numChannels);
+        }
     }
+#ifdef MTK_AUDIO_ALAC_SUPPORT
+    else if (!strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_ALAC)) {
+        int32_t numChannels;
+        int32_t sampleRate;
+        if (!msg->findInt32("channel-count", &numChannels)
+            || !msg->findInt32("sample-rate", &sampleRate)) {
+            err = INVALID_OPERATION;
+        } else {
+            err = setupAlacCodec(mime, msg);
+        }
+    }
+#endif
+    else if (!strcasecmp(MEDIA_MIMETYPE_AUDIO_VORBIS, mime) && mIsEncoder) {
+        int32_t numChannels;
+        int32_t sampleRate;
+        int32_t iBitRate = 0;
+        msg->findInt32("bitrate", &iBitRate);
+        if (!msg->findInt32("channel-count", &numChannels)
+            || !msg->findInt32("sample-rate", &sampleRate)) {
+            err = INVALID_OPERATION;
+        } else {
+            err = setupMtkVorbisCodec(numChannels, sampleRate, iBitRate);
+        }
+    }
+#endif
 
     if (err != OK) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGD("     err %d ", err);
+#endif //MTK_AOSP_ENHANCEMENT
         return err;
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+    int32_t bitWidth;
+    if (msg->findInt32("bit-width", &bitWidth) &&
+        !strncmp(mComponentName.c_str(), "OMX.MTK.AUDIO.", 14)) {
+        OMX_AUDIO_PARAM_PCMMODETYPE params;
+        InitOMXParams(&params);
+        params.nPortIndex = kPortIndexOutput;
+
+        err = mOMX->getParameter(
+            mNode, OMX_IndexParamAudioPcm, &params, sizeof(params));
+        if (err != OK) {
+            return err;
+        }
+        if (bitWidth > 16)
+        {
+#ifdef MTK_HIGH_RESOLUTION_AUDIO_SUPPORT
+            ALOGD("Audio 24bit resolution: open.");
+            params.nBitPerSample = 32;
+#else
+            params.nBitPerSample = 16;
+#endif
+        } else {
+            params.nBitPerSample = 16;
+        }
+        err = mOMX->setParameter(
+            mNode, OMX_IndexParamAudioPcm, &params, sizeof(params));
+        if (err != OK) {
+            return err;
+        }
+    }
+#endif
 
     if (!msg->findInt32("encoder-delay", &mEncoderDelay)) {
         mEncoderDelay = 0;
@@ -2169,6 +3131,211 @@ status_t ACodec::configureCodec(
 
     mBaseOutputFormat = outputFormat;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    inputFormat->setInt32("support-partial-frame", 0);
+    if ((IsMTKComponent(mComponentName.c_str())) && (!mIsEncoder)) {
+        OMX_BOOL value;
+        // check if codec supports partial frames input
+        status_t err = mOMX->getParameter(mNode,
+                (OMX_INDEXTYPE)OMX_IndexVendorMtkOmxPartialFrameQuerySupported,
+                &value, sizeof(value));
+        mSupportsPartialFrames = value;
+        if (err != OK) {
+            mSupportsPartialFrames = false;
+        }
+        inputFormat->setInt32("support-partial-frame", mSupportsPartialFrames);
+        ALOGI("mSupportsPartialFrames %d err %d ", mSupportsPartialFrames, err);
+    }
+
+    configureInputDump();
+
+    configureOutputDump();
+
+#ifdef MTK_CLEARMOTION_SUPPORT
+    int32_t mUseClearMotionMode = 0;
+    //if (mFlags & kUseClearMotion)
+    {
+        int32_t ForceClearMotion = 0;
+        char value[PROPERTY_VALUE_MAX];
+        property_get("mtk.mjc.mediacodec", value, "0");
+        ForceClearMotion = atof(value);
+
+        if ((msg->findInt32("use-clearmotion-mode", &mUseClearMotionMode) && mUseClearMotionMode != 0) || (ForceClearMotion > 0)) {
+            ALOGD("set use-clearmotion-mode");
+            mOMX->setParameter(mNode, OMX_IndexVendorMtkOmxVdecUseClearMotion, &mUseClearMotionMode, sizeof(int32_t));
+        }
+
+    }
+#endif //MTK_CLEARMOTION_SUPPORT
+
+#ifdef MTK_POST_PROCESS_FRAMEWORK_SUPPORT
+    int32_t mUsePostprocessingMode = 0;
+    if (msg->findInt32("use-postprocessing-mode", &mUsePostprocessingMode) && mUsePostprocessingMode != 0) {
+        ALOGD("set use-postprocessing-mode");
+        mOMX->setParameter(mNode, OMX_IndexVendorMtkOmxVdecUsePostProcessingFw, &mUsePostprocessingMode, sizeof(void*));
+    }
+#endif
+#ifdef MTK_AOSP_ENHANCEMENT
+    {
+        int32_t flag;
+        if(msg->findInt32("vdec-no-record", &flag)){
+            mOMX->setParameter(mNode, OMX_IndexVendorMtkOmxVdecNoReorderMode, &flag, sizeof(void*));
+        }
+
+        if(msg->findInt32("vdec-lowlatency", &flag)){
+           OMX_INDEXTYPE index = OMX_IndexMax;
+           status_t err = mOMX->getExtensionIndex(mNode, "OMX.MTK.index.param.video.LowLatencyDecode", &index);
+           if (err == OK) {
+               OMX_BOOL m = OMX_TRUE;
+               ALOGD("setParameter vdec-lowlatency");
+               mOMX->setParameter(mNode, index, &m, sizeof(m));
+           }
+       }
+    }
+#endif //MTK_AOSP_ENHANCEMENT
+    // mtk80902: porting rtsp settings from OMXCodec
+    int32_t mode;
+    if (msg->findInt32("rtsp-seek-mode", &mode) && mode != 0) {
+        status_t err2 = OK;
+        OMX_INDEXTYPE index = OMX_IndexMax;
+        status_t err = mOMX->getExtensionIndex(mNode, "OMX.MTK.index.param.video.StreamingMode", &index);
+        if (err == OK) {
+            OMX_BOOL m = OMX_TRUE;
+            err2 = mOMX->setParameter(mNode, index, &m, sizeof(m));
+        }
+        ALOGI("set StreamingMode, index = %x, err = %x, err2 = %x", index, err, err2);
+    }
+    int32_t number = -1;
+    if (msg->findInt32("max-queue-buffer", &number) && number > 0) {
+        mMaxQueueBufferNum = number;
+    }
+    if (msg->findInt32("input-buffer-number", &number) && number > 0) {
+        OMX_PARAM_PORTDEFINITIONTYPE def;
+        InitOMXParams(&def);
+        def.nPortIndex = kPortIndexInput;
+
+        status_t err = mOMX->getParameter(
+        mNode, OMX_IndexParamPortDefinition, &def, sizeof(def));
+        CHECK_EQ((int)err, (int)OK);
+
+        def.nBufferCountActual = number > (int32_t)def.nBufferCountMin
+            ? number : def.nBufferCountMin;
+
+        err = mOMX->setParameter(
+        mNode, OMX_IndexParamPortDefinition, &def, sizeof(def));
+        CHECK_EQ((int)err, (int)OK);
+
+        err = mOMX->getParameter(
+        mNode, OMX_IndexParamPortDefinition, &def, sizeof(def));
+        CHECK_EQ((int)err, (int)OK);
+    }
+// mtk80902: porting from OMXCodec - is video enc/dec
+    if (false == mIsEncoder) {
+        if ((!strcasecmp(MEDIA_MIMETYPE_VIDEO_AVC, mime)) ||
+            (!strcasecmp(MEDIA_MIMETYPE_VIDEO_MPEG4, mime)) ||
+            (!strcasecmp(MEDIA_MIMETYPE_VIDEO_H263, mime)) ||
+            (!strcasecmp(MEDIA_MIMETYPE_VIDEO_WMV, mime)) ||        // Morris Yang add for ASF
+            (!strcasecmp(MEDIA_MIMETYPE_VIDEO_MPEG2, mime)) ||
+            (!strcasecmp(MEDIA_MIMETYPE_VIDEO_HEVC, mime)) ||
+#ifdef MTK_AOSP_ENHANCEMENT
+            (!strcasecmp(MEDIA_MIMETYPE_VIDEO_VPX, mime)) ||
+            (!strcasecmp(MEDIA_MIMETYPE_VIDEO_VP9, mime)) ||
+            (!strcasecmp(MEDIA_MIMETYPE_VIDEO_MJPEG, mime)) ||
+            (!strcasecmp(MEDIA_MIMETYPE_VIDEO_DIVX, mime)) ||
+            (!strcasecmp(MEDIA_MIMETYPE_VIDEO_DIVX3, mime)) ||
+            (!strcasecmp(MEDIA_MIMETYPE_VIDEO_XVID, mime)) ||
+            (!strcasecmp(MEDIA_MIMETYPE_VIDEO_SORENSON_SPARK, mime))
+#endif //MTK_AOSP_ENHANCEMENT
+        ) {
+            if (!strncmp("OMX.google.", mComponentName.c_str(), 11)) {
+                mIsVideoDecoder = false;   // bypass ION
+            }
+            else {
+                // only set true for MTK decoder
+                mIsVideoDecoder = true;
+            }
+      /*
+            char value[PROPERTY_VALUE_MAX];
+            property_get("omxcodec.video.input.error.rate", value, "0.0");
+            mVideoInputErrorRate = atof(value);
+            if (mVideoInputErrorRate > 0) {
+                mPropFlags |= OMXCODEC_ENABLE_VIDEO_INPUT_ERROR_PATTERNS;
+            }
+            ALOGD ("mVideoInputErrorRate(%f)", mVideoInputErrorRate);*/
+
+            if (mOMXLivesLocally) {
+                OMX_BOOL bIsLocally = OMX_TRUE;
+                status_t err = mOMX->setParameter(mNode, OMX_IndexVendorMtkOmxVideoSetClientLocally,
+                        &bIsLocally, sizeof(bIsLocally));
+                if (err != OK){
+                    ALOGD("Failed to set OMX_IndexVendorMtkOmxVideoSetClientLocally(%d)", (int)bIsLocally);
+                }
+            }
+            else {
+                OMX_BOOL bIsLocally = OMX_FALSE;
+                status_t err = mOMX->setParameter(mNode, OMX_IndexVendorMtkOmxVideoSetClientLocally,
+                        &bIsLocally, sizeof(bIsLocally));
+                if (err != OK){
+                    ALOGD("Failed to set OMX_IndexVendorMtkOmxVideoSetClientLocally(%d)", (int)bIsLocally);
+                }
+            }
+        }
+    }
+    else {
+        if ((!strcasecmp(MEDIA_MIMETYPE_VIDEO_AVC, mime)) ||
+            (!strcasecmp(MEDIA_MIMETYPE_VIDEO_MPEG4, mime)) ||
+            (!strcasecmp(MEDIA_MIMETYPE_VIDEO_H263, mime))  ||
+            (!strcasecmp(MEDIA_MIMETYPE_VIDEO_HEVC, mime))
+            #ifdef MTK_VIDEO_VP8ENC_SUPPORT
+            || (!strcasecmp(MEDIA_MIMETYPE_VIDEO_VP8, mime))
+            #endif
+            ) {
+                if (!strncmp("OMX.google.", mComponentName.c_str(), 11)) {
+                    mIsVideoEncoder = false;   // bypass ION
+                }
+            else {
+            // only set true for MTK encoder
+                    mIsVideoEncoder = true;
+
+                    {
+                        int32_t tmp;
+                        if (!msg->findInt32("color-format", &tmp)) {
+                            tmp = 0;
+                            ALOGW ("colorFormat can not found");
+                        }
+
+                        OMX_COLOR_FORMATTYPE colorFormat =
+                            static_cast<OMX_COLOR_FORMATTYPE>(tmp);
+
+                        ALOGD ("colorFormat %x", colorFormat);
+
+                    }
+            }
+
+        /*
+            mCameraMeta = new MetaData;
+
+            if (!mOMXLivesLocally) {
+                mQuirks &= ~kAvoidMemcopyInputRecordingFrames;
+            }*/
+            if (mOMXLivesLocally) {
+                OMX_BOOL bIsLocally = OMX_TRUE;
+                status_t err2 = mOMX->setParameter(mNode, OMX_IndexVendorMtkOmxVideoSetClientLocally, &bIsLocally, sizeof(bIsLocally));
+            //CHECK_EQ((int)err2, (int)OK);
+                ALOGD ("setParameter %d", err2);
+            }
+            else {
+                OMX_BOOL bIsLocally = OMX_FALSE;
+                status_t err2 = mOMX->setParameter(mNode, OMX_IndexVendorMtkOmxVideoSetClientLocally, &bIsLocally, sizeof(bIsLocally));
+                ALOGD ("setParameter %d", err2);
+            }
+        }
+    }
+/*
+    ALOGD ("!@@!>> create tid (%d) OMXCodec mOMXLivesLocally=%d, mIsVideoDecoder(%d), mIsVideoEncoder(%d), mime(%s)",
+        gettid(), mOMXLivesLocally, mIsVideoDecoder, mIsVideoEncoder, mime);*/
+#endif
+
     err = getPortFormat(kPortIndexInput, inputFormat);
     if (err == OK) {
         err = getPortFormat(kPortIndexOutput, outputFormat);
@@ -2177,6 +3344,25 @@ status_t ACodec::configureCodec(
             mOutputFormat = outputFormat;
         }
     }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (video && encoder) {
+        OMX_VIDEO_NONREFP   nonRefP;
+        InitOMXParams(&nonRefP);
+        //query non-ref P frequency
+        //int frequency = ((3<<16)|(4));
+        status_t _err = mOMX->getParameter(
+                           mNode, OMX_IndexVendorMtkOmxVencNonRefPOp, &nonRefP, sizeof(nonRefP));
+        if (_err == OK){
+            //mOutputFormat->setInt32(kKeyNonRefPFreq, nonRefP.nFreq);
+            mOutputFormat->setInt32("nonrefp-freq", nonRefP.nFreq);
+            ALOGD("set nonrefp-freq %d to outputformat", nonRefP.nFreq);
+        }else{
+            ALOGW("getParam(OMX_IndexVendorMtkOmxVencNonRefPOp) return 0x%8x", _err);
+        }
+    }
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
+
     return err;
 }
 
@@ -2298,6 +3484,12 @@ status_t ACodec::setupAACCodec(
     if (encoder && isADTS) {
         return -EINVAL;
     }
+#ifdef MTK_AOSP_ENHANCEMENT  //Error handling for WhatsApp issue.
+    if (encoder && sampleRate == 44000)
+    {
+        sampleRate = 44100;
+    }
+#endif
 
     status_t err = setupRawAudioFormat(
             encoder ? kPortIndexInput : kPortIndexOutput,
@@ -2748,7 +3940,11 @@ status_t ACodec::setVideoPortFormatType(
             found = true;
             break;
         }
-
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGD("target compressionFormat %x, colorFormat %x", compressionFormat, colorFormat);
+        ALOGD("setVideoPortFormatType index %d, portIndex %d, eColorFormat %x, eCompressionFormat %x",
+            index, portIndex, format.eColorFormat, format.eCompressionFormat);
+#endif //MTK_AOSP_ENHANCEMENT
         ++index;
     }
 
@@ -2823,6 +4019,7 @@ status_t ACodec::setSupportedOutputFormat(bool getLegacyFlexibleFormat) {
             memcpy(&legacyFormat, &format, sizeof(format));
         }
     }
+
     return mOMX->setParameter(
             mNode, OMX_IndexParamVideoPortFormat,
             &format, sizeof(format));
@@ -2833,12 +4030,21 @@ static const struct VideoCodingMapEntry {
     OMX_VIDEO_CODINGTYPE mVideoCodingType;
 } kVideoCodingMapEntry[] = {
     { MEDIA_MIMETYPE_VIDEO_AVC, OMX_VIDEO_CodingAVC },
-    { MEDIA_MIMETYPE_VIDEO_HEVC, OMX_VIDEO_CodingHEVC },
     { MEDIA_MIMETYPE_VIDEO_MPEG4, OMX_VIDEO_CodingMPEG4 },
     { MEDIA_MIMETYPE_VIDEO_H263, OMX_VIDEO_CodingH263 },
     { MEDIA_MIMETYPE_VIDEO_MPEG2, OMX_VIDEO_CodingMPEG2 },
     { MEDIA_MIMETYPE_VIDEO_VP8, OMX_VIDEO_CodingVP8 },
     { MEDIA_MIMETYPE_VIDEO_VP9, OMX_VIDEO_CodingVP9 },
+    { MEDIA_MIMETYPE_VIDEO_HEVC, OMX_VIDEO_CodingHEVC },
+#ifdef MTK_AOSP_ENHANCEMENT
+    { MEDIA_MIMETYPE_VIDEO_WMV, OMX_VIDEO_CodingWMV },
+    { MEDIA_MIMETYPE_VIDEO_DIVX, OMX_VIDEO_CodingDIVX },
+    { MEDIA_MIMETYPE_VIDEO_DIVX3, OMX_VIDEO_CodingDIVX3 },
+    { MEDIA_MIMETYPE_VIDEO_XVID, OMX_VIDEO_CodingXVID },
+    { MEDIA_MIMETYPE_VIDEO_MJPEG, OMX_VIDEO_CodingMJPEG },
+    { MEDIA_MIMETYPE_VIDEO_SORENSON_SPARK, OMX_VIDEO_CodingS263 },
+    { MEDIA_MIMETYPE_VIDEO_VPX, OMX_VIDEO_CodingVP8 },
+#endif //MTK_AOSP_ENHANCEMENT
 };
 
 static status_t GetVideoCodingTypeFromMime(
@@ -2846,6 +4052,9 @@ static status_t GetVideoCodingTypeFromMime(
     for (size_t i = 0;
          i < sizeof(kVideoCodingMapEntry) / sizeof(kVideoCodingMapEntry[0]);
          ++i) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGD("GetVideoCodingTypeFromMime %s, %s", mime, kVideoCodingMapEntry[i].mMime );
+#endif //MTK_AOSP_ENHANCEMENT
         if (!strcasecmp(mime, kVideoCodingMapEntry[i].mMime)) {
             *codingType = kVideoCodingMapEntry[i].mVideoCodingType;
             return OK;
@@ -2902,8 +4111,8 @@ status_t ACodec::setupVideoDecoder(
         err = setVideoPortFormatType(
                 kPortIndexOutput, OMX_VIDEO_CodingUnused, colorFormat, haveNativeWindow);
         if (err != OK) {
-            ALOGW("[%s] does not support color format %d",
-                  mComponentName.c_str(), colorFormat);
+            ALOGW("[%s] does not support color format %x, err %x",
+                  mComponentName.c_str(), colorFormat, err);
             err = setSupportedOutputFormat(!haveNativeWindow /* getLegacyFlexibleFormat */);
         }
     } else {
@@ -2937,6 +4146,20 @@ status_t ACodec::setupVideoDecoder(
         return err;
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (msg->findInt32("slowmotion-16x", &tmp)){
+        if (tmp != 0){
+            bool enable = true;
+            ALOGD("Enable MtkOmxVdecUse16xSlowMotion");
+            status_t err = mOMX->setParameter(mNode,
+                OMX_IndexVendorMtkOmxVdecUse16xSlowMotion, &enable, sizeof(void *));
+            if (err != OK){
+                ALOGW("[%s] doesn't support 16x slowmotion , err %x",
+                      mComponentName.c_str(), err);
+            }
+        }
+    }
+#endif
     return OK;
 }
 
@@ -2953,7 +4176,7 @@ status_t ACodec::setupVideoEncoder(const char *mime, const sp<AMessage> &msg) {
             kPortIndexInput, OMX_VIDEO_CodingUnused, colorFormat);
 
     if (err != OK) {
-        ALOGE("[%s] does not support color format %d",
+        ALOGE("[%s] does not support color format %x",
               mComponentName.c_str(), colorFormat);
 
         return err;
@@ -2989,17 +4212,38 @@ status_t ACodec::setupVideoEncoder(const char *mime, const sp<AMessage> &msg) {
     if (!msg->findInt32("stride", &stride)) {
         stride = width;
     }
-
     video_def->nStride = stride;
 
     int32_t sliceHeight;
     if (!msg->findInt32("slice-height", &sliceHeight)) {
         sliceHeight = height;
     }
-
     video_def->nSliceHeight = sliceHeight;
 
+#ifdef MTK_AOSP_ENHANCEMENT //for continus shot feature
+    ALOGD("nStride %d, nSliceHeight %d", video_def->nStride, video_def->nSliceHeight);
+    //support RGB565 and RGB888 size
+    if( colorFormat == OMX_COLOR_Format16bitRGB565 )
+        def.nBufferSize = (video_def->nStride * video_def->nSliceHeight * 2);
+    else if( colorFormat == OMX_COLOR_Format24bitRGB888 )
+        def.nBufferSize = (video_def->nStride * video_def->nSliceHeight * 3);
+    else if( colorFormat == OMX_COLOR_Format32bitARGB8888 )
+        def.nBufferSize = (video_def->nStride * video_def->nSliceHeight * 4);
+    else
+        def.nBufferSize = (video_def->nStride * video_def->nSliceHeight * 3) / 2;
+#else
     def.nBufferSize = (video_def->nStride * video_def->nSliceHeight * 3) / 2;
+#endif
+
+#ifdef MTK_AOSP_ENHANCEMENT
+     {
+         int32_t  inputbufferCnt;
+         if (msg->findInt32("inputbuffercnt", &inputbufferCnt)) {
+            def.nBufferCountActual  = inputbufferCnt;
+            ALOGI("input buffer count is %d", inputbufferCnt);
+         }
+     }
+#endif //MTK_AOSP_ENHANCEMENT
 
     float frameRate;
     if (!msg->findFloat("frame-rate", &frameRate)) {
@@ -3064,6 +4308,69 @@ status_t ACodec::setupVideoEncoder(const char *mime, const sp<AMessage> &msg) {
     video_def->eCompressionFormat = compressionFormat;
     video_def->eColorFormat = OMX_COLOR_FormatUnused;
 
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    {
+        int32_t  outputbuffersize;
+        if (msg->findInt32("outputbuffersize", &outputbuffersize)) {
+            def.nBufferSize  = outputbuffersize;
+            ALOGI("output buffer size is %d", outputbuffersize);
+        }
+    }
+    //for livephoto setting
+    int32_t livephoto=0;
+    if (msg->findInt32("livephoto", &livephoto) && livephoto) {
+        OMX_INDEXTYPE index;
+        err = mOMX->getExtensionIndex(
+                mNode,
+                "OMX.MTK.index.param.video.SetVencScenario",
+                &index);
+        if (err == OK) {
+            OMX_U32 uScenario = 4;
+            err = mOMX->setParameter(
+                    mNode, index, &uScenario, sizeof(uScenario));
+        }
+        else {
+            ALOGE("setParameter('OMX.MTK.index.param.video.SetVencScenario') "
+                    "returned error 0x%08x", err);
+        }
+    }
+    //for slowmotion setting
+    int32_t nonrefp=0;
+    if (msg->findInt32("enc-nonRefP", &nonrefp) && nonrefp) {
+        OMX_VIDEO_NONREFP   nonRefP;
+        InitOMXParams(&nonRefP);
+        //check if enable non-ref P
+        nonRefP.bEnable = OMX_TRUE;
+        err = mOMX->setParameter(
+                mNode, OMX_IndexVendorMtkOmxVencNonRefPOp,
+                &nonRefP, sizeof(nonRefP));
+        if (err != OK) {
+            ALOGE("setParameter(OMX_IndexVendorMtkOmxVencNonRefPOp) "
+                    "returned error 0x%08x", err);
+        }
+    }
+
+    //for crossmount setting
+    int32_t crossmount = 0;
+    if (msg->findInt32("crossmount", &crossmount) && crossmount) {
+        OMX_INDEXTYPE index;
+        err = mOMX->getExtensionIndex(
+                mNode,
+                "OMX.MTK.index.param.video.SetVencScenario",
+                &index);
+        if (err == OK) {
+            OMX_U32 uScenario = 6;
+            err = mOMX->setParameter(
+                    mNode, index, &uScenario, sizeof(uScenario));
+        }
+        else {
+            ALOGE("setParameter('OMX.MTK.index.param.video.SetVencScenario') "
+                    "returned error 0x%08x", err);
+        }
+    }
+#endif //MTK_AOSP_ENHANCEMENT
+
     err = mOMX->setParameter(
             mNode, OMX_IndexParamPortDefinition, &def, sizeof(def));
 
@@ -3086,11 +4393,9 @@ status_t ACodec::setupVideoEncoder(const char *mime, const sp<AMessage> &msg) {
         case OMX_VIDEO_CodingAVC:
             err = setupAVCEncoderParameters(msg);
             break;
-
         case OMX_VIDEO_CodingHEVC:
             err = setupHEVCEncoderParameters(msg);
             break;
-
         case OMX_VIDEO_CodingVP8:
         case OMX_VIDEO_CodingVP9:
             err = setupVPXEncoderParameters(msg);
@@ -3268,7 +4573,9 @@ status_t ACodec::setupH263EncoderParameters(const sp<AMessage> &msg) {
 
     status_t err = mOMX->getParameter(
             mNode, OMX_IndexParamVideoH263, &h263type, sizeof(h263type));
-
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("getParameter OMX_IndexParamVideoH263 %x", err);
+#endif //MTK_AOSP_ENHANCEMENT
     if (err != OK) {
         return err;
     }
@@ -3290,7 +4597,9 @@ status_t ACodec::setupH263EncoderParameters(const sp<AMessage> &msg) {
         }
 
         err = verifySupportForProfileAndLevel(profile, level);
-
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGD("verifySupportForProfileAndLevel %x", err);
+#endif //MTK_AOSP_ENHANCEMENT
         if (err != OK) {
             return err;
         }
@@ -3306,13 +4615,17 @@ status_t ACodec::setupH263EncoderParameters(const sp<AMessage> &msg) {
 
     err = mOMX->setParameter(
             mNode, OMX_IndexParamVideoH263, &h263type, sizeof(h263type));
-
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("setParameter OMX_IndexParamVideoH263 %x", err);
+#endif //MTK_AOSP_ENHANCEMENT
     if (err != OK) {
         return err;
     }
 
     err = configureBitrate(bitrate, bitrateMode);
-
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("configureBitrate %x", err);
+#endif //MTK_AOSP_ENHANCEMENT
     if (err != OK) {
         return err;
     }
@@ -3432,12 +4745,27 @@ status_t ACodec::setupAVCEncoderParameters(const sp<AMessage> &msg) {
         h264type.eLevel = static_cast<OMX_VIDEO_AVCLEVELTYPE>(level);
     }
 
-    // XXX
+#ifdef MTK_AOSP_ENHANCEMENT
+    // 20150813 Marcus Huang:
+    // "recorder" is set to ACodec::setupAVCEncoderParameters().
+    //  It's necessary to be set; otherwise, in Google's original code, the profile of AVC encoder is
+    //  forced to be baseline.
+    int32_t recorder;
+    if (!msg->findInt32("recorder", &recorder)) {
+        recorder = false;
+    }
+    if (!recorder && h264type.eProfile != OMX_VIDEO_AVCProfileBaseline) {
+        ALOGW("Use baseline profile instead of %d for AVC recording",
+            h264type.eProfile);
+        h264type.eProfile = OMX_VIDEO_AVCProfileBaseline;
+    }
+#else
     if (h264type.eProfile != OMX_VIDEO_AVCProfileBaseline) {
         ALOGW("Use baseline profile instead of %d for AVC recording",
             h264type.eProfile);
         h264type.eProfile = OMX_VIDEO_AVCProfileBaseline;
     }
+#endif
 
     if (h264type.eProfile == OMX_VIDEO_AVCProfileBaseline) {
         h264type.nSliceHeaderSpacing = 0;
@@ -3480,6 +4808,26 @@ status_t ACodec::setupAVCEncoderParameters(const sp<AMessage> &msg) {
     return configureBitrate(bitrate, bitrateMode);
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+bool ACodec::LogAllYourBuffersAreBelongToUs(
+        OMX_U32 portIndex) {
+    for (size_t i = 0; i < mBuffers[portIndex].size(); ++i) {
+        BufferInfo *info = &mBuffers[portIndex].editItemAt(i);
+        ALOGD("[%s] Buffer %u on port %d mDequeuedAt %d still has status %d",
+                mComponentName.c_str(),
+                info->mBufferID, portIndex, info->mDequeuedAt, info->mStatus);
+    }
+
+    return true;
+}
+
+bool ACodec::LogAllYourBuffersAreBelongToUs() {
+    return LogAllYourBuffersAreBelongToUs(kPortIndexInput)
+        && LogAllYourBuffersAreBelongToUs(kPortIndexOutput);
+}
+#endif
+
+//android L
 status_t ACodec::setupHEVCEncoderParameters(const sp<AMessage> &msg) {
     int32_t bitrate, iFrameInterval;
     if (!msg->findInt32("bitrate", &bitrate)
@@ -3672,7 +5020,7 @@ status_t ACodec::setupErrorCorrectionParameters() {
     status_t err = mOMX->getParameter(
             mNode, OMX_IndexParamVideoErrorCorrection,
             &errorCorrectionType, sizeof(errorCorrectionType));
-
+    ALOGD("getParameter OMX_IndexParamVideoErrorCorrection %x", err);
     if (err != OK) {
         return OK;  // Optional feature. Ignore this failure
     }
@@ -3776,6 +5124,11 @@ void ACodec::waitUntilAllPossibleNativeWindowBuffersAreReturnedToUs() {
         return;
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("waitUntilAllPossibleNativeWindowBuffersAreReturnedToUs %d, %d, %lld",
+        storingMetadataInDecodedBuffers(), mMetadataBuffersToSubmit, (long long)mNumUndequeuedBuffers );
+#endif //MTK_AOSP_ENHANCEMENT
+
     while (countBuffersOwnedByNativeWindow() > mNumUndequeuedBuffers
             && dequeueBufferFromNativeWindow() != NULL) {
         // these buffers will be submitted as regular buffers; account for this
@@ -3820,7 +5173,6 @@ void ACodec::processDeferredMessages() {
         onMessageReceived(*it++);
     }
 }
-
 // static
 bool ACodec::describeDefaultColorFormat(DescribeColorFormatParams &params) {
     MediaImage &image = params.sMediaImage;
@@ -4006,6 +5358,7 @@ status_t ACodec::getPortFormat(OMX_U32 portIndex, sp<AMessage> &notify) {
         ALOGE("unexpected dir: %s(%d) on %s port", asString(def.eDir), def.eDir, niceIndex);
         return BAD_VALUE;
     }
+    ALOGD("sendFormatChange %x", def.eDomain);
 
     switch (def.eDomain) {
         case OMX_PortDomainVideo:
@@ -4066,7 +5419,53 @@ status_t ACodec::getPortFormat(OMX_U32 portIndex, sp<AMessage> &notify) {
                         rect.nTop = 0;
                         rect.nWidth = videoDef->nFrameWidth;
                         rect.nHeight = videoDef->nFrameHeight;
+                     }
+#ifdef MTK_AOSP_ENHANCEMENT
+            notify->setInt32("stride", videoDef->nStride);
+            notify->setInt32("slice-height", videoDef->nSliceHeight);
+            notify->setInt32("color-format", videoDef->eColorFormat);
+            notify->setInt32("width-ratio", mVideoAspectRatioWidth);
+            notify->setInt32("height-ratio", mVideoAspectRatioHeight);
+            ALOGD(":: w %d, h %d, s %d, sh %d, cf %x", videoDef->nFrameWidth, videoDef->nFrameHeight,
+            videoDef->nStride, videoDef->nSliceHeight, videoDef->eColorFormat);
+
+            //add this check for google decoder that crop before and should no be reset here.
+            if( IsMTKVideoDecoderComponent(this->mComponentName.c_str()) )
+            {
+                if (mOMX->getConfig(
+                            mNode, OMX_IndexVendorMtkOmxVdecGetCropInfo,
+                            &rect, sizeof(rect)) != OK) {
+                    rect.nLeft = 0;
+                    rect.nTop = 0;
+                    rect.nWidth = videoDef->nFrameWidth;
+                    rect.nHeight = videoDef->nFrameHeight;
+                }
+                OMX_BOOL bIsComponentDoColorConvert = OMX_FALSE;
+                if (mOMX->getConfig(
+                            mNode, OMX_IndexVendorMtkOmxVdecComponentColorConvert,
+                            &bIsComponentDoColorConvert, sizeof(bIsComponentDoColorConvert)) != OK) {
+                    ALOGD("get config VdecComponentColorConvert fail");
+                }
+
+                if( OMX_COLOR_FormatYUV420Planar != videoDef->eColorFormat )
+                {
+                    //after Component do color convert, the output alignment is 16/8/8, re-assign stride value here.
+                    if( OMX_TRUE == bIsComponentDoColorConvert )
+                    {
+                        notify->setInt32("stride", videoDef->nFrameWidth);
+                        notify->setInt32("slice-height", videoDef->nFrameHeight);
                     }
+                    else
+                    {
+                        notify->setInt32("stride", videoDef->nStride);
+                        notify->setInt32("slice-height", videoDef->nSliceHeight);
+                    }
+                    ALOGD("Update output eColorFormat %x, width %d, height %d, stride %d, slice-height %d",
+                            videoDef->eColorFormat, videoDef->nFrameWidth,
+                            videoDef->nFrameHeight, videoDef->nStride, videoDef->nSliceHeight);
+                }
+            }
+#endif //MTK_AOSP_ENHANCEMENT
 
                     if (rect.nLeft < 0 ||
                         rect.nTop < 0 ||
@@ -4179,7 +5578,9 @@ status_t ACodec::getPortFormat(OMX_U32 portIndex, sp<AMessage> &notify) {
 
                     if (params.nChannels <= 0
                             || (params.nChannels != 1 && !params.bInterleaved)
+#ifndef MTK_AOSP_ENHANCEMENT    // When support mtk raw component, wave extractor will not convert 8bit to 16bit.
                             || params.nBitPerSample != 16u
+#endif
                             || params.eNumData != OMX_NumericalDataSigned
                             || params.ePCMMode != OMX_AUDIO_PCMModeLinear) {
                         ALOGE("unsupported PCM port: %u channels%s, %u-bit, %s(%d), %s(%d) mode ",
@@ -4194,7 +5595,9 @@ status_t ACodec::getPortFormat(OMX_U32 portIndex, sp<AMessage> &notify) {
                     notify->setString("mime", MEDIA_MIMETYPE_AUDIO_RAW);
                     notify->setInt32("channel-count", params.nChannels);
                     notify->setInt32("sample-rate", params.nSamplingRate);
-
+#ifdef MTK_AOSP_ENHANCEMENT
+                    notify->setInt32("bit-width", params.nBitPerSample);
+#endif
                     if (mChannelMaskPresent) {
                         notify->setInt32("channel-mask", mChannelMask);
                     }
@@ -4216,6 +5619,9 @@ status_t ACodec::getPortFormat(OMX_U32 portIndex, sp<AMessage> &notify) {
                     notify->setString("mime", MEDIA_MIMETYPE_AUDIO_AAC);
                     notify->setInt32("channel-count", params.nChannels);
                     notify->setInt32("sample-rate", params.nSampleRate);
+#ifdef MTK_AOSP_ENHANCEMENT
+                    notify->setInt32("aac-profile", params.eAACProfile);
+#endif
                     break;
                 }
 
@@ -4397,6 +5803,86 @@ status_t ACodec::getPortFormat(OMX_U32 portIndex, sp<AMessage> &notify) {
                     break;
                 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+                case OMX_AUDIO_CodingADPCM:
+                {
+                    OMX_AUDIO_PARAM_ADPCMTYPE params;
+                    InitOMXParams(&params);
+                    params.nPortIndex = portIndex;
+
+                    CHECK_EQ((status_t)OK, mOMX->getParameter(
+                        mNode,
+                        (OMX_INDEXTYPE)OMX_IndexParamAudioAdpcm,
+                        &params,
+                        sizeof(params)));
+
+                    notify->setString("mime", params.nFormatTag == WAVE_FORMAT_MS_ADPCM ?
+                        MEDIA_MIMETYPE_AUDIO_MS_ADPCM : MEDIA_MIMETYPE_AUDIO_DVI_IMA_ADPCM);
+                    notify->setInt32("channel-count", params.nChannelCount);
+                    notify->setInt32("sample-rate", params.nSamplesPerSec);
+                    notify->setInt32("block-align", params.nBlockAlign);
+                    notify->setInt32("bit-per-sample", params.nBitsPerSample);
+                    sp<ABuffer> buffer = new ABuffer(params.nExtendDataSize);
+                    memcpy(buffer->data(), params.pExtendData, params.nExtendDataSize);
+                    notify->setBuffer("extra-data-pointer", buffer);
+                    break;
+                }
+
+                case OMX_AUDIO_CodingWMA:
+                {
+                    OMX_AUDIO_PARAM_WMATYPE params;
+                    InitOMXParams(&params);
+                    params.nPortIndex = portIndex;
+
+                    CHECK_EQ((status_t)OK, mOMX->getParameter(
+                        mNode,
+                        (OMX_INDEXTYPE)OMX_IndexParamAudioWma,
+                        &params,
+                        sizeof(params)));
+
+                    //notify->setString("mime", MEDIA_MIMETYPE_AUDIO_WMA);
+                    notify->setInt32("channel-count", params.nChannels);
+                    notify->setInt32("sample-rate", params.nSamplingRate);
+                    break;
+                }
+
+                case OMX_AUDIO_CodingAPE:
+                {
+                    OMX_AUDIO_PARAM_APETYPE params;
+                    InitOMXParams(&params);
+                    params.nPortIndex = portIndex;
+
+                    CHECK_EQ((status_t)OK, mOMX->getParameter(
+                        mNode,
+                        (OMX_INDEXTYPE)OMX_IndexParamAudioApe,
+                        &params,
+                        sizeof(params)));
+
+                    notify->setString("mime", MEDIA_MIMETYPE_AUDIO_APE);
+                    notify->setInt32("ape-chl", params.channels);
+                    notify->setInt32("sample-rate", params.SampleRate);
+                    break;
+                }
+
+                case OMX_AUDIO_CodingALAC:
+                {
+                    OMX_AUDIO_PARAM_ALACTYPE params;
+                    InitOMXParams(&params);
+                    params.nPortIndex = portIndex;
+
+                    CHECK_EQ((status_t)OK, mOMX->getParameter(
+                        mNode,
+                        (OMX_INDEXTYPE)OMX_IndexParamAudioAlac,
+                        &params,
+                        sizeof(params)));
+
+                    notify->setString("mime", MEDIA_MIMETYPE_AUDIO_ALAC);
+                    notify->setInt32("channel-count", params.nChannels);
+                    notify->setInt32("sample-rate", params.nSampleRate);
+                    break;
+                }
+#endif
+
                 default:
                     ALOGE("Unsupported audio coding: %s(%d)\n",
                             asString(audioDef->eEncoding), audioDef->eEncoding);
@@ -4424,6 +5910,19 @@ void ACodec::sendFormatChange(const sp<AMessage> &reply) {
 
     AString mime;
     CHECK(notify->findString("mime", &mime));
+
+#ifdef MTK_AOSP_ENHANCEMENT
+#ifdef MTK_CLEARMOTION_SUPPORT
+    int32_t NotUpdateVideoSize = 0;
+    reply->findInt32("NotUpdateVideoSize", &NotUpdateVideoSize);
+
+    if (NotUpdateVideoSize != 0)
+    {
+        notify->setInt32("NotUpdateVideoSize", NotUpdateVideoSize);
+        ALOGD("Force not to update vide size");
+    }
+#endif
+#endif
 
     int32_t left, top, right, bottom;
     if (mime == MEDIA_MIMETYPE_VIDEO_RAW &&
@@ -4456,7 +5955,60 @@ void ACodec::sendFormatChange(const sp<AMessage> &reply) {
 void ACodec::signalError(OMX_ERRORTYPE error, status_t internalError) {
     sp<AMessage> notify = mNotify->dup();
     notify->setInt32("what", CodecBase::kWhatError);
+
     ALOGE("signalError(omxError %#x, internalError %d)", error, internalError);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+
+    // mtk80902: ALPS00442417 - porting error handler from OMXCodec
+    if(error == OMX_ErrorStreamCorrupt)
+    {
+        ALOGW("onEvent--OMX Error Stream Corrupt!!");
+#ifdef MTK_AUDIO_APE_SUPPORT
+        // for ape error state to exit playback start.
+        if(internalError == OMX_AUDIO_CodingAPE) {
+            notify->setInt32("err", internalError);
+            notify->setInt32("actionCode", ACTION_CODE_FATAL); // could translate from OMX error.
+            notify->post();
+        }
+        // for ape error state to exit playback end.
+#endif
+        if(mIsVideoEncoder) {
+            ALOGW("onEvent--Video encoder error");
+            notify->setInt32("err", ERROR_UNSUPPORTED_VIDEO);
+            notify->setInt32("actionCode", ACTION_CODE_FATAL); // could translate from OMX error.
+            notify->post();
+        }
+    } else if (mIsVideoDecoder && error == OMX_ErrorBadParameter) {
+        ALOGW("onEvent--OMX Bad Parameter!!");
+        notify->setInt32("err", ERROR_UNSUPPORTED_VIDEO);
+        notify->setInt32("actionCode", ACTION_CODE_FATAL); // could translate from OMX error.
+        notify->post();
+    } else if (!mIsEncoder && !mIsVideoDecoder && error == OMX_ErrorBadParameter){
+        ALOGW("onEvent--Audio OMX Bad Parameter!!");
+        notify->setInt32("err", ERROR_UNSUPPORTED_AUDIO);
+        notify->setInt32("actionCode", ACTION_CODE_FATAL); // could translate from OMX error.
+        notify->post();
+    } else {
+
+        if (internalError == UNKNOWN_ERROR) { // find better error code
+            const status_t omxStatus = statusFromOMXError(error);
+            if (omxStatus != 0) {
+                internalError = omxStatus;
+            } else {
+                ALOGW("Invalid OMX error %#x", error);
+            }
+        }
+
+        mFatalError = true;
+
+        notify->setInt32("err", internalError);
+        notify->setInt32("actionCode", ACTION_CODE_FATAL); // could translate from OMX error.
+        notify->post();
+
+    }
+
+#else //MTK_AOSP_ENHANCEMENT
 
     if (internalError == UNKNOWN_ERROR) { // find better error code
         const status_t omxStatus = statusFromOMXError(error);
@@ -4472,6 +6024,9 @@ void ACodec::signalError(OMX_ERRORTYPE error, status_t internalError) {
     notify->setInt32("err", internalError);
     notify->setInt32("actionCode", ACTION_CODE_FATAL); // could translate from OMX error.
     notify->post();
+
+#endif //MTK_AOSP_ENHANCEMENT
+
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -4484,6 +6039,45 @@ status_t ACodec::requestIDRFrame() {
         return ERROR_UNSUPPORTED;
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (IsMTKComponent(mComponentName.c_str())) {
+         ALOGI("request I frame");
+            OMX_INDEXTYPE index;
+            status_t err =
+            mOMX->getExtensionIndex(
+                    mNode,
+                    "OMX.MTK.index.param.video.EncSetForceIframe",
+                    &index);
+
+            if (err != OK) {
+                return err;
+            }
+
+            OMX_BOOL enable = OMX_TRUE;
+            err = mOMX->setConfig(mNode, index, &enable, sizeof(enable));
+
+            if (err != OK) {
+                ALOGE("setConfig('OMX.MTK.index.param.video.EncSetForceIframe') returned error 0x%08x", err);
+                return err;
+            }
+
+        return OK;
+    }
+        else {
+         ALOGI("request I frame - non MTK codec index(0x%08X)", OMX_IndexConfigVideoIntraVOPRefresh);
+             OMX_CONFIG_INTRAREFRESHVOPTYPE params;
+         InitOMXParams(&params);
+
+         params.nPortIndex = kPortIndexOutput;
+         params.IntraRefreshVOP = OMX_TRUE;
+
+        return mOMX->setConfig(
+                        mNode,
+                        OMX_IndexConfigVideoIntraVOPRefresh,
+                        &params,
+                        sizeof(params));
+        }
+#else
     OMX_CONFIG_INTRAREFRESHVOPTYPE params;
     InitOMXParams(&params);
 
@@ -4495,6 +6089,8 @@ status_t ACodec::requestIDRFrame() {
             OMX_IndexConfigVideoIntraVOPRefresh,
             &params,
             sizeof(params));
+#endif
+
 }
 
 void ACodec::PortDescription::addBuffer(
@@ -4604,6 +6200,22 @@ bool ACodec::BaseState::onMessageReceived(const sp<AMessage> &msg) {
             break;
         }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#if APPLY_CHECKING_FLUSH_COMPLETED
+        case kWhatMtkVdecCheckFlushDone:
+        {
+            int delayTime;
+            int mTimeOut;
+            msg->findInt32("MtkVDecFlushDoneCheckDelayTime", &delayTime);
+            msg->findInt32("MtkVDecFlushDoneCheckTimeOut", &mTimeOut);
+            status_t err = mCodec->setVDecCheckFlushDone(delayTime, mTimeOut);
+            if( OK != err )
+                ALOGD("Acodec check Vdec(should be) flushing done ret: %x", err);
+            break;
+        }
+#endif //APPLY_CHECKING_FLUSH_COMPLETED
+#endif//MTK_AOSP_ENHANCEMENT
+
         default:
             return false;
     }
@@ -4622,6 +6234,7 @@ bool ACodec::BaseState::checkOMXMessage(const sp<AMessage> &msg) {
 
     IOMX::node_id nodeID;
     CHECK(msg->findInt32("node", (int32_t*)&nodeID));
+
     if (nodeID != mCodec->mNode) {
         ALOGE("Unexpected message for nodeID: %u, should have been %u", nodeID, mCodec->mNode);
         return false;
@@ -4690,6 +6303,14 @@ bool ACodec::BaseState::onOMXMessage(const sp<AMessage> &msg) {
             CHECK(msg->findInt32("buffer", (int32_t*)&bufferID));
             CHECK(msg->findInt32("fence_fd", &fenceFd));
 
+#ifdef MTK_AOSP_ENHANCEMENT
+            if (IsMTKVideoEncoderComponent(mCodec->mComponentName.c_str())) {
+                ATRACE_INT("ACodecVEncEBD", bufferID);
+            }
+            else {
+                ATRACE_INT("ACodecAEncEBD", bufferID);
+            }
+#endif
             return onOMXEmptyBufferDone(bufferID, fenceFd);
         }
 
@@ -4707,11 +6328,19 @@ bool ACodec::BaseState::onOMXMessage(const sp<AMessage> &msg) {
             CHECK(msg->findInt64("timestamp", &timeUs));
             CHECK(msg->findInt32("fence_fd", &fenceFd));
 
+#ifdef MTK_AOSP_ENHANCEMENT
+            int32_t ticks=0;
+            msg->findInt32("ticks", &ticks);
+#endif
             return onOMXFillBufferDone(
                     bufferID,
                     (size_t)rangeOffset, (size_t)rangeLength,
                     (OMX_U32)flags,
+#ifdef MTK_AOSP_ENHANCEMENT
+                    timeUs, ticks,
+#else//not MTK_AOSP_ENHANCEMENT
                     timeUs,
+#endif//MTK_AOSP_ENHANCEMENT
                     fenceFd);
         }
 
@@ -4724,6 +6353,7 @@ bool ACodec::BaseState::onOMXMessage(const sp<AMessage> &msg) {
 
             return onOMXFrameRendered(
                     mediaTimeUs, systemNano);
+
         }
 
         default:
@@ -4761,6 +6391,9 @@ bool ACodec::BaseState::onOMXEvent(
 }
 
 bool ACodec::BaseState::onOMXEmptyBufferDone(IOMX::buffer_id bufferID, int fenceFd) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (true == mCodec->mIsAudioBufferLogSwitchOn || true == mCodec->mIsVideo)
+#endif
     ALOGV("[%s] onOMXEmptyBufferDone %u",
          mCodec->mComponentName.c_str(), bufferID);
 
@@ -4775,6 +6408,11 @@ bool ACodec::BaseState::onOMXEmptyBufferDone(IOMX::buffer_id bufferID, int fence
         return false;
     }
     info->mStatus = BufferInfo::OWNED_BY_US;
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (true == mIsProfileBufferActivity && mCodec->mIsVideo) {
+        ALOGD("T(%p) I(%u) S(%d) P(%d), onOMXEmptyBufferDone", mCodec, info->mBufferID, (int)(info->mStatus), kPortIndexInput);
+    }
+#endif //MTK_AOSP_ENHANCEMENT
 
     // input buffers cannot take fences, so wait for any fence now
     (void)mCodec->waitForFence(fenceFd, "onOMXEmptyBufferDone");
@@ -4797,6 +6435,24 @@ bool ACodec::BaseState::onOMXEmptyBufferDone(IOMX::buffer_id bufferID, int fence
             break;
 
         case RESUBMIT_BUFFERS:
+#ifdef MTK_AOSP_ENHANCEMENT
+            // mtk80902: porting from AwesomePlayer: prevent buffering twice
+            if (mCodec->mMaxQueueBufferNum > 0) {
+                size_t n = mCodec->mBuffers[kPortIndexInput].size();
+                size_t others = 0;
+                for (size_t i = 0; i < n; ++i) {
+                    BufferInfo *info = &mCodec->mBuffers[kPortIndexInput].editItemAt(i);
+                    if (info->mStatus == BufferInfo::OWNED_BY_COMPONENT)
+                        others++;
+                }
+
+                if (mCodec->mMaxQueueBufferNum < (int32_t)others) {
+                    ALOGV("mMaxQueueBufferNum %d < component occupied %lld, skip postFillThisBuffer",
+                    mCodec->mMaxQueueBufferNum, (long long)others);
+                    break;
+                }
+            }
+#endif //MTK_AOSP_ENHANCEMENT
             postFillThisBuffer(info);
             break;
 
@@ -4811,16 +6467,53 @@ bool ACodec::BaseState::onOMXEmptyBufferDone(IOMX::buffer_id bufferID, int fence
 
 void ACodec::BaseState::postFillThisBuffer(BufferInfo *info) {
     if (mCodec->mPortEOS[kPortIndexInput]) {
+        ALOGV("[%s] postFillThisBuffer brk due2 EOS", mCodec->mComponentName.c_str());
         return;
     }
 
     CHECK_EQ((int)info->mStatus, (int)BufferInfo::OWNED_BY_US);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (mCodec->mLeftOverBuffer != NULL) {
+        ALOGD("[%s] left over buffer (id = %u)",
+               mCodec->mComponentName.c_str(), info->mBufferID);
+        info->mData->meta()->clear();
+
+        sp<AMessage> reply = new AMessage(kWhatInputBufferFilled, mCodec);
+        reply->setInt32("buffer-id", info->mBufferID);
+        reply->setBuffer("buffer", mCodec->mLeftOverBuffer);
+        mCodec->mLeftOverBuffer = NULL;
+//        reply->setInt32("partial", 1);
+        reply->post();
+
+        info->mStatus = BufferInfo::OWNED_BY_UPSTREAM;
+        if (true == mIsProfileBufferActivity && mCodec->mIsVideo) {
+            ALOGD("T(%p) I(%u) S(%d) P(%d), postFillThisBuffer", mCodec, info->mBufferID, (int)(info->mStatus), kPortIndexInput);
+        }
+        return;
+    }
+#endif
     sp<AMessage> notify = mCodec->mNotify->dup();
     notify->setInt32("what", CodecBase::kWhatFillThisBuffer);
     notify->setInt32("buffer-id", info->mBufferID);
 
+
+#ifdef MTK_AOSP_ENHANCEMENT
+   {
+
+         void *mediaBuffer;
+         if(info->mData->meta()->findPointer("mediaBuffer", &mediaBuffer)
+                 && mediaBuffer != NULL){
+             //ALOGI("postFillThisBuffer release mediabuffer");
+             ((MediaBuffer *)mediaBuffer)->release();
+         }
+        info->mData->meta()->clear();
+    }
+#else
     info->mData->meta()->clear();
+#endif
+
+
     notify->setBuffer("buffer", info->mData);
 
     sp<AMessage> reply = new AMessage(kWhatInputBufferFilled, mCodec);
@@ -4831,11 +6524,17 @@ void ACodec::BaseState::postFillThisBuffer(BufferInfo *info) {
     notify->post();
 
     info->mStatus = BufferInfo::OWNED_BY_UPSTREAM;
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (true == mIsProfileBufferActivity && mCodec->mIsVideo) {
+        ALOGD("T(%p) I(%u) S(%d) P(%d), postFillThisBuffer", mCodec, info->mBufferID, (int)(info->mStatus), kPortIndexInput);
+    }
+#endif //MTK_AOSP_ENHANCEMENT
 }
 
 void ACodec::BaseState::onInputBufferFilled(const sp<AMessage> &msg) {
     IOMX::buffer_id bufferID;
     CHECK(msg->findInt32("buffer-id", (int32_t*)&bufferID));
+
     sp<ABuffer> buffer;
     int32_t err = OK;
     bool eos = false;
@@ -4849,7 +6548,7 @@ void ACodec::BaseState::onInputBufferFilled(const sp<AMessage> &msg) {
             /* buffers with no errors are returned on MediaCodec.flush */
             mode = KEEP_BUFFERS;
         } else {
-            ALOGV("[%s] saw error %d instead of an input buffer",
+            ALOGD("[%s] saw error %d instead of an input buffer",
                  mCodec->mComponentName.c_str(), err);
             eos = true;
         }
@@ -4859,9 +6558,25 @@ void ACodec::BaseState::onInputBufferFilled(const sp<AMessage> &msg) {
 
     int32_t tmp;
     if (buffer != NULL && buffer->meta()->findInt32("eos", &tmp) && tmp) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGD("InputBuffer EOS");
+#endif//MTK_AOSP_ENHANCEMENT
         eos = true;
         err = ERROR_END_OF_STREAM;
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+    bool reComputePTS = false;
+    int32_t InvalidKeyTime;
+    //ALOGV("mComponentName %s",mCodec->mComponentName.c_str());
+    if(!strcmp(mCodec->mComponentName.c_str(), "OMX.MTK.VIDEO.DECODER.MPEG2") || !strcmp(mCodec->mComponentName.c_str(), "OMX.MTK.VIDEO.DECODER.AVC"))
+    {
+        if(buffer != NULL && (buffer->meta()->findInt32("invt", &InvalidKeyTime)) && InvalidKeyTime)
+        {
+            ALOGE("reComputePTS");
+            reComputePTS = true;
+        }
+    }
+#endif //MTK_AOSP_ENHANCEMENT
 
     BufferInfo *info = mCodec->findBufferByID(kPortIndexInput, bufferID);
     BufferInfo::Status status = BufferInfo::getSafeStatus(info);
@@ -4872,7 +6587,33 @@ void ACodec::BaseState::onInputBufferFilled(const sp<AMessage> &msg) {
         return;
     }
 
+   /*
+    if (msg->findInt32("partial", &tmp)) {
+        int64_t tt;
+        buffer->meta()->findInt64("timeUs", &tt);
+        ALOGD("partial frame filled, %lld, %p, size = %d", tt, buffer->data(), (int)buffer->size());
+        ALOGD("\t\t%p (%d %p), capacity, size = %d", bufferID,  info->mData->offset(), info->mData->data(), info->mData->capacity());
+    }
+    */
     info->mStatus = BufferInfo::OWNED_BY_US;
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (true == mIsProfileBufferActivity && mCodec->mIsVideo) {
+        ALOGD("T(%p) I(%u) S(%d) P(%d), onInputBufferFilled", mCodec, info->mBufferID, (int)(info->mStatus), kPortIndexInput);
+    }
+
+    mCodec->dumpInput(buffer);
+
+    int64_t timeUs = -1;
+    if (buffer != NULL && !mCodec->mPortEOS[kPortIndexInput]) {
+        buffer->meta()->findInt64("timeUs", &timeUs);
+    }
+
+    if (true == mCodec->mIsAudioBufferLogSwitchOn || true == mCodec->mIsVideo) {
+        ALOGV("[%s] onInputBufferFilled ID %u w/ time %lld eos %d mode %d err %d",
+            mCodec->mComponentName.c_str(), bufferID, (long long)timeUs, (uint32_t)eos, (uint32_t)mode, (uint32_t)err);
+    }
+#endif
 
     switch (mode) {
         case KEEP_BUFFERS:
@@ -4889,32 +6630,97 @@ void ACodec::BaseState::onInputBufferFilled(const sp<AMessage> &msg) {
         case RESUBMIT_BUFFERS:
         {
             if (buffer != NULL && !mCodec->mPortEOS[kPortIndexInput]) {
+#ifdef  MTK_AOSP_ENHANCEMENT
+                // Divx3 need send null buffer as a csd, which size is 0, to the decoder.
+                // Otherwise, decoder can not get the width/height to init the driver.
+                if (strcasecmp("OMX.MTK.VIDEO.DECODER.DIVX3", mCodec->mComponentName.c_str())) {
+                    // Do not send empty input buffer w/o EOS to the component.
+                    if (buffer->size() == 0 && !eos) {
+                        postFillThisBuffer(info);
+                        break;
+                    }
+                }
+#else
                 // Do not send empty input buffer w/o EOS to the component.
                 if (buffer->size() == 0 && !eos) {
                     postFillThisBuffer(info);
                     break;
                 }
-
+#endif
                 int64_t timeUs;
                 CHECK(buffer->meta()->findInt64("timeUs", &timeUs));
 
                 OMX_U32 flags = OMX_BUFFERFLAG_ENDOFFRAME;
+#ifdef MTK_AOSP_ENHANCEMENT
+                if(mCodec->mSupportsPartialFrames){
+                    int32_t eof = 1;
+                    if(buffer->meta()->findInt32("eof", &eof)){
+                        //NuPlayerDecoder sets eof to false when applying partial frame
+                        if (eof == 0){
+                            flags = 0;
+                        }
+                    }
+                }
+#endif
 
                 int32_t isCSD;
                 if (buffer->meta()->findInt32("csd", &isCSD) && isCSD != 0) {
+#ifdef MTK_AOSP_ENHANCEMENT
+                    ALOGI("[%s] received csd settings.", mCodec->mComponentName.c_str());
+#endif
                     flags |= OMX_BUFFERFLAG_CODECCONFIG;
                 }
+
 
                 if (eos) {
                     flags |= OMX_BUFFERFLAG_EOS;
                 }
+#ifdef MTK_AOSP_ENHANCEMENT
+                if (reComputePTS)
+                    flags |= OMX_BUFFERFLAG_INVALID_TIMESTAMP;
+#endif //MTK_AOSP_ENHANCEMENT
 
                 if (buffer != info->mData) {
                     ALOGV("[%s] Needs to copy input data for buffer %u. (%p != %p)",
                          mCodec->mComponentName.c_str(),
                          bufferID,
                          buffer.get(), info->mData.get());
+#ifdef MTK_AOSP_ENHANCEMENT
+                    int capacity = info->mData->capacity();
+                    if (buffer->size() > (size_t)capacity) {
+                        if (mCodec->mSupportsPartialFrames) {
+                            sp<ABuffer> leftBuffer = new ABuffer(buffer->size() - capacity);
+                            memcpy(leftBuffer->data(), buffer->data() + capacity, buffer->size() - capacity);
+                            leftBuffer->meta()->setInt64("timeUs", timeUs);
+                            if (isCSD) {
+                                leftBuffer->meta()->setInt32("csd", isCSD);
+                            }
 
+                            ALOGI("[%s] split big input buffer %lld to %lld + %lld",
+                                    mCodec->mComponentName.c_str(),  (long long)buffer->size(), (long long)capacity, (long long)leftBuffer->size());
+
+                            if (buffer->size() > info->mData->capacity()) {
+                                ALOGE("data size (%zu) is greated than buffer capacity (%zu)",
+                                        buffer->size(),           // this is the data received
+                                        info->mData->capacity()); // this is out buffer size
+                                mCodec->signalError(OMX_ErrorUndefined, FAILED_TRANSACTION);
+                                return;
+                            }
+
+                            buffer->setRange(buffer->offset(), capacity);
+                            flags &= ~OMX_BUFFERFLAG_ENDOFFRAME;
+
+                            mCodec->mLeftOverBuffer = leftBuffer;
+                        } else {
+                            ALOGE("Codec's input buffers are too small to accomodate "
+                                    " buffer read from source (info->mSize = %lld, srcLength = %lld)",
+                                    (long long)info->mData->capacity(), (long long)buffer->size());
+                            mCodec->signalError();
+                            break;
+                            //CHECK_LE(buffer->size(), info->mData->capacity());
+                        }
+                    }
+#else
                     if (buffer->size() > info->mData->capacity()) {
                         ALOGE("data size (%zu) is greated than buffer capacity (%zu)",
                                 buffer->size(),           // this is the data received
@@ -4922,6 +6728,7 @@ void ACodec::BaseState::onInputBufferFilled(const sp<AMessage> &msg) {
                         mCodec->signalError(OMX_ErrorUndefined, FAILED_TRANSACTION);
                         return;
                     }
+#endif
                     memcpy(info->mData->data(), buffer->data(), buffer->size());
                 }
 
@@ -4933,9 +6740,14 @@ void ACodec::BaseState::onInputBufferFilled(const sp<AMessage> &msg) {
                          mCodec->mComponentName.c_str(), bufferID);
                 } else {
 #if TRACK_BUFFER_TIMING
-                    ALOGI("[%s] calling emptyBuffer %u w/ time %lld us",
-                         mCodec->mComponentName.c_str(), bufferID, (long long)timeUs);
+                    if (true == mCodec->mIsAudioBufferLogSwitchOn || true == mCodec->mIsVideo) {
+                        ALOGI("[%s] calling emptyBuffer %u w/ time %lld us",
+                             mCodec->mComponentName.c_str(), bufferID, (long long)timeUs);
+                    }
 #else
+#ifdef MTK_AOSP_ENHANCEMENT
+                    if (true == mCodec->mIsAudioBufferLogSwitchOn || true == mCodec->mIsVideo)
+#endif
                     ALOGV("[%s] calling emptyBuffer %u w/ time %lld us",
                          mCodec->mComponentName.c_str(), bufferID, (long long)timeUs);
 #endif
@@ -4947,7 +6759,6 @@ void ACodec::BaseState::onInputBufferFilled(const sp<AMessage> &msg) {
                 stats.mFillBufferDoneTimeUs = -1ll;
                 mCodec->mBufferStats.add(timeUs, stats);
 #endif
-
                 if (mCodec->storingMetadataInDecodedBuffers()) {
                     // try to submit an output buffer for each input buffer
                     PortMode outputMode = getPortMode(kPortIndexOutput);
@@ -4960,6 +6771,36 @@ void ACodec::BaseState::onInputBufferFilled(const sp<AMessage> &msg) {
                         mCodec->submitOutputMetadataBuffer();
                     }
                 }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+                //for ape seek on acodec
+                if(!strcmp(mCodec->mComponentName.c_str(), "OMX.MTK.AUDIO.DECODER.APE"))
+                {
+                    uint32_t newframe, firstbyte;
+        
+                    newframe  = *newframe_p;
+                    firstbyte = *seekbyte_p;
+        
+                    if(newframe!=0x80800000 || firstbyte != 0x80800000)
+                    {
+        
+                        OMX_AUDIO_PARAM_APETYPE profile;
+                        InitOMXParams(&profile);
+                        profile.nPortIndex = kPortIndexInput;
+        
+                        status_t err = mCodec->mOMX->getParameter(mCodec->mNode, (OMX_INDEXTYPE)OMX_IndexParamAudioApe, &profile, sizeof(profile));
+                        profile.seekbyte = firstbyte;
+                        profile.seekfrm = newframe;
+        
+                        err = mCodec->mOMX->setParameter(mCodec->mNode, (OMX_INDEXTYPE)OMX_IndexParamAudioApe, &profile, sizeof(profile));
+                    }
+        
+                    *newframe_p = 0x80800000;
+                    *seekbyte_p = 0x80800000;
+        
+                }
+#endif
+
                 info->checkReadFence("onInputBufferFilled");
                 status_t err2 = mCodec->mOMX->emptyBuffer(
                     mCodec->mNode,
@@ -4974,13 +6815,19 @@ void ACodec::BaseState::onInputBufferFilled(const sp<AMessage> &msg) {
                     mCodec->signalError(OMX_ErrorUndefined, makeNoSideEffectStatus(err2));
                     return;
                 }
+
                 info->mStatus = BufferInfo::OWNED_BY_COMPONENT;
+#ifdef MTK_AOSP_ENHANCEMENT
+                if (true == mIsProfileBufferActivity && mCodec->mIsVideo) {
+                    ALOGD("T(%p) I(%u) S(%d) P(%d), onInputBufferFilled", mCodec, info->mBufferID, (int)(info->mStatus), kPortIndexInput);
+                }
+#endif
 
                 if (!eos && err == OK) {
                     getMoreInputDataIfPossible();
                 } else {
-                    ALOGV("[%s] Signalled EOS (%d) on the input port",
-                         mCodec->mComponentName.c_str(), err);
+                    ALOGD("[%s] Signalled EOS on the input port",
+                         mCodec->mComponentName.c_str());
 
                     mCodec->mPortEOS[kPortIndexInput] = true;
                     mCodec->mInputEOSResult = err;
@@ -4994,7 +6841,7 @@ void ACodec::BaseState::onInputBufferFilled(const sp<AMessage> &msg) {
                          mCodec->mComponentName.c_str());
                 }
 
-                ALOGV("[%s] calling emptyBuffer %u signalling EOS",
+                ALOGD("[%s] emptyBuffer %x signalling EOS",
                      mCodec->mComponentName.c_str(), bufferID);
 
                 info->checkReadFence("onInputBufferFilled");
@@ -5012,6 +6859,11 @@ void ACodec::BaseState::onInputBufferFilled(const sp<AMessage> &msg) {
                     return;
                 }
                 info->mStatus = BufferInfo::OWNED_BY_COMPONENT;
+#ifdef MTK_AOSP_ENHANCEMENT
+                if (true == mIsProfileBufferActivity && mCodec->mIsVideo) {
+                    ALOGD("T(%p) I(%u) S(%d) P(%d), onInputBufferFilled", mCodec, info->mBufferID, (int)(info->mStatus), kPortIndexInput);
+                }
+#endif
 
                 mCodec->mPortEOS[kPortIndexInput] = true;
                 mCodec->mInputEOSResult = err;
@@ -5061,10 +6913,26 @@ bool ACodec::BaseState::onOMXFillBufferDone(
         IOMX::buffer_id bufferID,
         size_t rangeOffset, size_t rangeLength,
         OMX_U32 flags,
+#ifdef MTK_AOSP_ENHANCEMENT
+        int64_t timeUs, OMX_U32 ticks,
+#else
         int64_t timeUs,
+#endif//MTK_AOSP_ENHANCEMENT
         int fenceFd) {
+#ifdef MTK_AOSP_ENHANCEMENT
+     if (true == mCodec->mIsAudioBufferLogSwitchOn || true == mCodec->mIsVideo)
+#endif
     ALOGV("[%s] onOMXFillBufferDone %u time %" PRId64 " us, flags = 0x%08x",
          mCodec->mComponentName.c_str(), bufferID, timeUs, flags);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (IsMTKVideoDecoderComponent(mCodec->mComponentName.c_str())){
+        if (mCodec->mAnchorTimeRealUs > timeUs){
+            ALOGW("[%s] onOMXFillBufferDone ID %x time %lld us is later than av sync time %lld",
+             mCodec->mComponentName.c_str(), bufferID, (long long)timeUs, (long long)mCodec->mAnchorTimeRealUs);
+        }
+    }
+#endif
 
     ssize_t index;
     status_t err= OK;
@@ -5086,6 +6954,7 @@ bool ACodec::BaseState::onOMXFillBufferDone(
 
     BufferInfo *info =
         mCodec->findBufferByID(kPortIndexOutput, bufferID, &index);
+
     BufferInfo::Status status = BufferInfo::getSafeStatus(info);
     if (status != BufferInfo::OWNED_BY_COMPONENT) {
         ALOGE("Wrong ownership in FBD: %s(%d) buffer #%u", _asString(status), status, bufferID);
@@ -5096,6 +6965,10 @@ bool ACodec::BaseState::onOMXFillBufferDone(
         }
         return true;
     }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    mCodec->dumpOutputOnOMXFBD(info, rangeLength);
+#endif //MTK_AOSP_ENHANCEMENT
 
     info->mDequeuedAt = ++mCodec->mDequeueCounter;
     info->mStatus = BufferInfo::OWNED_BY_US;
@@ -5116,6 +6989,21 @@ bool ACodec::BaseState::onOMXFillBufferDone(
     }
     info->setReadFence(fenceFd, "onOMXFillBufferDone");
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#ifdef MTK_CLEARMOTION_SUPPORT
+    if (mCodec->mIsVideoDecoder)
+    {
+        info->mClearMotionEnabled = ((flags & OMX_BUFFERFLAG_CLEARMOTION_ENABLED) == OMX_BUFFERFLAG_CLEARMOTION_ENABLED)? 1:0;
+    }
+#endif
+#endif
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (true == mIsProfileBufferActivity && mCodec->mIsVideo) {
+        ALOGD("T(%p) I(%u) S(%d) P(%d), onOMXFillBufferDone", mCodec, info->mBufferID, (int)(info->mStatus), kPortIndexOutput);
+    }
+#endif
+
     PortMode mode = getPortMode(kPortIndexOutput);
 
     switch (mode) {
@@ -5129,6 +7017,14 @@ bool ACodec::BaseState::onOMXFillBufferDone(
                 ALOGV("[%s] calling fillBuffer %u",
                      mCodec->mComponentName.c_str(), info->mBufferID);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+                if (mCodec->mPortEOS[kPortIndexOutput]){
+                    //Bruce 2013/01/21 if after eos, we don't send fill_this_buffer again, or it may cause busy loop on Mtk Omx component
+                    ALOGD("Output EOS and skip fillBuffer");
+                    break;
+                }
+#endif//MTK_AOSP_ENHANCEMENT
+
                 err = mCodec->mOMX->fillBuffer(mCodec->mNode, info->mBufferID, info->mFenceFd);
                 info->mFenceFd = -1;
                 if (err != OK) {
@@ -5137,15 +7033,43 @@ bool ACodec::BaseState::onOMXFillBufferDone(
                 }
 
                 info->mStatus = BufferInfo::OWNED_BY_COMPONENT;
+#ifdef MTK_AOSP_ENHANCEMENT
+                if (true == mIsProfileBufferActivity && mCodec->mIsVideo) {
+                    ALOGD("T(%p) I(%u) S(%d) P(%d), onOMXFillBufferDone", mCodec, info->mBufferID, (int)(info->mStatus), kPortIndexOutput);
+                }
+#endif
+
                 break;
             }
-
             sp<AMessage> reply =
                 new AMessage(kWhatOutputBufferDrained, mCodec);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+
+#ifdef MTK_CLEARMOTION_SUPPORT
+            if (!mCodec->mSentFormat && rangeLength > 0) {
+                if (mCodec->mIsVideoDecoder)
+                {
+                    if ((flags & OMX_BUFFERFLAG_NOT_UPDATE_VIDEO_SIZE) == OMX_BUFFERFLAG_NOT_UPDATE_VIDEO_SIZE)
+                    {
+                        ALOGD("NotUpdateVideoSize. mCodec->mSentFormat(%d), rangeLength(%zu), ts(%lld), flags(%d), (%d)", mCodec->mSentFormat, rangeLength, (long long)timeUs, flags, (flags & OMX_BUFFERFLAG_NOT_UPDATE_VIDEO_SIZE));
+                        reply->setInt32("NotUpdateVideoSize", 1);
+                    }
+                }
+                mCodec->sendFormatChange(reply);
+            }
+#else
             if (!mCodec->mSentFormat && rangeLength > 0) {
                 mCodec->sendFormatChange(reply);
             }
+#endif
+
+#else
+            if (!mCodec->mSentFormat && rangeLength > 0) {
+                mCodec->sendFormatChange(reply);
+            }
+#endif
+
             if (mCodec->usingMetadataOnEncoderOutput()) {
                 native_handle_t *handle = NULL;
                 VideoGrallocMetadata &grallocMeta = *(VideoGrallocMetadata *)info->mData->data();
@@ -5168,24 +7092,40 @@ bool ACodec::BaseState::onOMXFillBufferDone(
             } else {
                 info->mData->setRange(rangeOffset, rangeLength);
             }
-#if 0
-            if (mCodec->mNativeWindow == NULL) {
-                if (IsIDR(info->mData)) {
-                    ALOGI("IDR frame");
-                }
-            }
-#endif
 
             if (mCodec->mSkipCutBuffer != NULL) {
                 mCodec->mSkipCutBuffer->submit(info->mData);
             }
             info->mData->meta()->setInt64("timeUs", timeUs);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+            //for tansmitting latency token for WFD
+            if (!strncmp(
+                        "OMX.MTK.VIDEO.ENCODER.AVC", mCodec->mComponentName.c_str(),
+                        strlen("OMX.MTK.VIDEO.ENCODER.AVC")))
+            {
+                info->mData->meta()->setInt32("LatencyToken", (int)ticks);
+                ALOGD("give LatencyToken %d, %zu", (int)ticks, rangeLength);
+            }
+#ifdef MTK_CLEARMOTION_SUPPORT
+            if (flags & OMX_BUFFERFLAG_INTERPOLATE_FRAME) {
+                info->mData->meta()->setInt32("interpolateframe", 1);
+            }
+#endif
+
+            info->mData->meta()->setInt64("ACodecFBD", ALooper::GetNowUs()/1000);
+#endif
             sp<AMessage> notify = mCodec->mNotify->dup();
             notify->setInt32("what", CodecBase::kWhatDrainThisBuffer);
             notify->setInt32("buffer-id", info->mBufferID);
             notify->setBuffer("buffer", info->mData);
             notify->setInt32("flags", flags);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+            if (!(flags & OMX_BUFFERFLAG_DUMMY_NALU)) {
+                info->mData->meta()->setInt64("ACodecFBD", ALooper::GetNowUs()/1000);
+            }
+#endif
 
             reply->setInt32("buffer-id", info->mBufferID);
 
@@ -5194,6 +7134,11 @@ bool ACodec::BaseState::onOMXFillBufferDone(
             notify->post();
 
             info->mStatus = BufferInfo::OWNED_BY_DOWNSTREAM;
+#ifdef MTK_AOSP_ENHANCEMENT
+            if (true == mIsProfileBufferActivity && mCodec->mIsVideo) {
+                ALOGD("T(%p) I(%u) S(%d) P(%d), onOMXFillBufferDone", mCodec, info->mBufferID, (int)(info->mStatus), kPortIndexOutput);
+            }
+#endif
 
             if (flags & OMX_BUFFERFLAG_EOS) {
                 ALOGV("[%s] saw output EOS", mCodec->mComponentName.c_str());
@@ -5224,9 +7169,46 @@ bool ACodec::BaseState::onOMXFillBufferDone(
     return true;
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+void ACodec::BaseState::setAVSyncTime(int64_t time)
+{
+    if(IsMTKVideoDecoderComponent(mCodec->mComponentName.c_str())){
+        //Don't care the err here
+        status_t err = mCodec->mOMX->setConfig(
+            mCodec->mNode,
+            OMX_IndexVendorMtkOmxVdecAVSyncTime,
+            &time,
+            sizeof(time));
+        if (err != OK){
+            ALOGV("Failed to set OMX_IndexVendorMtkOmxVdecAVSyncTime");
+        }
+    }
+}
+#endif
+
 void ACodec::BaseState::onOutputBufferDrained(const sp<AMessage> &msg) {
     IOMX::buffer_id bufferID;
+
     CHECK(msg->findInt32("buffer-id", (int32_t*)&bufferID));
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (true == mCodec->mIsAudioBufferLogSwitchOn || true == mCodec->mIsVideo) {
+        ALOGV("[%s] onOutputBufferDrained ID %x", mCodec->mComponentName.c_str(), bufferID);
+    }
+    int64_t avSyncTimeUs = 0;
+    if (msg->findInt64("AvSyncRefTimeUs", &avSyncTimeUs)){
+        if (avSyncTimeUs != -1){
+            if (avSyncTimeUs < mCodec->mAnchorTimeRealUs){
+                //TODO: Need to reset mAnchorTimeRealUs at proper place to avoid false alarm
+                ALOGW("Got smaller av sync time. New:%lld < Old:%lld",
+                    (long long)avSyncTimeUs, (long long)mCodec->mAnchorTimeRealUs);
+            }
+            mCodec->mAnchorTimeRealUs = avSyncTimeUs;
+            setAVSyncTime(mCodec->mAnchorTimeRealUs);
+        }
+    }
+#endif //MTK_AOSP_ENHANCEMENT
+
     ssize_t index;
     BufferInfo *info = mCodec->findBufferByID(kPortIndexOutput, bufferID, &index);
     BufferInfo::Status status = BufferInfo::getSafeStatus(info);
@@ -5239,10 +7221,15 @@ void ACodec::BaseState::onOutputBufferDrained(const sp<AMessage> &msg) {
 
     android_native_rect_t crop;
     if (msg->findRect("crop", &crop.left, &crop.top, &crop.right, &crop.bottom)) {
+
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGD("native_window_set_crop l(%d), t(%d), r(%d), b(%d)",
+            crop.left, crop.top, crop.right, crop.bottom);
+#endif //MTK_AOSP_ENHANCEMENT
+
         status_t err = native_window_set_crop(mCodec->mNativeWindow.get(), &crop);
         ALOGW_IF(err != NO_ERROR, "failed to set crop: %d", err);
     }
-
     int32_t render;
     if (mCodec->mNativeWindow != NULL
             && msg->findInt32("render", &render) && render != 0
@@ -5258,6 +7245,8 @@ void ACodec::BaseState::onOutputBufferDrained(const sp<AMessage> &msg) {
                     mediaTimeUs, info->mGraphicBuffer, new Fence(::dup(info->mFenceFd)));
         }
 
+        ALOGD("queue NativeWindow");
+
         int64_t timestampNs = 0;
         if (!msg->findInt64("timestampNs", &timestampNs)) {
             // use media timestamp if client did not request a specific render timestamp
@@ -5267,31 +7256,91 @@ void ACodec::BaseState::onOutputBufferDrained(const sp<AMessage> &msg) {
             }
         }
 
-        status_t err;
+        status_t err = OK;
+
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (timestampNs != 0){
+            if (mCodec->mFirstDrainBufferTime == -1ll){
+                mCodec->mFirstDrainBufferTime = ALooper::GetNowUs();
+                mCodec->mFirstTimeStamp = timestampNs/1000;
+            }else{
+                int64_t timeDiffUs = ALooper::GetNowUs() - mCodec->mFirstDrainBufferTime;
+                ATRACE_INT_PERF("AC-DrainTime(ms)", (((timestampNs/1000) - mCodec->mFirstTimeStamp) - timeDiffUs)/1000);
+        #if 0
+                char ___traceBuf[128];
+                snprintf(___traceBuf, 128, "timestamp diff=%" PRId64 " timeDiffUs=%" PRId64, (((timestampNs/1000) - mCodec->mFirstTimeStamp))/1000, timeDiffUs/1000);
+                ATRACE_NAME(___traceBuf);
+        #endif
+            }
+        }
+#endif
+
+#ifdef MTK_AOSP_ENHANCEMENT
+        
+#ifdef MTK_CLEARMOTION_SUPPORT
+        // We don't want timestamp when clearmotion is enabled
+        //ALOGD("ClearMotion enable:%d", info->mClearMotionEnabled);
+        if (info->mClearMotionEnabled == 0)
+        {
+            err = native_window_set_buffers_timestamp(mCodec->mNativeWindow.get(), timestampNs);
+            ALOGW_IF(err != NO_ERROR, "failed to set buffer timestamp: %d", err);
+        }
+
+#else
         err = native_window_set_buffers_timestamp(mCodec->mNativeWindow.get(), timestampNs);
         ALOGW_IF(err != NO_ERROR, "failed to set buffer timestamp: %d", err);
 
+#endif
+
+#else // AOSP HANCEMENT
+        err = native_window_set_buffers_timestamp(mCodec->mNativeWindow.get(), timestampNs);
+        ALOGW_IF(err != NO_ERROR, "failed to set buffer timestamp: %d", err);
+#endif
+
+        
+
         info->checkReadFence("onOutputBufferDrained before queueBuffer");
+#ifdef MTK_AOSP_ENHANCEMENT
+        err = mCodec->profileAndQueueBuffer2NativeWindow(mCodec->mNativeWindow.get(),
+            info->mGraphicBuffer.get(), info->mFenceFd);
+#else
         err = mCodec->mNativeWindow->queueBuffer(
-                    mCodec->mNativeWindow.get(), info->mGraphicBuffer.get(), info->mFenceFd);
+            mCodec->mNativeWindow.get(), info->mGraphicBuffer.get(), info->mFenceFd);
+#endif
         info->mFenceFd = -1;
         if (err == OK) {
             info->mStatus = BufferInfo::OWNED_BY_NATIVE_WINDOW;
+
+#ifdef MTK_AOSP_ENHANCEMENT
+            if (true == mIsProfileBufferActivity && mCodec->mIsVideo) {
+                ALOGD("T(%p) I(%u) S(%d) P(%d), onOutputBufferDrained", mCodec, info->mBufferID, (int)(info->mStatus), kPortIndexOutput);
+            }
+            mCodec->dumpOutputOnOutputBufferDrained(info);
+#endif //MTK_AOSP_ENHANCEMENT
+
         } else {
             ALOGE("queueBuffer failed in onOutputBufferDrained: %d", err);
             mCodec->signalError(OMX_ErrorUndefined, makeNoSideEffectStatus(err));
             info->mStatus = BufferInfo::OWNED_BY_US;
+
             // keeping read fence as write fence to avoid clobbering
             info->mIsReadFence = false;
         }
-    } else {
+    }else{
+
         if (mCodec->mNativeWindow != NULL &&
             (info->mData == NULL || info->mData->size() != 0)) {
             // move read fence into write fence to avoid clobbering
             info->mIsReadFence = false;
             ATRACE_NAME("frame-drop");
         }
+
         info->mStatus = BufferInfo::OWNED_BY_US;
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (true == mIsProfileBufferActivity && mCodec->mIsVideo) {
+            ALOGD("T(%p) I(%u) S(%d) P(%d), onOutputBufferDrained", mCodec, info->mBufferID, (int)(info->mStatus), kPortIndexOutput);
+        }
+#endif
     }
 
     PortMode mode = getPortMode(kPortIndexOutput);
@@ -5318,11 +7367,18 @@ void ACodec::BaseState::onOutputBufferDrained(const sp<AMessage> &msg) {
                     // the spare instead.
 
                     info = mCodec->dequeueBufferFromNativeWindow();
+#ifdef MTK_AOSP_ENHANCEMENT
+                    if( info != NULL )
+                        ALOGD("dequeue NativeWindow %u", info->mBufferID);
+#endif //MTK_AOSP_ENHANCEMENT
                 }
 
                 if (info != NULL) {
-                    ALOGV("[%s] calling fillBuffer %u",
-                         mCodec->mComponentName.c_str(), info->mBufferID);
+#ifdef MTK_AOSP_ENHANCEMENT
+                    if (true == mCodec->mIsAudioBufferLogSwitchOn || true == mCodec->mIsVideo)
+#endif
+                    ALOGV("[%s] calling fillBuffer %u, mFenceFd %d",
+                         mCodec->mComponentName.c_str(), info->mBufferID, info->mFenceFd);
                     info->checkWriteFence("onOutputBufferDrained::RESUBMIT_BUFFERS");
                     status_t err = mCodec->mOMX->fillBuffer(
                             mCodec->mNode, info->mBufferID, info->mFenceFd);
@@ -5366,6 +7422,7 @@ void ACodec::UninitializedState::stateEntered() {
         mDeathNotifier.clear();
     }
 
+
     mCodec->mNativeWindow.clear();
     mCodec->mNativeWindowUsageBits = 0;
     mCodec->mNode = 0;
@@ -5375,6 +7432,18 @@ void ACodec::UninitializedState::stateEntered() {
     mCodec->mInputMetadataType = kMetadataBufferTypeInvalid;
     mCodec->mOutputMetadataType = kMetadataBufferTypeInvalid;
     mCodec->mComponentName.clear();
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    // NOT print audio buffer log by default
+    int32_t ret;
+    ret = getProperty("acodec.audio.buflogging", "0");
+    if (ret) {
+        mCodec->mIsAudioBufferLogSwitchOn = true;
+    } else {
+        mCodec->mIsAudioBufferLogSwitchOn = false;
+    }
+    ALOGD("UninitializedState, mIsAudioBufferLogSwitchOn=%d", mCodec->mIsAudioBufferLogSwitchOn);
+#endif
 }
 
 bool ACodec::UninitializedState::onMessageReceived(const sp<AMessage> &msg) {
@@ -5438,8 +7507,20 @@ bool ACodec::UninitializedState::onMessageReceived(const sp<AMessage> &msg) {
 
 void ACodec::UninitializedState::onSetup(
         const sp<AMessage> &msg) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    int32_t bAutoRun = 1;
+    if (!msg->findInt32("auto-run", &bAutoRun)) {
+        bAutoRun = 1;
+    }
+    ALOGD("auto run = %d", (int32_t)bAutoRun);
+#endif //MTK_AOSP_ENHANCEMENT
     if (onAllocateComponent(msg)
-            && mCodec->mLoadedState->onConfigureComponent(msg)) {
+            && mCodec->mLoadedState->onConfigureComponent(msg)
+#ifdef MTK_AOSP_ENHANCEMENT
+            && (bAutoRun)
+#endif //MTK_AOSP_ENHANCEMENT
+            ) {
+        ALOGD("start immediately after config component ");
         mCodec->mLoadedState->onStart();
     }
 }
@@ -5464,6 +7545,9 @@ bool ACodec::UninitializedState::onAllocateComponent(const sp<AMessage> &msg) {
         // This was a local binder, if it dies so do we, we won't care
         // about any notifications in the afterlife.
         mDeathNotifier.clear();
+        ALOGD("Local binder and clear mDeathNotifier");
+    }else{
+        ALOGD("mDeathNotifier is set");
     }
 
     Vector<OMXCodec::CodecNameAndQuirks> matchingCodecs;
@@ -5550,10 +7634,17 @@ bool ACodec::UninitializedState::onAllocateComponent(const sp<AMessage> &msg) {
     mCodec->mOMX = omx;
     mCodec->mNode = node;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    mCodec->mOMXLivesLocally = omx->livesLocally(node, getpid());
+#endif
+
     {
         sp<AMessage> notify = mCodec->mNotify->dup();
         notify->setInt32("what", CodecBase::kWhatComponentAllocated);
         notify->setString("componentName", mCodec->mComponentName.c_str());
+#ifdef MTK_AOSP_ENHANCEMENT
+        notify->setInt32("quirks", quirks);
+#endif
         notify->post();
     }
 
@@ -5569,16 +7660,16 @@ ACodec::LoadedState::LoadedState(ACodec *codec)
 }
 
 void ACodec::LoadedState::stateEntered() {
-    ALOGV("[%s] Now Loaded", mCodec->mComponentName.c_str());
+    ALOGD("[%s] Now Loaded", mCodec->mComponentName.c_str());
 
     mCodec->mPortEOS[kPortIndexInput] =
         mCodec->mPortEOS[kPortIndexOutput] = false;
 
     mCodec->mInputEOSResult = OK;
-
     mCodec->mDequeueCounter = 0;
     mCodec->mMetadataBuffersToSubmit = 0;
     mCodec->mRepeatFrameDelayUs = -1ll;
+
     mCodec->mInputFormat.clear();
     mCodec->mOutputFormat.clear();
     mCodec->mBaseOutputFormat.clear();
@@ -5687,12 +7778,51 @@ bool ACodec::LoadedState::onConfigureComponent(
         err = mCodec->configureCodec(mime.c_str(), msg);
     }
     if (err != OK) {
-        ALOGE("[%s] configureCodec returning error %d",
+        ALOGE("[%s] configureCodec returning error %x",
               mCodec->mComponentName.c_str(), err);
 
         mCodec->signalError(OMX_ErrorUndefined, makeNoSideEffectStatus(err));
         return false;
     }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    {
+        uint32_t handle = 0;
+        status_t err = mCodec->mOMX->getParameter(
+            mCodec->mNode, OMX_IndexVendorMtkOmxHandle, &handle, sizeof(handle));
+        if (err == OK)
+        {
+            ALOGD("Found component handle %u", handle);
+        }
+    }
+
+    {
+        int32_t dummy = 0;
+
+    if( msg->findInt32("IsProtectVideo", &dummy)&& (dummy == 1)) {
+            mCodec->mFlags |= kFlagIsProtect;
+            ALOGD ("acodec.video.isProtect %x", dummy);
+        }
+        //ALOGD ("mCodec->mFlags %x", mCodec->mFlags);
+
+        dummy = 0;
+        if( msg->findInt32("IsSecureVideo", &dummy)&& (dummy == 1) )
+        {
+            mCodec->mFlags |= kFlagIsProtect;
+           ALOGD("@debug: mCodec->mFlags |= kFlagIsProtect %x", mCodec->mFlags);
+        }
+    }
+    if (IsMTKVideoDecoderComponent(mCodec->mComponentName.c_str())) {
+        int32_t enableThumbnailOptimzation = 0;
+        int32_t mPropFlags = 0;
+        if (msg->findInt32("enableThumbnailOptimzation", &enableThumbnailOptimzation) && (enableThumbnailOptimzation == 1)) {
+            err = mCodec->mOMX->setParameter(mCodec->mNode, OMX_IndexVendorMtkOmxVdecThumbnailMode, &mPropFlags, sizeof(void *));
+            if (err != OK) {
+                ALOGW("ThumbnailOptimzation parameters set failed: %d", err);
+            }
+        }
+    }
+#endif //MTK_AOSP_ENHANCEMENT
 
     {
         sp<AMessage> notify = mCodec->mNotify->dup();
@@ -5823,6 +7953,9 @@ void ACodec::LoadedState::onCreateInputSurface(
     if (err == OK) {
         notify->setObject("input-surface",
                 new BufferProducerWrapper(bufferProducer));
+#ifdef MTK_AOSP_ENHANCEMENT
+        mCodec->mIsVideoEncoderInputSurface = 1;
+#endif //MTK_AOSP_ENHANCEMENT
     } else {
         // Can't use mCodec->signalError() here -- MediaCodec won't forward
         // the error through because it's in the "configured" state.  We
@@ -5882,7 +8015,7 @@ ACodec::LoadedToIdleState::LoadedToIdleState(ACodec *codec)
 }
 
 void ACodec::LoadedToIdleState::stateEntered() {
-    ALOGV("[%s] Now Loaded->Idle", mCodec->mComponentName.c_str());
+    ALOGD("[%s] Now Loaded->Idle", mCodec->mComponentName.c_str());
 
     status_t err;
     if ((err = allocateBuffers()) != OK) {
@@ -5981,7 +8114,7 @@ ACodec::IdleToExecutingState::IdleToExecutingState(ACodec *codec)
 }
 
 void ACodec::IdleToExecutingState::stateEntered() {
-    ALOGV("[%s] Now Idle->Executing", mCodec->mComponentName.c_str());
+    ALOGD("[%s] Now Idle->Executing", mCodec->mComponentName.c_str());
 }
 
 bool ACodec::IdleToExecutingState::onMessageReceived(const sp<AMessage> &msg) {
@@ -6056,7 +8189,6 @@ ACodec::BaseState::PortMode ACodec::ExecutingState::getPortMode(
         OMX_U32 /* portIndex */) {
     return RESUBMIT_BUFFERS;
 }
-
 void ACodec::ExecutingState::submitOutputMetaBuffers() {
     // submit as many buffers as there are input buffers with the codec
     // in case we are in port reconfiguring
@@ -6068,6 +8200,15 @@ void ACodec::ExecutingState::submitOutputMetaBuffers() {
                 break;
         }
     }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD ("submitOutputMetaBuffers send FTB for ouptut");
+    // For Adaptive Playback
+    for (size_t j = 0; j < mCodec->mBuffers[kPortIndexOutput].size(); ++j) {
+        if (mCodec->submitOutputMetadataBuffer() != OK)
+            break;
+    }
+#endif
 
     // *** NOTE: THE FOLLOWING WORKAROUND WILL BE REMOVED ***
     mCodec->signalSubmitOutputMetadataBufferIfEOS_workaround();
@@ -6096,7 +8237,9 @@ void ACodec::ExecutingState::submitRegularOutputBuffers() {
                 break;
             }
         }
-
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (true == mCodec->mIsAudioBufferLogSwitchOn || true == mCodec->mIsVideo)
+#endif
         ALOGV("[%s] calling fillBuffer %u", mCodec->mComponentName.c_str(), info->mBufferID);
 
         info->checkWriteFence("submitRegularOutputBuffers");
@@ -6108,20 +8251,24 @@ void ACodec::ExecutingState::submitRegularOutputBuffers() {
         }
 
         info->mStatus = BufferInfo::OWNED_BY_COMPONENT;
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (true == mIsProfileBufferActivity && mCodec->mIsVideo) {
+            ALOGD("T(%p) I(%u) S(%d) P(%d), submitRegularOutputBuffers", mCodec, info->mBufferID, (int)(info->mStatus), kPortIndexOutput);
+        }
+#endif
+
     }
 
     if (failed) {
         mCodec->signalError(OMX_ErrorUndefined, FAILED_TRANSACTION);
     }
 }
-
 void ACodec::ExecutingState::submitOutputBuffers() {
     submitRegularOutputBuffers();
     if (mCodec->storingMetadataInDecodedBuffers()) {
         submitOutputMetaBuffers();
     }
 }
-
 void ACodec::ExecutingState::resume() {
     if (mActive) {
         ALOGV("[%s] We're already active, no need to resume.", mCodec->mComponentName.c_str());
@@ -6146,7 +8293,7 @@ void ACodec::ExecutingState::resume() {
 }
 
 void ACodec::ExecutingState::stateEntered() {
-    ALOGV("[%s] Now Executing", mCodec->mComponentName.c_str());
+    ALOGD("[%s] Now Executing", mCodec->mComponentName.c_str());
 
     mCodec->mRenderTracker.clear(systemTime(CLOCK_MONOTONIC));
     mCodec->processDeferredMessages();
@@ -6161,6 +8308,10 @@ bool ACodec::ExecutingState::onMessageReceived(const sp<AMessage> &msg) {
             int32_t keepComponentAllocated;
             CHECK(msg->findInt32(
                         "keepComponentAllocated", &keepComponentAllocated));
+
+#ifdef MTK_AOSP_ENHANCEMENT
+            ALOGD("[%s] Executing::kWhatShutdown keepComponentAllocated %d",  mCodec->mComponentName.c_str(), keepComponentAllocated);
+#endif //MTK_AOSP_ENHANCEMENT
 
             mCodec->mShutdownInProgress = true;
             mCodec->mExplicitShutdown = true;
@@ -6185,7 +8336,7 @@ bool ACodec::ExecutingState::onMessageReceived(const sp<AMessage> &msg) {
 
         case kWhatFlush:
         {
-            ALOGV("[%s] ExecutingState flushing now "
+            ALOGD("[%s] ExecutingState flushing now "
                  "(codec owns %zu/%zu input, %zu/%zu output).",
                     mCodec->mComponentName.c_str(),
                     mCodec->countBuffersOwnedByComponent(kPortIndexInput),
@@ -6195,6 +8346,13 @@ bool ACodec::ExecutingState::onMessageReceived(const sp<AMessage> &msg) {
 
             mActive = false;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+            if (mCodec->mLeftOverBuffer != NULL) {
+                ALOGI("clear mLeftOverBuffer %p", mCodec->mLeftOverBuffer.get());
+                mCodec->mLeftOverBuffer = NULL;
+            }
+#endif //MTK_AOSP_ENHANCEMENT
+
             status_t err = mCodec->mOMX->sendCommand(mCodec->mNode, OMX_CommandFlush, OMX_ALL);
             if (err != OK) {
                 mCodec->signalError(OMX_ErrorUndefined, FAILED_TRANSACTION);
@@ -6203,6 +8361,28 @@ bool ACodec::ExecutingState::onMessageReceived(const sp<AMessage> &msg) {
             }
 
             handled = true;
+
+
+#ifdef MTK_AOSP_ENHANCEMENT
+#if APPLY_CHECKING_FLUSH_COMPLETED
+            //start checking flush completed or not before 1500ms time out
+            if ( (!mCodec->mIsEncoder) && IsMTKVideoDecoderComponent(mCodec->mComponentName.c_str()))
+            {
+                int32_t dummy = 0;
+                char value[PROPERTY_VALUE_MAX];
+                property_get("acodec.video.checkFlushTimeOut", value, "0");
+                mCodec->mTotalTimeDuringCheckFlush = 0;
+                dummy = atof(value);
+                if (dummy > 0) {
+                    mCodec->signalVDecFlushDoneCheck(50000, dummy);//50ms, time out from user Setting
+                    ALOGD ("acodec.video.checkFlushTimeOut %d us", dummy);
+                }
+                else
+                    mCodec->signalVDecFlushDoneCheck(50000, 8000000);//50ms, 8000ms time out for flushing ports
+            }
+#endif //APPLY_CHECKING_FLUSH_COMPLETED
+#endif //MTK_AOSP_ENHANCEMENT
+
             break;
         }
 
@@ -6272,6 +8452,7 @@ bool ACodec::ExecutingState::onMessageReceived(const sp<AMessage> &msg) {
 
 status_t ACodec::setParameters(const sp<AMessage> &params) {
     int32_t videoBitrate;
+
     if (params->findInt32("video-bitrate", &videoBitrate)) {
         OMX_VIDEO_CONFIG_BITRATETYPE configParams;
         InitOMXParams(&configParams);
@@ -6291,7 +8472,6 @@ status_t ACodec::setParameters(const sp<AMessage> &params) {
             return err;
         }
     }
-
     int64_t skipFramesBeforeUs;
     if (params->findInt64("skip-frames-before", &skipFramesBeforeUs)) {
         status_t err =
@@ -6345,8 +8525,179 @@ status_t ACodec::setParameters(const sp<AMessage> &params) {
         }
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    status_t err = setMTKParameters(params);
+    if (err != OK)
+        return err;
+#endif
     return OK;
 }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+status_t ACodec::setMTKParameters(const sp<AMessage> &params)
+{
+    int32_t mencSkip = 0;
+    int32_t mdrawBlack = 0;
+
+    if (params->findInt32("encSkip", &mencSkip)) {
+        if( 0 == mencSkip )
+            return ERROR_UNSUPPORTED;
+
+        if (!mIsEncoder) {
+            return ERROR_UNSUPPORTED;
+        }
+
+        ALOGI("set Skip frame");
+        OMX_INDEXTYPE index;
+        status_t err = mOMX->getExtensionIndex(
+                mNode,
+                "OMX.MTK.index.param.video.EncSetSkipFrame",
+                &index);
+
+        if (err == OK) {
+            //OMX_BOOL enable = OMX_TRUE;
+            err = mOMX->setConfig(mNode, index, 0, 0);
+
+            if (err != OK) {
+                ALOGE("setConfig('OMX.MTK.index.param.video.EncSetSkipFrame') "
+                      "returned error 0x%08x", err);
+                return err;
+            }
+        }
+        else {
+            ALOGE("Get Skip Extension Fail!");
+            return err;
+        }
+        return OK;
+    }
+    if (params->findInt32("drawBlack", &mdrawBlack)) {
+        //for Miracast test case SIGMA 5.1.11 workaround
+        if (!mIsEncoder) {
+            return ERROR_UNSUPPORTED;
+        }
+        ALOGI("set Draw Black %d", mdrawBlack);
+        status_t err = mOMX->setConfig(
+                mNode,
+                OMX_IndexVendorMtkOmxVencDrawBlack,
+                &mdrawBlack, 0);
+        if (err != OK) {
+            ALOGE("setConfig('OMX_IndexVendorMtkOmxVencDrawBlack') "
+                  "returned error 0x%08x", err);
+            return err;
+        }
+        return OK;
+    }
+    int32_t iFrameInterval = 0;
+    if (params->findInt32("i-frame-interval", &iFrameInterval)) {
+        //We can set AVC I-frame-interval by default declaration
+        //OMX_IndexConfigVideoAVCIntraPeriod
+        if (!mIsEncoder) {
+            return ERROR_UNSUPPORTED;
+        }
+        ALOGI("set I frame rate");
+        OMX_INDEXTYPE index;
+        status_t err =
+            mOMX->getExtensionIndex(
+                    mNode,
+                    "OMX.MTK.index.param.video.EncSetIFrameRate",
+                    &index);
+        if (err == OK) {
+            //OMX_BOOL enable = OMX_TRUE;
+            err = mOMX->setConfig(mNode, index, &iFrameInterval, sizeof(iFrameInterval));
+
+            if (err != OK) {
+                ALOGE("setConfig('OMX.MTK.index.param.video.EncSetIFrameRate') "
+                      "returned error 0x%08x", err);
+                return err;
+            }
+        }
+        else {
+            ALOGE("Get I Frame Rate Extension Fail!");
+            return err;
+        }
+    }
+    int32_t iFrameRate = 0;
+    if (params->findInt32("frame-rate", &iFrameRate)) {
+        if (!mIsEncoder) {
+            return ERROR_UNSUPPORTED;
+        }
+        ALOGI("set framerate");
+        OMX_CONFIG_FRAMERATETYPE    framerateType;
+        InitOMXParams(&framerateType);
+        framerateType.xEncodeFramerate = iFrameRate<<16;
+        status_t err = mOMX->setConfig(
+                mNode,
+                OMX_IndexConfigVideoFramerate,
+                &framerateType, sizeof(framerateType));
+
+        if (err != OK) {
+            ALOGE("setConfig(OMX_IndexConfigVideoFramerate) "
+                  "returned error 0x%08x", err);
+            return err;
+        }
+    }
+
+    int64_t seekTimeUs = 0;
+    if (params->findInt64("seekTimeUs", &seekTimeUs)){
+        if (mIsEncoder){
+            return ERROR_UNSUPPORTED;
+        }
+        ALOGD("set seekTimeUs %lld", (long long)seekTimeUs);
+        OMX_TICKS omxTicks = seekTimeUs;
+        status_t err = mOMX->setConfig(
+                mNode,
+                OMX_IndexVendorMtkOmxVdecSeekMode,
+                (void *)&omxTicks,
+                sizeof(void *));
+
+        if (err != OK) {
+            ALOGE("setConfig(OOMX_IndexVendorMtkOmxVdecSeekMode) "
+                  "returned error 0x%08x", err);
+            return err;
+        }
+    }
+
+    int32_t slowmotionSpeed = 0;
+    if (params->findInt32("slowmotion-speed", &slowmotionSpeed)){
+        if (mIsEncoder){
+            return ERROR_UNSUPPORTED;
+        }
+        ALOGI("set slowmotion-speed %d", slowmotionSpeed);
+        status_t err = setSlowMotionSpeed(slowmotionSpeed);
+
+        if (err != OK) {
+            ALOGE("setConfig(OMX_IndexVendorMtkOmxVdecSlowMotionSpeed) "
+                "returned error 0x%08x", err);
+            return err;
+        }
+    }
+
+    int64_t slowmotionStart = 0;
+    if (params->findInt64("slowmotion-start", &slowmotionStart)){
+        if (mIsEncoder){
+            return ERROR_UNSUPPORTED;
+        }
+        int64_t slowmotionEnd = 0;
+        if (!params->findInt64("slowmotion-end", &slowmotionEnd)){
+            ALOGE("Found no slomotion-end when slowmotion-start is set.");
+            return ERROR_UNSUPPORTED;
+        }
+
+        ALOGI("set slowmotion section from %lld to %lld",
+            (long long)slowmotionStart, (long long)slowmotionEnd);
+
+        status_t err = setSlowMotionSection(slowmotionStart, slowmotionEnd);
+
+        if (err != OK) {
+            ALOGE("setConfig(OMX_IndexVendorMtkOmxVdecSlowMotionSection) "
+                "returned error 0x%08x", err);
+            return err;
+        }
+    }
+
+    return OK;
+}
+#endif
 
 void ACodec::onSignalEndOfInputStream() {
     sp<AMessage> notify = mNotify->dup();
@@ -6371,16 +8722,60 @@ bool ACodec::ExecutingState::onOMXEvent(
         {
             CHECK_EQ(data1, (OMX_U32)kPortIndexOutput);
 
-            if (data2 == 0 || data2 == OMX_IndexParamPortDefinition) {
+#ifdef MTK_AOSP_ENHANCEMENT
+            if (data2 == 0 || data2 == OMX_IndexParamPortDefinition || data2 == OMX_IndexVendorMtkOmxVdecGetAspectRatio)
+#else
+            if (data2 == 0 || data2 == OMX_IndexParamPortDefinition)
+#endif
+            {
                 mCodec->mMetadataBuffersToSubmit = 0;
                 CHECK_EQ(mCodec->mOMX->sendCommand(
                             mCodec->mNode,
                             OMX_CommandPortDisable, kPortIndexOutput),
                          (status_t)OK);
-
+#ifdef MTK_AOSP_ENHANCEMENT
+                if (data2 == OMX_IndexVendorMtkOmxVdecGetAspectRatio) {
+                    ALOGE ("@@ GOT OMX_IndexVendorMtkOmxVdecGetAspectRatio");
+                    OMX_S32 aspectRatio = 0;
+                    if (OK == mCodec->mOMX->getConfig(mCodec->mNode, OMX_IndexVendorMtkOmxVdecGetAspectRatio, &aspectRatio, sizeof(aspectRatio))) {
+                        ALOGE ("@@ AspectRatioWidth (%d), AspectRatioHeight(%d)", (aspectRatio & 0xFFFF0000) >> 16, (aspectRatio & 0x0000FFFF));
+                        mCodec->mVideoAspectRatioWidth = ((aspectRatio & 0xFFFF0000) >> 16);
+                        mCodec->mVideoAspectRatioHeight = (aspectRatio & 0x0000FFFF);
+                    }
+                }
+#endif
                 mCodec->freeOutputBuffersNotOwnedByComponent();
 
                 mCodec->changeState(mCodec->mOutputPortSettingsChangedState);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+                if (data2 == OMX_IndexVendorMtkOmxVdecGetAspectRatio) {
+
+                    sp<AMessage> reply =
+                        new AMessage(kWhatOutputBufferDrained, mCodec);
+                    mCodec->sendFormatChange(reply);
+                }
+#endif
+
+#ifdef MTK_SEC_VIDEO_PATH_SUPPORT
+            } else if (data2 == OMX_IndexVendorMtkOmxVencSwitchWFDSecureOut) {
+                //mCodec->mSupportsSecureOutput = !mCodec->mSupportsSecureOutput;
+                ALOGD("get PortReconfig callback");
+                CHECK_EQ(mCodec->mOMX->sendCommand(
+                            mCodec->mNode,
+                            OMX_CommandPortDisable, kPortIndexOutput),
+                        (status_t)OK);
+                mCodec->changeState(mCodec->mOutputPortSettingsChangedState);
+#endif//MTK_SEC_VIDEO_PATH_SUPPORT
+#ifdef MTK_AOSP_ENHANCEMENT
+            } else if (data2 == OMX_IndexVendorMtkOmxVdecGetCropInfo || data2 == OMX_IndexConfigCommonOutputCrop) {
+                mCodec->mSentFormat = false;
+
+                if (mCodec->mTunneled) {
+                    sp<AMessage> dummy = new AMessage(kWhatOutputBufferDrained, mCodec);
+                    mCodec->sendFormatChange(dummy);
+                }
+#else
             } else if (data2 == OMX_IndexConfigCommonOutputCrop) {
                 mCodec->mSentFormat = false;
 
@@ -6388,6 +8783,7 @@ bool ACodec::ExecutingState::onOMXEvent(
                     sp<AMessage> dummy = new AMessage(kWhatOutputBufferDrained, mCodec);
                     mCodec->sendFormatChange(dummy);
                 }
+#endif
             } else {
                 ALOGV("[%s] OMX_EventPortSettingsChanged 0x%08x",
                      mCodec->mComponentName.c_str(), data2);
@@ -6427,7 +8823,9 @@ ACodec::BaseState::PortMode ACodec::OutputPortSettingsChangedState::getPortMode(
 bool ACodec::OutputPortSettingsChangedState::onMessageReceived(
         const sp<AMessage> &msg) {
     bool handled = false;
-
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGV("OutputPortSettingsChangedState::onMessageReceived msg->what() %x", msg->what());
+#endif //MTK_AOSP_ENHANCEMENT
     switch (msg->what()) {
         case kWhatFlush:
         case kWhatShutdown:
@@ -6452,7 +8850,7 @@ bool ACodec::OutputPortSettingsChangedState::onMessageReceived(
 }
 
 void ACodec::OutputPortSettingsChangedState::stateEntered() {
-    ALOGV("[%s] Now handling output port settings change",
+    ALOGD("[%s] Now handling output port settings change",
          mCodec->mComponentName.c_str());
 }
 
@@ -6464,6 +8862,9 @@ bool ACodec::OutputPortSettingsChangedState::onOMXFrameRendered(
 
 bool ACodec::OutputPortSettingsChangedState::onOMXEvent(
         OMX_EVENTTYPE event, OMX_U32 data1, OMX_U32 data2) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("OutputPortSettingsChangedState::onOMXEvent event %x, %x, %x", event, data1, data2);
+#endif //MTK_AOSP_ENHANCEMENT
     switch (event) {
         case OMX_EventCmdComplete:
         {
@@ -6473,7 +8874,7 @@ bool ACodec::OutputPortSettingsChangedState::onOMXEvent(
                     return false;
                 }
 
-                ALOGV("[%s] Output port now disabled.", mCodec->mComponentName.c_str());
+                ALOGD("[%s] Output port now disabled.", mCodec->mComponentName.c_str());
 
                 status_t err = OK;
                 if (!mCodec->mBuffers[kPortIndexOutput].isEmpty()) {
@@ -6577,7 +8978,7 @@ bool ACodec::ExecutingToIdleState::onMessageReceived(const sp<AMessage> &msg) {
 }
 
 void ACodec::ExecutingToIdleState::stateEntered() {
-    ALOGV("[%s] Now Executing->Idle", mCodec->mComponentName.c_str());
+    ALOGD("[%s] Now Executing->Idle", mCodec->mComponentName.c_str());
 
     mComponentNowIdle = false;
     mCodec->mSentFormat = false;
@@ -6618,8 +9019,14 @@ bool ACodec::ExecutingToIdleState::onOMXEvent(
 
 void ACodec::ExecutingToIdleState::changeStateIfWeOwnAllBuffers() {
     if (mComponentNowIdle && mCodec->allYourBuffersAreBelongToUs()) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGD("changeStateIfWeOwnAllBuffers sendCommand +++");
+#endif
         status_t err = mCodec->mOMX->sendCommand(
                 mCodec->mNode, OMX_CommandStateSet, OMX_StateLoaded);
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGD("changeStateIfWeOwnAllBuffers sendCommand ---");
+#endif
         if (err == OK) {
             err = mCodec->freeBuffersOnPort(kPortIndexInput);
             status_t err2 = mCodec->freeBuffersOnPort(kPortIndexOutput);
@@ -6627,7 +9034,6 @@ void ACodec::ExecutingToIdleState::changeStateIfWeOwnAllBuffers() {
                 err = err2;
             }
         }
-
         if ((mCodec->mFlags & kFlagPushBlankBuffersToNativeWindowOnShutdown)
                 && mCodec->mNativeWindow != NULL) {
             // We push enough 1x1 blank buffers to ensure that one of
@@ -6695,7 +9101,7 @@ bool ACodec::IdleToLoadedState::onMessageReceived(const sp<AMessage> &msg) {
 }
 
 void ACodec::IdleToLoadedState::stateEntered() {
-    ALOGV("[%s] Now Idle->Loaded", mCodec->mComponentName.c_str());
+    ALOGD("[%s] Now Idle->Loaded", mCodec->mComponentName.c_str());
 }
 
 bool ACodec::IdleToLoadedState::onOMXEvent(
@@ -6729,7 +9135,7 @@ ACodec::FlushingState::FlushingState(ACodec *codec)
 }
 
 void ACodec::FlushingState::stateEntered() {
-    ALOGV("[%s] Now Flushing", mCodec->mComponentName.c_str());
+    ALOGD("[%s] Now Flushing", mCodec->mComponentName.c_str());
 
     mFlushComplete[kPortIndexInput] = mFlushComplete[kPortIndexOutput] = false;
 }
@@ -6761,8 +9167,13 @@ bool ACodec::FlushingState::onMessageReceived(const sp<AMessage> &msg) {
 
 bool ACodec::FlushingState::onOMXEvent(
         OMX_EVENTTYPE event, OMX_U32 data1, OMX_U32 data2) {
-    ALOGV("[%s] FlushingState onOMXEvent(%u,%d)",
-            mCodec->mComponentName.c_str(), event, (OMX_S32)data1);
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("[%s] Flushing: onOMXEvent(%d, %ld, %ld)",
+            mCodec->mComponentName.c_str(), event, (long)data1, (long)data2);
+#else //MTK_AOSP_ENHANCEMENT
+    ALOGV("[%s] FlushingState onOMXEvent(%d,%ld)",
+            mCodec->mComponentName.c_str(), event, (long)data1);
+#endif //MTK_AOSP_ENHANCEMENT
 
     switch (event) {
         case OMX_EventCmdComplete:
@@ -6838,6 +9249,9 @@ void ACodec::FlushingState::onInputBufferFilled(const sp<AMessage> &msg) {
 }
 
 void ACodec::FlushingState::changeStateIfWeOwnAllBuffers() {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("Flushing: changeStateIfWeOwnAllBuffers mFlushComplete in %d, out %d", mFlushComplete[kPortIndexInput], mFlushComplete[kPortIndexOutput]);
+#endif //MTK_AOSP_ENHANCEMENT
     if (mFlushComplete[kPortIndexInput]
             && mFlushComplete[kPortIndexOutput]
             && mCodec->allYourBuffersAreBelongToUs()) {
@@ -6848,7 +9262,22 @@ void ACodec::FlushingState::changeStateIfWeOwnAllBuffers() {
         mCodec->mRenderTracker.clear(systemTime(CLOCK_MONOTONIC));
 
         sp<AMessage> notify = mCodec->mNotify->dup();
+
+#ifdef MTK_AOSP_ENHANCEMENT
+#if APPLY_CHECKING_FLUSH_COMPLETED
+        ALOGD("send kWhatFlushCompleted after signal flush %d ms, EOS i:%d, o:%d",
+            mCodec->mTotalTimeDuringCheckFlush,
+            mCodec->mPortEOS[kPortIndexInput],
+            mCodec->mPortEOS[kPortIndexOutput]);
+        mCodec->mTotalTimeDuringCheckFlush++;
+        mCodec->mPortsFlushComplete = 1;
+#else
+        ALOGD("send kWhatFlushCompleted");
+#endif //APPLY_CHECKING_FLUSH_COMPLETED
+#endif //MTK_AOSP_ENHANCEMENT
+
         notify->setInt32("what", CodecBase::kWhatFlushCompleted);
+
         notify->post();
 
         mCodec->mPortEOS[kPortIndexInput] =
@@ -6863,5 +9292,491 @@ void ACodec::FlushingState::changeStateIfWeOwnAllBuffers() {
         mCodec->changeState(mCodec->mExecutingState);
     }
 }
+#ifdef MTK_AOSP_ENHANCEMENT
 
+status_t ACodec::setupWMACodec(
+        bool encoder, int32_t numChannels, int32_t sampleRate) {
+    status_t err = setupRawAudioFormat(
+            encoder ? kPortIndexInput : kPortIndexOutput, sampleRate, numChannels);
+
+    if (err != OK) {
+        return err;
+    }
+
+    if (encoder) {
+        ALOGW("WMA encoding is not supported.");
+        return INVALID_OPERATION;
+    }
+#ifdef MTK_SWIP_WMAPRO
+    int32_t channelMask = 0;
+    mOMX->getParameter(mNode, OMX_IndexParamAudioWmaProfile,&channelMask, sizeof(channelMask));
+    mChannelMaskPresent = true;
+    mChannelMask = channelMask;
+    ALOGD("WMAPro channelMask is 0x%x", channelMask);
+#endif
+
+    OMX_AUDIO_PARAM_WMATYPE def;
+    InitOMXParams(&def);
+    def.nPortIndex = kPortIndexInput;
+
+    err = mOMX->getParameter(
+            mNode,
+            (OMX_INDEXTYPE)OMX_IndexParamAudioWma,
+            &def,
+            sizeof(def));
+
+    if (err != OK) {
+        return err;
+    }
+
+    def.nChannels = numChannels;
+    def.nSamplingRate = sampleRate;
+
+    return mOMX->setParameter(mNode,(OMX_INDEXTYPE)OMX_IndexParamAudioWma,&def,sizeof(def));
+}
+
+status_t ACodec::setupADPCMCodec(const char *mime, const sp<AMessage> &msg) {
+    int32_t encoder;
+    if (!msg->findInt32("encoder", &encoder)) {
+        encoder = false;
+    }
+
+    int32_t numChannels;
+    int32_t sampleRate;
+    msg->findInt32("channel-count", &numChannels);
+    msg->findInt32("sample-rate", &sampleRate);
+
+    status_t err = setupRawAudioFormat(
+        encoder ? kPortIndexInput : kPortIndexOutput, sampleRate, numChannels);
+
+    if (err != OK) {
+        return err;
+    }
+
+    OMX_AUDIO_PARAM_ADPCMTYPE def;
+
+    if (encoder) {
+        InitOMXParams(&def);
+        def.nPortIndex = kPortIndexOutput;
+        //uint32_t type;
+
+        err = mOMX->getParameter(mNode,
+            (OMX_INDEXTYPE)OMX_IndexParamAudioAdpcm, &def, sizeof(def));
+        if (err != OK) {
+            return err;
+        }
+
+        def.nFormatTag = (!strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_MS_ADPCM)) ? WAVE_FORMAT_MS_ADPCM : WAVE_FORMAT_DVI_IMA_ADPCM;
+        def.nChannelCount = numChannels;
+        def.nSamplesPerSec = sampleRate;
+
+        return mOMX->setParameter(mNode,
+            (OMX_INDEXTYPE)OMX_IndexParamAudioAdpcm, &def, sizeof(def));
+    } else {
+        OMX_AUDIO_ADPCMPARAM def;
+        InitOMXParams(&def);
+        def.nPortIndex = kPortIndexInput;
+        //uint32_t type;
+        sp<ABuffer> buffer;
+
+        err = mOMX->getParameter(mNode,
+            (OMX_INDEXTYPE)OMX_IndexParamAudioAdpcm, &def, sizeof(def));
+        if (err != OK) {
+            return err;
+        }
+
+        def.nFormatTag = (!strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_MS_ADPCM)) ? WAVE_FORMAT_MS_ADPCM : WAVE_FORMAT_DVI_IMA_ADPCM;
+        def.nChannelCount = numChannels;
+        def.nSamplesPerSec = sampleRate;
+        msg->findInt32("block-align", (int32_t *)&def.nBlockAlign);
+        msg->findInt32("bit-per-sample", (int32_t *)&def.nBitsPerSample);
+        msg->findBuffer("extra-data-pointer", &buffer);
+        if(buffer != NULL)
+        {
+           def.nExtendDataSize = buffer->size();
+           memcpy(def.pExtendData,buffer->data(), def.nExtendDataSize);
+        }
+        return mOMX->setParameter(mNode,
+            (OMX_INDEXTYPE)OMX_IndexParamAudioAdpcm, &def, sizeof(def));
+    }
+}
+
+status_t ACodec::setupAlacCodec(const char *mime, const sp<AMessage> &msg) {
+
+    int32_t numChannels = 0, sampleRate = 0, bitWidth = 0, numSamples = 0;
+
+    CHECK(msg->findInt32("channel-count", &numChannels));
+    CHECK(msg->findInt32("sample-rate", &sampleRate));
+    ALOGD("setupAlacCodec mime %s", mime);
+    status_t err = setupRawAudioFormat(kPortIndexOutput, sampleRate, numChannels);
+    if (err != OK) {
+        return err;
+    }
+
+    OMX_AUDIO_PARAM_ALACTYPE profileAlac;
+    InitOMXParams(&profileAlac);
+    profileAlac.nPortIndex = kPortIndexInput;
+
+    err = mOMX->getParameter(
+        mNode, (OMX_INDEXTYPE)OMX_IndexParamAudioAlac, &profileAlac, sizeof(profileAlac));
+    CHECK_EQ((status_t)OK, err);
+
+    profileAlac.nChannels   = numChannels;
+    profileAlac.nSampleRate = sampleRate;
+    if (msg->findInt32("number-samples", &numSamples) && numSamples > 0)
+    {
+        profileAlac.nSamplesPerPakt = numSamples;
+    }
+    if (msg->findInt32("bit-width", &bitWidth) && bitWidth > 0)
+    {
+        profileAlac.nBitsWidth  = bitWidth;
+    }
+    err = mOMX->setParameter(
+        mNode, (OMX_INDEXTYPE)OMX_IndexParamAudioAlac, &profileAlac, sizeof(profileAlac));
+    CHECK_EQ((status_t)OK, err);
+
+    OMX_PARAM_PORTDEFINITIONTYPE inputdef, outputdef;
+
+    InitOMXParams(&inputdef);
+    inputdef.nPortIndex = OMX_DirInput;
+
+    err = mOMX->getParameter(
+        mNode, (OMX_INDEXTYPE)OMX_IndexParamPortDefinition, &inputdef, sizeof(inputdef));
+    CHECK_EQ((status_t)OK, err);
+
+    inputdef.nBufferSize = profileAlac.nChannels * (profileAlac.nBitsWidth >> 3) * profileAlac.nSamplesPerPakt;
+    err = mOMX->setParameter(
+        mNode, (OMX_INDEXTYPE)OMX_IndexParamPortDefinition, &inputdef, sizeof(inputdef));
+    CHECK_EQ((status_t)OK, err);
+
+    InitOMXParams(&outputdef);
+    outputdef.nPortIndex = OMX_DirOutput;
+
+    err = mOMX->getParameter(
+        mNode, (OMX_INDEXTYPE)OMX_IndexParamPortDefinition, &outputdef, sizeof(outputdef));
+    CHECK_EQ((status_t)OK, err);
+    outputdef.nBufferSize = profileAlac.nChannels * 2 * profileAlac.nSamplesPerPakt;
+
+    if (profileAlac.nBitsWidth > 16)
+    {
+        outputdef.nBufferSize <<= 1;
+    }
+
+    err = mOMX->setParameter(
+        mNode, (OMX_INDEXTYPE)OMX_IndexParamPortDefinition, &outputdef, sizeof(outputdef));
+    CHECK_EQ((status_t)OK, err);
+    return err;
+}
+
+//for vorbis encoder
+status_t ACodec::setupMtkVorbisCodec(int32_t numChannels, int32_t sampleRate, int32_t bitRate) {
+    CHECK(numChannels == 1 || numChannels == 2);
+
+    //////////////// input port ////////////////////
+    status_t err = setupRawAudioFormat(kPortIndexInput, sampleRate, numChannels);
+    if (err != OK) {
+        return err;
+    }
+
+    //////////////// output port ////////////////////
+    // format
+    OMX_AUDIO_PARAM_PORTFORMATTYPE format;
+    format.nPortIndex = kPortIndexOutput;
+    format.nIndex = 0;
+    while (OMX_ErrorNone == err)
+    {
+        CHECK_EQ(mOMX->getParameter(mNode, OMX_IndexParamAudioPortFormat, &format, sizeof(format)), (status_t)OK);
+        if (format.eEncoding == OMX_AUDIO_CodingVORBIS)
+        {
+            break;
+        }
+        format.nIndex++;
+    }
+    CHECK_EQ((status_t)OK, err);
+    CHECK_EQ(mOMX->setParameter(mNode, OMX_IndexParamAudioPortFormat, &format, sizeof(format)), (status_t)OK);
+
+    // port definition
+    OMX_PARAM_PORTDEFINITIONTYPE def;
+    InitOMXParams(&def);
+    def.nPortIndex = kPortIndexOutput;
+    CHECK_EQ(mOMX->getParameter(mNode, OMX_IndexParamPortDefinition, &def, sizeof(def)), (status_t)OK);
+    def.format.audio.bFlagErrorConcealment = OMX_TRUE;
+    def.format.audio.eEncoding = OMX_AUDIO_CodingVORBIS;
+    CHECK_EQ(mOMX->setParameter(mNode, OMX_IndexParamPortDefinition, &def, sizeof(def)), (status_t)OK);
+
+    // profile
+    OMX_AUDIO_PARAM_VORBISTYPE profile;
+    InitOMXParams(&profile);
+    profile.nPortIndex = kPortIndexOutput;
+    CHECK_EQ(mOMX->getParameter(mNode, OMX_IndexParamAudioVorbis, &profile, sizeof(profile)), (status_t)OK);
+    profile.nChannels = numChannels;
+    profile.nSampleRate = sampleRate;
+    profile.nBitRate = bitRate;
+    profile.nAudioBandWidth = 0;
+
+    CHECK_EQ(mOMX->setParameter(mNode, OMX_IndexParamAudioVorbis, &profile, sizeof(profile)), (status_t)OK);
+
+    return (status_t)OK;
+}
+
+status_t ACodec::setupMtkRawCodec(int32_t numChannels, int32_t sampleRate, const sp<AMessage> &msg) {
+    status_t err = OK;
+
+    if (strcmp(mComponentName.c_str(), "OMX.MTK.AUDIO.DECODER.RAW")) {
+        err = setupRawAudioFormat(kPortIndexInput, sampleRate, numChannels);
+        return err;
+    }
+
+    int32_t endian = 1, bitWidth = 16, pcmType = 1, channelAssignment = 0, numericalType = 0;
+
+    OMX_AUDIO_PARAM_RAWTYPE def;
+    InitOMXParams(&def);
+    def.nPortIndex = kPortIndexInput;
+    //uint32_t type;
+
+    err = mOMX->getParameter(
+            mNode,
+            (OMX_INDEXTYPE)OMX_IndexParamAudioRaw,
+            &def,
+            sizeof(def));
+
+    if (err != OK) {
+        return err;
+    }
+
+    def.nChannels = numChannels;
+    def.nSamplingRate = sampleRate;
+
+    if (msg->findInt32("bit-width", &bitWidth))
+    {
+        def.nBitPerSample = bitWidth;
+    }
+
+    if (msg->findInt32("channel-assign", &channelAssignment))
+    {
+        def.nChannelAssignment = channelAssignment;
+    }
+
+    msg->findInt32("endian", &endian);
+    msg->findInt32("pcm-type", &pcmType);
+    msg->findInt32("numerical-type", &numericalType);
+    ALOGD("endian is %d, bitWidth is %d, pcmType is %d, channelAssignment is %d, numericalType is %d", endian, bitWidth, pcmType, channelAssignment, numericalType);
+
+    switch(endian)
+    {
+        case 1:
+            def.eEndian = OMX_EndianBig;
+            break;
+        case 2:
+            def.eEndian = OMX_EndianLittle;
+            break;
+        default:
+            ALOGD("Unknow eEndian Type, use default value");
+            def.eEndian = OMX_EndianLittle;
+    }
+
+    ALOGD("Config raw codec, pcmType is %d", pcmType);
+    switch(pcmType)
+    {
+        case 1:
+            def.eRawType = PCM_WAVE;
+            break;
+        case 2:
+            def.eRawType = PCM_BD;
+            break;
+        case 3:
+            def.eRawType = PCM_DVD_VOB;
+            break;
+        case 4:
+            def.eRawType = PCM_DVD_AOB;
+            break;
+        default:
+            ALOGE("unknow raw type!");
+    }
+
+    switch(numericalType)
+    {
+        case 1:
+            def.eNumData = OMX_NumericalDataSigned;
+            break;
+        case 2:
+            def.eNumData = OMX_NumericalDataUnsigned;
+            break;
+        default:
+            ALOGE("default numerical type is OMX_NumericalDataSigned !");
+            def.eNumData = OMX_NumericalDataSigned;
+    }
+
+    return mOMX->setParameter(
+            mNode,
+            (OMX_INDEXTYPE)OMX_IndexParamAudioRaw,
+            &def,
+            sizeof(def));
+
+}
+
+// Just for MTK G711 Component.
+status_t ACodec::setupMtkG711Codec(int32_t sampleRate, int32_t numChannels, const char *mime) {
+    OMX_AUDIO_PCMMODETYPE PCMMode;
+    status_t err = OK;
+
+    PCMMode = !strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_G711_ALAW)
+                                ? OMX_AUDIO_PCMModeALaw
+                                :  OMX_AUDIO_PCMModeMULaw;
+
+    OMX_AUDIO_PARAM_PCMMODETYPE def;
+    InitOMXParams(&def);
+    def.nPortIndex = kPortIndexInput;
+
+    err = mOMX->getParameter(mNode, (OMX_INDEXTYPE)OMX_IndexParamAudioPcm, &def, sizeof(def));
+    if (err != OK) {
+        return err;
+    }
+
+    def.nChannels = numChannels;
+    def.nSamplingRate = sampleRate;
+    def.ePCMMode = PCMMode;
+
+    err = mOMX->setParameter(mNode,  (OMX_INDEXTYPE)OMX_IndexParamAudioPcm,  &def, sizeof(def));
+    if (err != OK) {
+        return err;
+    }
+
+    return setupRawAudioFormat(kPortIndexOutput, sampleRate, numChannels);
+}
+
+status_t ACodec::setupMtkFlacCodec(int32_t numChannels, int32_t sampleRate, const sp<AMessage> &msg) {
+
+    sp<ABuffer> buffer;
+    status_t err = OK;
+
+    if (strcmp(mComponentName.c_str(), "OMX.MTK.AUDIO.DECODER.FLAC")) {
+        err = setupRawAudioFormat(kPortIndexOutput, sampleRate, numChannels);
+        return err;
+    }
+
+    if (msg->findBuffer("flacinfo", &buffer)) {
+        ALOGW("acodec buffer size, %lld", (long long)buffer->size()); ///buffer->data();
+        //uint32_t type;
+
+        typedef struct {
+            unsigned min_blocksize, max_blocksize;
+            unsigned min_framesize, max_framesize;
+            unsigned sample_rate;
+            unsigned channels;
+            unsigned bits_per_sample;
+            uint64_t total_samples;
+            unsigned char md5sum[16];
+            unsigned int mMaxBufferSize;
+            bool      has_stream_info;
+        } FLAC__StreamMetadata_Info_;
+
+        FLAC__StreamMetadata_Info_ data;
+        memcpy(&data, buffer->data(), buffer->size());
+
+        OMX_AUDIO_PARAM_FLACTYPE profile;
+        InitOMXParams(&profile);
+        profile.nPortIndex = OMX_DirInput;
+
+        err = mOMX->getParameter(
+                mNode,
+                (OMX_INDEXTYPE)OMX_IndexParamAudioFlac,
+                &profile,
+                sizeof(profile));
+
+        if (err != OK) {
+            return err;
+        }
+
+        profile.channel_assignment =  OMX_AUDIO_FLAC__CHANNEL_ASSIGNMENT_LEFT_SIDE;
+        profile.total_samples = data.total_samples;
+        profile.min_framesize = data.min_framesize;
+        profile.max_framesize = data.max_framesize;
+        profile.nSampleRate = data.sample_rate;
+        profile.min_blocksize = data.min_blocksize;
+        profile.max_blocksize = data.max_blocksize;
+        profile.nChannels = data.channels;
+        profile.bits_per_sample = data.bits_per_sample;
+        memcpy(profile.md5sum, data.md5sum, 16*sizeof(OMX_U8));
+
+        if(data.has_stream_info == true) {
+            profile.has_stream_info = OMX_TRUE;
+        } else {
+            profile.has_stream_info = OMX_FALSE;
+        }
+
+
+        ALOGD("kKeyFlacMetaInfo = %lld, %d, %d, %d, %d, %d, %d, %d",
+            profile.total_samples, profile.min_framesize, profile.max_framesize, profile.nSampleRate,
+            profile.min_blocksize, profile.max_blocksize, profile.nChannels, profile.bits_per_sample);
+
+        err = mOMX->setParameter(
+                mNode,
+                (OMX_INDEXTYPE)OMX_IndexParamAudioFlac,
+                &profile,
+                sizeof(profile));
+
+        if (err != OK) {
+            return err;
+        }
+
+        OMX_PARAM_PORTDEFINITIONTYPE def;
+        InitOMXParams(&def);
+        def.nPortIndex = OMX_DirInput;
+
+        err = mOMX->getParameter(
+                mNode,
+                (OMX_INDEXTYPE)OMX_IndexParamPortDefinition,
+                &def,
+                sizeof(def));
+
+        if (err != OK) {
+            return err;
+        }
+
+        if (def.nBufferSize < profile.max_framesize + 16) {
+            def.nBufferSize = profile.max_framesize + 16;
+        }
+
+        err = mOMX->setParameter(
+                mNode,
+                (OMX_INDEXTYPE)OMX_IndexParamPortDefinition,
+                &def,
+                sizeof(def));
+
+        if (err != OK) {
+            return err;
+        }
+
+        def.nPortIndex = OMX_DirOutput;
+
+        err = mOMX->getParameter(
+                mNode,
+                (OMX_INDEXTYPE)OMX_IndexParamPortDefinition,
+                &def,
+                sizeof(def));
+
+        if (err != OK) {
+            return err;
+        }
+
+        if (def.nBufferSize < profile.max_blocksize * 8 * 2)
+            def.nBufferSize = profile.max_blocksize * 8 * 2;
+#ifdef MTK_HIGH_RESOLUTION_AUDIO_SUPPORT
+        if (profile.bits_per_sample > 16) {
+            def.nBufferSize *= 2;
+        }
+#endif
+
+        err = mOMX->setParameter(
+                mNode,
+                (OMX_INDEXTYPE)OMX_IndexParamPortDefinition,
+                &def,
+                sizeof(def));
+    } else {
+        err = setupRawAudioFormat(kPortIndexOutput, sampleRate, numChannels);
+    }
+    return err;
+}
+#endif
 }  // namespace android

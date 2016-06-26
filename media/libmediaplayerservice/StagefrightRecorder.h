@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -23,6 +28,13 @@
 #include <utils/String8.h>
 
 #include <system/audio.h>
+
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <media/stagefright/MetaData.h>
+#include <media/stagefright/MediaBuffer.h>
+#include <media/stagefright/foundation/AMessage.h>
+#include <media/stagefright/MediaCodecSource.h>
+#endif
 
 namespace android {
 
@@ -186,6 +198,55 @@ private:
 
     StagefrightRecorder(const StagefrightRecorder &);
     StagefrightRecorder &operator=(const StagefrightRecorder &);
+
+
+#ifdef MTK_AOSP_ENHANCEMENT
+/******************************************************************************
+*  Added Members
+*******************************************************************************/
+private:
+    String8 mRTPTarget;
+    bool mPaused;
+    String8 mArtistTag;
+    String8 mAlbumTag;
+
+    // for slowmotion
+    int32_t mSlowMotionSpeedValue;
+    bool    mIsDirectLink;
+
+    //for L migration
+    //L can not access CameraSource/MediaCodecSource from MPEG4Writer
+    //change to control encoder directly in stagefrightrecorder
+    sp<MediaCodecSource> mVideoEncSource;
+
+    // add for mtk defined infos in mediarecorder.h, notify infos set by ap only.
+    int32_t mMediaInfoFlag;
+    //TODO: whether also need paus audio encoder
+    //sp<MediaCodecSource> mAudioEncSource;
+
+/******************************************************************************
+*  Added Operations
+*******************************************************************************/
+private:
+    status_t setParameterEx(const String8 &key, const String8 &value);
+    status_t resume();
+    status_t setupPCMRecording();
+    status_t setupADPCMRecording();
+    status_t setupOGGRecording();
+    void setupMPEG4MetaDataEx(sp<MetaData> *meta);
+    void resetEx();
+
+    void checkVideoEncoderCapabilitiesEx();
+    void checkVideoEncoderBufferLimit(int& width, int& height);
+
+    // for slowmotion
+    status_t setupMtkBSSource(
+        sp<MediaSource> cameraSource,
+        sp<MediaSource> *source);
+
+
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
+
 };
 
 }  // namespace android

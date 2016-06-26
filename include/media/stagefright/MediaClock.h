@@ -54,6 +54,10 @@ struct MediaClock : public RefBase {
     // The result is saved in |outRealUs|.
     status_t getRealTimeFor(int64_t targetMediaUs, int64_t *outRealUs) const;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    void addBufferingTimeToAnchorTimeRealUs(int64_t bufferingtimeUs);
+#endif
+
 protected:
     virtual ~MediaClock();
 

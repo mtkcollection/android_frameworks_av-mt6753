@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -48,6 +53,32 @@
 
 #include <cutils/properties.h>
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#ifdef MTK_AUDIO_APE_SUPPORT
+#include "include/APEExtractor.h"
+#endif
+#ifdef MTK_AUDIO_ALAC_SUPPORT
+#include "include/CAFExtractor.h"
+#endif
+#include <MtkSDPExtractor.h>
+#include "MtkAACExtractor.h"
+#include <MtkFLVExtractor.h>
+#ifdef MTK_OGM_PLAYBACK_SUPPORT
+#include <OgmExtractor.h>
+#endif
+// for ASF playback!
+#include <media/stagefright/MediaDefs.h>
+#include <dlfcn.h>
+#ifdef MTK_WMV_PLAYBACK_SUPPORT
+#include <ASFExtractor.h>
+#endif
+#ifdef MTK_AVI_PLAYBACK_SUPPORT
+#include <MtkAVIExtractor.h>
+#endif
+#ifdef MTK_ELEMENT_STREAM_SUPPORT
+#include <ESExtractor.h>
+#endif
+#endif  // #ifdef MTK_AOSP_ENHANCEMENT
 namespace android {
 
 bool DataSource::getUInt16(off64_t offset, uint16_t *x) {
@@ -162,6 +193,15 @@ void DataSource::RegisterDefaultSniffers() {
     if (gSniffersRegistered) {
         return;
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+#ifdef MTK_DRM_APP
+    // OMA DRM v1 implementation: this need to be registered always, and as the first one.
+    RegisterSniffer_l(SniffDRM);
+#endif
+#if defined(MTK_MTKPS_PLAYBACK_SUPPORT) && defined(MTK_ELEMENT_STREAM_SUPPORT)
+    RegisterSniffer_l(SniffES);
+#endif
+#endif
 
     RegisterSniffer_l(SniffMPEG4);
     RegisterSniffer_l(SniffMatroska);
@@ -176,10 +216,20 @@ void DataSource::RegisterDefaultSniffers() {
     RegisterSniffer_l(SniffWVM);
     RegisterSniffer_l(SniffMidi);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    RegisterSniffer_ext();
+#endif
     char value[PROPERTY_VALUE_MAX];
     if (property_get("drm.service.enabled", value, NULL)
             && (!strcmp(value, "1") || !strcasecmp(value, "true"))) {
+#ifndef MTK_AOSP_ENHANCEMENT
         RegisterSniffer_l(SniffDRM);
+#else
+        // not android default code, but OMA DRM v1 is disabled
+#ifndef MTK_DRM_APP
+        RegisterSniffer_l(SniffDRM);
+#endif
+#endif
     }
     gSniffersRegistered = true;
 }
@@ -290,4 +340,98 @@ String8 DataSource::getMIMEType() const {
     return String8("application/octet-stream");
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+// #define DISABLE_FAST_SNIFF
+bool DataSource::fastsniff(
+        int fd, String8 *mimeType) {
+#ifdef DISABLE_FAST_SNIFF
+    return false;
+#endif
+
+    *mimeType ="";
+    float confidence = 0.0f;
+    //sp<AMessage> *meta;
+    String8 newMimeType;
+    sp<AMessage> newMeta;
+
+    char buffer[256];
+    char linkto[256];
+    memset(buffer, 0, 256);
+    memset(linkto, 0, 256);
+    sprintf(buffer, "/proc/%d/fd/%d", gettid(), fd);
+    int len = 0;
+    len = readlink(buffer, linkto, sizeof(linkto));
+
+    if (len <= 5) {
+        return false;
+    }
+
+    ALOGV("fastsniff pid %d, fd %d, fd=%d", gettid(), fd, len);
+
+    struct {
+        unsigned FileextSize;
+        const char *FileextName;
+        bool (*Snifffun)(const sp<DataSource> &source, String8 *mimeType,
+                float *confidence, sp<AMessage> *meta);
+    } snifftable[] = {
+        { 4,  ".ogg", SniffOgg    },
+        { 4,  ".mp3", FastSniffMP3},
+        { 4,  ".aac", FastSniffAAC},
+#ifdef MTK_AUDIO_APE_SUPPORT
+        { 4,  ".ape", SniffAPE    },
+#endif
+#ifdef MTK_MTKPS_PLAYBACK_SUPPORT
+        { 4,  ".dat", fastSniffPS },  // only use fastSniffPS for dat files
+#endif
+#ifdef MTK_AUDIO_ALAC_SUPPORT
+        { 4,  ".caf", SniffCAF    },
+#endif
+        { 5,  ".flac", SniffFLAC   },
+        { 4,  ".amr", SniffAMR    },
+        { 4,  ".awb", SniffAMR    },
+#ifdef MTK_WMV_PLAYBACK_SUPPORT
+        { 4,  ".wma", SniffASF    },
+#endif
+        { 7,  ".dthumb", SniffMPEG4},
+        { 4,  ".wav", SniffWAV}
+    };
+
+    for (unsigned i = 0; i < sizeof(snifftable)/sizeof(snifftable[0]); ++i) {
+        if (strcasestr(linkto + (len - snifftable[i].FileextSize), snifftable[i].FileextName) != NULL) {
+            if ((*snifftable[i].Snifffun)(this, &newMimeType, &confidence, &newMeta))
+                ALOGD("fastsniff is %s", snifftable[i].FileextName);
+            break;
+        }
+    }
+
+    if (confidence > 0.0)
+        *mimeType = newMimeType;
+    return confidence > 0.0;
+}
+
+void DataSource::RegisterSniffer_ext() {
+#ifdef MTK_AUDIO_APE_SUPPORT
+    RegisterSniffer_l(SniffAPE);
+#endif
+#ifdef MTK_AUDIO_ALAC_SUPPORT
+    RegisterSniffer_l(SniffCAF);
+#endif
+    RegisterSniffer_l(SniffMtkAAC);
+#ifdef MTK_WMV_PLAYBACK_SUPPORT
+    RegisterSniffer_l(SniffASF);
+#endif
+    // register sdp sniff for rtsp play by local sdp file
+    RegisterSniffer_l(SniffSDP);
+#ifdef MTK_AVI_PLAYBACK_SUPPORT
+    RegisterSniffer_l(MtkSniffAVI);
+#endif
+#ifdef MTK_FLV_PLAYBACK_SUPPORT
+    RegisterSniffer_l(SniffFLV);
+#endif
+#ifdef MTK_OGM_PLAYBACK_SUPPORT
+    RegisterSniffer_l(SniffOgm);
+#endif
+}
+
+#endif
 }  // namespace android

@@ -49,8 +49,7 @@ enum {
     WAIT_UNTIL_IDLE,
     FLUSH,
     PREPARE,
-    TEAR_DOWN,
-    PREPARE2
+    TEAR_DOWN
 };
 
 namespace {
@@ -367,21 +366,6 @@ public:
         return reply.readInt32();
     }
 
-    virtual status_t prepare2(int maxCount, int streamId)
-    {
-        ALOGV("prepare2");
-        Parcel data, reply;
-
-        data.writeInterfaceToken(ICameraDeviceUser::getInterfaceDescriptor());
-        data.writeInt32(maxCount);
-        data.writeInt32(streamId);
-
-        remote()->transact(PREPARE2, data, &reply);
-
-        reply.readExceptionCode();
-        return reply.readInt32();
-    }
-
     virtual status_t tearDown(int streamId)
     {
         ALOGV("tearDown");
@@ -608,14 +592,7 @@ status_t BnCameraDeviceUser::onTransact(
             reply->writeInt32(tearDown(streamId));
             return NO_ERROR;
         } break;
-        case PREPARE2: {
-            CHECK_INTERFACE(ICameraDeviceUser, data, reply);
-            int maxCount = data.readInt32();
-            int streamId = data.readInt32();
-            reply->writeNoException();
-            reply->writeInt32(prepare2(maxCount, streamId));
-            return NO_ERROR;
-        } break;
+
         default:
             return BBinder::onTransact(code, data, reply, flags);
     }

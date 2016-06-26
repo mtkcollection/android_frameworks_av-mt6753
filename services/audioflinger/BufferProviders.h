@@ -44,6 +44,12 @@ public:
         mTrackBufferProvider = p;
     }
 
+    //#ifdef TIME_STRETCH_ENABLE
+    virtual AudioBufferProvider* getBufferProvider() {
+        return mTrackBufferProvider;
+    }
+    //#endif
+
 protected:
     AudioBufferProvider *mTrackBufferProvider;
 };
@@ -77,6 +83,9 @@ public:
     virtual void copyFrames(void *dst, const void *src, size_t frames) = 0;
 
 protected:
+//#ifdef MTK_AUDIO
+    //AudioBufferProvider* mTrackBufferProvider;
+//#endif
     const size_t         mInputFrameSize;
     const size_t         mOutputFrameSize;
 private:

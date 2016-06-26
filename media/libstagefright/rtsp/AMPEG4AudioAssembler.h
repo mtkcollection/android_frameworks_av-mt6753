@@ -1,4 +1,10 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -35,7 +41,6 @@ struct AMPEG4AudioAssembler : public ARTPAssembler {
 
 protected:
     virtual ~AMPEG4AudioAssembler();
-
     virtual AssemblyStatus assembleMore(const sp<ARTPSource> &source);
     virtual void onByeReceived();
     virtual void packetLost();
@@ -62,6 +67,16 @@ private:
     sp<ABuffer> removeLATMFraming(const sp<ABuffer> &buffer);
 
     DISALLOW_EVIL_CONSTRUCTORS(AMPEG4AudioAssembler);
+#ifdef MTK_AOSP_ENHANCEMENT
+public:
+    virtual void setNextExpectedSeqNo(uint32_t rtpSeq) {
+        mNextExpectedSeqNo = rtpSeq;
+        mNextExpectedSeqNoValid = true;
+    }
+protected:
+    virtual void evaluateDuration(const sp<ARTPSource> &source,
+            const sp<ABuffer> &buffer);
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
 };
 
 }  // namespace android

@@ -719,43 +719,6 @@ status_t CameraDeviceClient::prepare(int streamId) {
     return res;
 }
 
-status_t CameraDeviceClient::prepare2(int maxCount, int streamId) {
-    ATRACE_CALL();
-    ALOGV("%s", __FUNCTION__);
-
-    status_t res = OK;
-    if ( (res = checkPid(__FUNCTION__) ) != OK) return res;
-
-    Mutex::Autolock icl(mBinderSerializationLock);
-
-    // Guard against trying to prepare non-created streams
-    ssize_t index = NAME_NOT_FOUND;
-    for (size_t i = 0; i < mStreamMap.size(); ++i) {
-        if (streamId == mStreamMap.valueAt(i)) {
-            index = i;
-            break;
-        }
-    }
-
-    if (index == NAME_NOT_FOUND) {
-        ALOGW("%s: Camera %d: Invalid stream ID (%d) specified, no stream created yet",
-                __FUNCTION__, mCameraId, streamId);
-        return BAD_VALUE;
-    }
-
-    if (maxCount <= 0) {
-        ALOGE("%s: Camera %d: Invalid maxCount (%d) specified, must be greater than 0.",
-                __FUNCTION__, mCameraId, maxCount);
-        return BAD_VALUE;
-    }
-
-    // Also returns BAD_VALUE if stream ID was not valid, or stream already
-    // has been used
-    res = mDevice->prepare(maxCount, streamId);
-
-    return res;
-}
-
 status_t CameraDeviceClient::tearDown(int streamId) {
     ATRACE_CALL();
     ALOGV("%s", __FUNCTION__);
@@ -787,11 +750,8 @@ status_t CameraDeviceClient::tearDown(int streamId) {
     return res;
 }
 
-status_t CameraDeviceClient::dump(int fd, const Vector<String16>& args) {
-    return BasicClient::dump(fd, args);
-}
 
-status_t CameraDeviceClient::dumpClient(int fd, const Vector<String16>& args) {
+status_t CameraDeviceClient::dump(int fd, const Vector<String16>& args) {
     String8 result;
     result.appendFormat("CameraDeviceClient[%d] (%p) dump:\n",
             mCameraId,
@@ -839,7 +799,6 @@ void CameraDeviceClient::notifyIdle() {
     if (remoteCb != 0) {
         remoteCb->onDeviceIdle();
     }
-    Camera2ClientBase::notifyIdle();
 }
 
 void CameraDeviceClient::notifyShutter(const CaptureResultExtras& resultExtras,
@@ -849,7 +808,6 @@ void CameraDeviceClient::notifyShutter(const CaptureResultExtras& resultExtras,
     if (remoteCb != 0) {
         remoteCb->onCaptureStarted(resultExtras, timestamp);
     }
-    Camera2ClientBase::notifyShutter(resultExtras, timestamp);
 }
 
 void CameraDeviceClient::notifyPrepared(int streamId) {

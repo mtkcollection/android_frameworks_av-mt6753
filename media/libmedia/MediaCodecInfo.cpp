@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright 2014, The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -229,16 +234,48 @@ status_t MediaCodecInfo::initializeCapabilities(const CodecCapabilities &caps) {
     mCurrentCaps->mProfileLevels.clear();
     mCurrentCaps->mColorFormats.clear();
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    long long memTotalBytes = sysconf(_SC_PHYS_PAGES) * PAGE_SIZE;
+    ALOGD("native_get_videoeditor_profile: mIsEncoder %d, memTotalBytes %lld bytes", mIsEncoder, memTotalBytes);
+#endif //MTK_AOSP_ENHANCEMENT
+
     for (size_t i = 0; i < caps.mProfileLevels.size(); ++i) {
         const CodecProfileLevel &src = caps.mProfileLevels.itemAt(i);
 
         ProfileLevel profileLevel;
         profileLevel.mProfile = src.mProfile;
         profileLevel.mLevel = src.mLevel;
+
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGD("mProfile %d mLevel %d", src.mProfile, src.mLevel);
+        //for CTS case "EncodeVirtualDisplayWithCompositionTest "
+        // Limit max recording resolution to 1280x720, if phone's ram <= 512MB
+        // Limit max recording resolution to 720x480, if phone's ram <= 256MB
+        if (memTotalBytes <= (256*1024*1024)) {
+            if( (1==mIsEncoder)&& (OMX_VIDEO_AVCLevel3<=src.mLevel) )
+            {
+                ALOGD("skip once, memory may no be enough during large size video recording, profile %d, level %d", src.mProfile, src.mLevel);
+                continue;
+            }
+        }
+        else if (memTotalBytes <= (512*1024*1024)) {
+            if( (1==mIsEncoder)&& (OMX_VIDEO_AVCLevel32<=src.mLevel) )
+            {
+                ALOGD("skip once, memory may no be enough during large size video recording, profile %d, level %d", src.mProfile, src.mLevel);
+                continue;
+            }
+        }
+#endif //MTK_AOSP_ENHANCEMENT
+
         mCurrentCaps->mProfileLevels.push_back(profileLevel);
     }
 
     for (size_t i = 0; i < caps.mColorFormats.size(); ++i) {
+
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGI("itemAt(i) %x, isEncoder %d ", caps.mColorFormats.itemAt(i), mIsEncoder );
+#endif //MTK_AOSP_ENHANCEMENT
+
         mCurrentCaps->mColorFormats.push_back(caps.mColorFormats.itemAt(i));
     }
 

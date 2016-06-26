@@ -53,7 +53,7 @@ LOCAL_SRC_FILES:=               \
     device3/StatusTracker.cpp \
     gui/RingBufferConsumer.cpp \
     utils/CameraTraces.cpp \
-    utils/AutoConditionLock.cpp
+    utils/AutoConditionLock.cpp \
 
 LOCAL_SHARED_LIBRARIES:= \
     libui \
@@ -78,6 +78,25 @@ LOCAL_C_INCLUDES += \
 
 
 LOCAL_CFLAGS += -Wall -Wextra
+
+#//!++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+-include $(TOP)/$(MTK_PATH_SOURCE)/hardware/mtkcam/mtkcam.mk
+ifneq ($(strip $(MTK_EMULATOR_SUPPORT)),yes)
+#ifeq ($(HAVE_MATV_FEATURE),yes)
+    LOCAL_CFLAGS += -DATVCHIP_MTK_ENABLE
+#endif
+endif
+
+    LOCAL_SHARED_LIBRARIES += libdl
+    LOCAL_SHARED_LIBRARIES += libmtkcamera_client
+
+    LOCAL_C_INCLUDES += $(MTK_PATH_SOURCE)/hardware/mtkcam/ext/include
+    LOCAL_C_INCLUDES += $(TOP)/$(MTK_PATH_SOURCE)/hardware/include
+    LOCAL_C_INCLUDES += $(TOP)/$(MTKCAM_C_INCLUDES)
+    LOCAL_SRC_FILES += mediatek/CameraService.cpp
+    LOCAL_SRC_FILES += mediatek/api1/CameraClient.cpp
+
+#//!----------------------------------------------------------------------------
 
 LOCAL_MODULE:= libcameraservice
 

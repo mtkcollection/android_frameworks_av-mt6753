@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright 2012, The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -298,5 +303,30 @@ bool ParsedMessage::GetInt32Attribute(
     return true;
 }
 
+///M: Add by MTK @{
+//static
+bool ParsedMessage::getHeaderFromBody(char* rtspBody, const char* headerName, AString* headerValue){
+    char* ptr = NULL;
+    char* ptrVal = NULL;
+
+    ptr = strtok(rtspBody, "\r\n");
+    while(ptr != NULL) {
+        if(strstr(ptr, headerName)) {
+            ptrVal = strstr(ptr, " ");
+            ptrVal++; //Skip the space
+            ALOGD("%s=>%s", ptr, ptrVal);
+            headerValue->setTo(ptrVal);
+            return true;
+        }
+        ptr = strtok(NULL, "\r\n");
+        while(ptr[0] == ' '){ //Skip the leading space
+            ptr++;
+        }
+    }
+
+    return false;
+}
+
+/// @}
 }  // namespace android
 

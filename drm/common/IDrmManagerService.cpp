@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -305,6 +310,17 @@ DrmInfo* BpDrmManagerService::acquireDrmInfo(int uniqueId, const DrmInfoRequest*
             int fd = -1;
             sscanf(value.string(), "FileDescriptor[%d]", &fd);
             data.writeFileDescriptor(fd);
+        } else if(key == String8("dmFd") || key == String8("dcfFd")) {
+            //M: Add else if to avoid write sdcard in native layer for oma drm
+            int fd = -1;
+            sscanf(value.string(), "%d", &fd);
+            data.writeFileDescriptor(fd);
+        } else if(key == String8("CTA5clearFd") || key == String8("CTA5cipherFd") ||
+                key == String8("CTA5Fd")) {
+            //M: Add else if to support CTA5
+            int fd = -1;
+            sscanf(value.string(), "%d", &fd);
+            data.writeFileDescriptor(fd);
         } else {
             data.writeString8((value == String8("")) ? String8("NULL") : value);
         }
@@ -601,6 +617,15 @@ status_t BpDrmManagerService::getAllSupportInfo(
     return reply.readInt32();
 }
 
+//Add by rui to pass client's client to drmserver
+//Add log to dump info to avoid unuse build error
+DecryptHandle* BpDrmManagerService::openDecryptSession(int uniqueId, int fd, off64_t offset,
+        off64_t length, const char* mime, pid_t pid) {
+    ALOGV("Entering BpDrmManagerService::openDecryptSession:%d, %d, %lld, %lld, %p, %u",
+            uniqueId, fd, offset, length, mime, pid);
+    return NULL;
+}
+
 DecryptHandle* BpDrmManagerService::openDecryptSession(
             int uniqueId, int fd, off64_t offset, off64_t length, const char* mime) {
     ALOGV("Entering BpDrmManagerService::openDecryptSession");
@@ -616,6 +641,14 @@ DecryptHandle* BpDrmManagerService::openDecryptSession(
         mimeType = mime;
     }
     data.writeString8(mimeType);
+
+    //Add by rui
+    //To pass client's client to drmserver
+    //Pass pid to drmserver
+    IPCThreadState* ipcState = IPCThreadState::self();
+    pid_t pid = ipcState->getCallingPid();
+    data.writeInt32(pid);
+    ////////
 
     remote()->transact(OPEN_DECRYPT_SESSION, data, &reply);
 
@@ -1003,7 +1036,20 @@ status_t BnDrmManagerService::onTransact(
                 int fd = data.readFileDescriptor();
                 sprintf(buffer, "%lu", (unsigned long)fd);
                 drmInfoRequest->put(key, String8(buffer));
-            } else {
+            } else if(key == String8("dmFd") || key == String8("dcfFd")) {
+                //M: Add else if to avoid write sdcard in native layer for oma drm
+                char buffer[16];
+                int fd = data.readFileDescriptor();
+                sprintf(buffer, "%lu", (unsigned long) fd);
+                drmInfoRequest->put(key, String8(buffer));
+            } else if(key == String8("CTA5clearFd") || key == String8("CTA5cipherFd") ||
+                    key == String8("CTA5Fd")) {
+                //M: Add else if to support CTA5
+                int fd = data.readFileDescriptor();
+                char buffer[16];
+                sprintf(buffer, "%lu", (unsigned long) fd);
+                drmInfoRequest->put(key, String8(buffer));
+            }else {
                 const String8 value(data.readString8());
                 drmInfoRequest->put(key, (value == String8("NULL")) ? String8("") : value);
             }
@@ -1327,8 +1373,14 @@ status_t BnDrmManagerService::onTransact(
         const off64_t length = data.readInt64();
         const String8 mime = data.readString8();
 
+        //Add by rui
+        //To pass client's client to drmserver
+        //Pass pid to drmserver
+        const pid_t pid = data.readInt32();
+        ////////
+
         DecryptHandle* handle
-            = openDecryptSession(uniqueId, fd, offset, length, mime.string());
+            = openDecryptSession(uniqueId, fd, offset, length, mime.string(), pid);
 
         if (NULL != handle) {
             writeDecryptHandleToParcelData(handle, reply);

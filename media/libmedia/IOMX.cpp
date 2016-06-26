@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (c) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,6 +27,15 @@
 #include <binder/Parcel.h>
 #include <media/IOMX.h>
 #include <media/stagefright/foundation/ADebug.h>
+
+#ifdef MTK_AOSP_ENHANCEMENT
+#define RETURN_IF_ERROR(exp) \
+        status_t status = exp;  \
+        if (status != NO_ERROR){    \
+            ALOGE("binder transaction failed: %d", status); \
+            return status;  \
+        }
+#endif
 
 namespace android {
 
@@ -70,8 +84,11 @@ public:
         data.writeInterfaceToken(IOMX::getInterfaceDescriptor());
         data.writeInt32((int32_t)node);
         data.writeInt32(pid);
+#ifdef MTK_AOSP_ENHANCEMENT
+        RETURN_IF_ERROR(remote()->transact(LIVES_LOCALLY, data, &reply))
+#else
         remote()->transact(LIVES_LOCALLY, data, &reply);
-
+#endif
         return reply.readInt32() != 0;
     }
 
@@ -80,8 +97,12 @@ public:
 
         Parcel data, reply;
         data.writeInterfaceToken(IOMX::getInterfaceDescriptor());
-        remote()->transact(LIST_NODES, data, &reply);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        RETURN_IF_ERROR(remote()->transact(LIST_NODES, data, &reply))
+#else
+        remote()->transact(LIST_NODES, data, &reply);
+#endif
         int32_t n = reply.readInt32();
         for (int32_t i = 0; i < n; ++i) {
             list->push_back(ComponentInfo());
@@ -103,7 +124,12 @@ public:
         data.writeInterfaceToken(IOMX::getInterfaceDescriptor());
         data.writeCString(name);
         data.writeStrongBinder(IInterface::asBinder(observer));
+
+#ifdef MTK_AOSP_ENHANCEMENT
+        RETURN_IF_ERROR(remote()->transact(ALLOCATE_NODE, data, &reply))
+#else
         remote()->transact(ALLOCATE_NODE, data, &reply);
+#endif
 
         status_t err = reply.readInt32();
         if (err == OK) {
@@ -119,8 +145,12 @@ public:
         Parcel data, reply;
         data.writeInterfaceToken(IOMX::getInterfaceDescriptor());
         data.writeInt32((int32_t)node);
-        remote()->transact(FREE_NODE, data, &reply);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        RETURN_IF_ERROR(remote()->transact(FREE_NODE, data, &reply))
+#else
+        remote()->transact(FREE_NODE, data, &reply);
+#endif
         return reply.readInt32();
     }
 
@@ -131,8 +161,11 @@ public:
         data.writeInt32((int32_t)node);
         data.writeInt32(cmd);
         data.writeInt32(param);
+#ifdef MTK_AOSP_ENHANCEMENT
+        RETURN_IF_ERROR(remote()->transact(SEND_COMMAND, data, &reply))
+#else
         remote()->transact(SEND_COMMAND, data, &reply);
-
+#endif
         return reply.readInt32();
     }
 
@@ -145,7 +178,11 @@ public:
         data.writeInt32(index);
         data.writeInt64(size);
         data.write(params, size);
+#ifdef MTK_AOSP_ENHANCEMENT
+        RETURN_IF_ERROR(remote()->transact(GET_PARAMETER, data, &reply))
+#else
         remote()->transact(GET_PARAMETER, data, &reply);
+#endif
 
         status_t err = reply.readInt32();
         if (err != OK) {
@@ -166,8 +203,11 @@ public:
         data.writeInt32(index);
         data.writeInt64(size);
         data.write(params, size);
+#ifdef MTK_AOSP_ENHANCEMENT
+        RETURN_IF_ERROR(remote()->transact(SET_PARAMETER, data, &reply))
+#else
         remote()->transact(SET_PARAMETER, data, &reply);
-
+#endif
         return reply.readInt32();
     }
 
@@ -180,8 +220,12 @@ public:
         data.writeInt32(index);
         data.writeInt64(size);
         data.write(params, size);
-        remote()->transact(GET_CONFIG, data, &reply);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        RETURN_IF_ERROR(remote()->transact(GET_CONFIG, data, &reply))
+#else
+        remote()->transact(GET_CONFIG, data, &reply);
+#endif
         status_t err = reply.readInt32();
         if (err != OK) {
             return err;
@@ -201,8 +245,12 @@ public:
         data.writeInt32(index);
         data.writeInt64(size);
         data.write(params, size);
-        remote()->transact(SET_CONFIG, data, &reply);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        RETURN_IF_ERROR(remote()->transact(SET_CONFIG, data, &reply))
+#else
+        remote()->transact(SET_CONFIG, data, &reply);
+#endif
         return reply.readInt32();
     }
 
@@ -211,8 +259,12 @@ public:
         Parcel data, reply;
         data.writeInterfaceToken(IOMX::getInterfaceDescriptor());
         data.writeInt32((int32_t)node);
-        remote()->transact(GET_STATE, data, &reply);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        RETURN_IF_ERROR(remote()->transact(GET_STATE, data, &reply))
+#else
+        remote()->transact(GET_STATE, data, &reply);
+#endif
         *state = static_cast<OMX_STATETYPE>(reply.readInt32());
         return reply.readInt32();
     }
@@ -224,8 +276,12 @@ public:
         data.writeInt32((int32_t)node);
         data.writeInt32(port_index);
         data.writeInt32((uint32_t)enable);
-        remote()->transact(ENABLE_GRAPHIC_BUFFERS, data, &reply);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        RETURN_IF_ERROR(remote()->transact(ENABLE_GRAPHIC_BUFFERS, data, &reply))
+#else
+        remote()->transact(ENABLE_GRAPHIC_BUFFERS, data, &reply);
+#endif
         status_t err = reply.readInt32();
         return err;
     }
@@ -236,8 +292,12 @@ public:
         data.writeInterfaceToken(IOMX::getInterfaceDescriptor());
         data.writeInt32((int32_t)node);
         data.writeInt32(port_index);
-        remote()->transact(GET_GRAPHIC_BUFFER_USAGE, data, &reply);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        RETURN_IF_ERROR(remote()->transact(GET_GRAPHIC_BUFFER_USAGE, data, &reply))
+#else
+        remote()->transact(GET_GRAPHIC_BUFFER_USAGE, data, &reply);
+#endif
         status_t err = reply.readInt32();
         *usage = reply.readInt32();
         return err;
@@ -252,8 +312,12 @@ public:
         data.writeInt32(port_index);
         data.writeStrongBinder(IInterface::asBinder(params));
         data.writeInt32(allottedSize);
-        remote()->transact(USE_BUFFER, data, &reply);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        RETURN_IF_ERROR(remote()->transact(USE_BUFFER, data, &reply))
+#else
+        remote()->transact(USE_BUFFER, data, &reply);
+#endif
         status_t err = reply.readInt32();
         if (err != OK) {
             *buffer = 0;
@@ -275,8 +339,11 @@ public:
         data.writeInt32((int32_t)node);
         data.writeInt32(port_index);
         data.write(*graphicBuffer);
+#ifdef MTK_AOSP_ENHANCEMENT
+        RETURN_IF_ERROR(remote()->transact(USE_GRAPHIC_BUFFER, data, &reply))
+#else
         remote()->transact(USE_GRAPHIC_BUFFER, data, &reply);
-
+#endif
         status_t err = reply.readInt32();
         if (err != OK) {
             *buffer = 0;
@@ -298,8 +365,11 @@ public:
         data.writeInt32(port_index);
         data.write(*graphicBuffer);
         data.writeInt32((int32_t)buffer);
+#ifdef MTK_AOSP_ENHANCEMENT
+        RETURN_IF_ERROR(remote()->transact(UPDATE_GRAPHIC_BUFFER_IN_META, data, &reply))
+#else
         remote()->transact(UPDATE_GRAPHIC_BUFFER_IN_META, data, &reply);
-
+#endif
         status_t err = reply.readInt32();
         return err;
     }
@@ -407,8 +477,11 @@ public:
         data.writeInt32((int32_t)node);
         data.writeInt32(port_index);
         data.writeInt32((uint32_t)enable);
+#ifdef MTK_AOSP_ENHANCEMENT
+        RETURN_IF_ERROR(remote()->transact(STORE_META_DATA_IN_BUFFERS, data, &reply))
+#else
         remote()->transact(STORE_META_DATA_IN_BUFFERS, data, &reply);
-
+#endif        
         // read type even storeMetaDataInBuffers failed
         int negotiatedType = reply.readInt32();
         if (type != NULL) {
@@ -428,8 +501,12 @@ public:
         data.writeInt32((int32_t)enable);
         data.writeInt32(max_width);
         data.writeInt32(max_height);
-        remote()->transact(PREPARE_FOR_ADAPTIVE_PLAYBACK, data, &reply);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        RETURN_IF_ERROR(remote()->transact(PREPARE_FOR_ADAPTIVE_PLAYBACK, data, &reply))
+#else
+        remote()->transact(PREPARE_FOR_ADAPTIVE_PLAYBACK, data, &reply);
+#endif
         status_t err = reply.readInt32();
         return err;
     }
@@ -443,10 +520,14 @@ public:
         data.writeInt32(portIndex);
         data.writeInt32((int32_t)tunneled);
         data.writeInt32(audioHwSync);
-        remote()->transact(CONFIGURE_VIDEO_TUNNEL_MODE, data, &reply);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        RETURN_IF_ERROR(remote()->transact(CONFIGURE_VIDEO_TUNNEL_MODE, data, &reply))
+#else
+        remote()->transact(CONFIGURE_VIDEO_TUNNEL_MODE, data, &reply);
+#endif
         status_t err = reply.readInt32();
-        if (err == OK && sidebandHandle) {
+        if (sidebandHandle) {
             *sidebandHandle = (native_handle_t *)reply.readNativeHandle();
         }
         return err;
@@ -461,8 +542,12 @@ public:
         data.writeInt32((int32_t)node);
         data.writeInt32(port_index);
         data.writeInt64(size);
-        remote()->transact(ALLOC_BUFFER, data, &reply);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        RETURN_IF_ERROR(remote()->transact(ALLOC_BUFFER, data, &reply))
+#else
+        remote()->transact(ALLOC_BUFFER, data, &reply);
+#endif
         status_t err = reply.readInt32();
         if (err != OK) {
             *buffer = 0;
@@ -485,8 +570,12 @@ public:
         data.writeInt32(port_index);
         data.writeStrongBinder(IInterface::asBinder(params));
         data.writeInt32(allottedSize);
-        remote()->transact(ALLOC_BUFFER_WITH_BACKUP, data, &reply);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        RETURN_IF_ERROR(remote()->transact(ALLOC_BUFFER_WITH_BACKUP, data, &reply))
+#else
+        remote()->transact(ALLOC_BUFFER_WITH_BACKUP, data, &reply);
+#endif
         status_t err = reply.readInt32();
         if (err != OK) {
             *buffer = 0;
@@ -506,8 +595,12 @@ public:
         data.writeInt32((int32_t)node);
         data.writeInt32(port_index);
         data.writeInt32((int32_t)buffer);
-        remote()->transact(FREE_BUFFER, data, &reply);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        RETURN_IF_ERROR(remote()->transact(FREE_BUFFER, data, &reply))
+#else
+        remote()->transact(FREE_BUFFER, data, &reply);
+#endif
         return reply.readInt32();
     }
 
@@ -520,8 +613,11 @@ public:
         if (fenceFd >= 0) {
             data.writeFileDescriptor(fenceFd, true /* takeOwnership */);
         }
+#ifdef MTK_AOSP_ENHANCEMENT
+        RETURN_IF_ERROR(remote()->transact(FILL_BUFFER, data, &reply))
+#else
         remote()->transact(FILL_BUFFER, data, &reply);
-
+#endif
         return reply.readInt32();
     }
 
@@ -542,8 +638,12 @@ public:
         if (fenceFd >= 0) {
             data.writeFileDescriptor(fenceFd, true /* takeOwnership */);
         }
-        remote()->transact(EMPTY_BUFFER, data, &reply);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        RETURN_IF_ERROR(remote()->transact(EMPTY_BUFFER, data, &reply))
+#else
+        remote()->transact(EMPTY_BUFFER, data, &reply);
+#endif
         return reply.readInt32();
     }
 
@@ -556,7 +656,12 @@ public:
         data.writeInt32((int32_t)node);
         data.writeCString(parameter_name);
 
+
+#ifdef MTK_AOSP_ENHANCEMENT
+        RETURN_IF_ERROR(remote()->transact(GET_EXTENSION_INDEX, data, &reply))
+#else
         remote()->transact(GET_EXTENSION_INDEX, data, &reply);
+#endif
 
         status_t err = reply.readInt32();
         if (err == OK) {
@@ -581,8 +686,12 @@ public:
         data.writeInt64(size);
         data.write(optionData, size);
         data.writeInt32(type);
-        remote()->transact(SET_INTERNAL_OPTION, data, &reply);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        RETURN_IF_ERROR(remote()->transact(SET_INTERNAL_OPTION, data, &reply))
+#else
+        remote()->transact(SET_INTERNAL_OPTION, data, &reply);
+#endif
         return reply.readInt32();
     }
 };
@@ -692,39 +801,34 @@ status_t BnOMX::onTransact(
 
             size_t size = data.readInt64();
 
-            status_t err = NO_MEMORY;
-            void *params = calloc(size, 1);
-            if (params) {
-                err = data.read(params, size);
-                if (err != OK) {
-                    android_errorWriteLog(0x534e4554, "26914474");
-                } else {
-                    switch (code) {
-                        case GET_PARAMETER:
-                            err = getParameter(node, index, params, size);
-                            break;
-                        case SET_PARAMETER:
-                            err = setParameter(node, index, params, size);
-                            break;
-                        case GET_CONFIG:
-                            err = getConfig(node, index, params, size);
-                            break;
-                        case SET_CONFIG:
-                            err = setConfig(node, index, params, size);
-                            break;
-                        case SET_INTERNAL_OPTION:
-                        {
-                            InternalOptionType type =
-                                (InternalOptionType)data.readInt32();
+            void *params = malloc(size);
+            data.read(params, size);
 
-                            err = setInternalOption(node, index, type, params, size);
-                            break;
-                        }
+            status_t err;
+            switch (code) {
+                case GET_PARAMETER:
+                    err = getParameter(node, index, params, size);
+                    break;
+                case SET_PARAMETER:
+                    err = setParameter(node, index, params, size);
+                    break;
+                case GET_CONFIG:
+                    err = getConfig(node, index, params, size);
+                    break;
+                case SET_CONFIG:
+                    err = setConfig(node, index, params, size);
+                    break;
+                case SET_INTERNAL_OPTION:
+                {
+                    InternalOptionType type =
+                        (InternalOptionType)data.readInt32();
 
-                        default:
-                            TRESPASS();
-                    }
+                    err = setInternalOption(node, index, type, params, size);
+                    break;
                 }
+
+                default:
+                    TRESPASS();
             }
 
             reply->writeInt32(err);
@@ -849,12 +953,8 @@ status_t BnOMX::onTransact(
             OMX_U32 port_index = data.readInt32();
 
             sp<IGraphicBufferProducer> bufferProducer;
-            MetadataBufferType type = kMetadataBufferTypeInvalid;
+            MetadataBufferType type;
             status_t err = createInputSurface(node, port_index, &bufferProducer, &type);
-
-            if ((err != OK) && (type == kMetadataBufferTypeInvalid)) {
-                android_errorWriteLog(0x534e4554, "26324358");
-            }
 
             reply->writeInt32(type);
             reply->writeInt32(err);
@@ -895,12 +995,8 @@ status_t BnOMX::onTransact(
             sp<IGraphicBufferConsumer> bufferConsumer =
                     interface_cast<IGraphicBufferConsumer>(data.readStrongBinder());
 
-            MetadataBufferType type = kMetadataBufferTypeInvalid;
+            MetadataBufferType type;
             status_t err = setInputSurface(node, port_index, bufferConsumer, &type);
-
-            if ((err != OK) && (type == kMetadataBufferTypeInvalid)) {
-                android_errorWriteLog(0x534e4554, "26324358");
-            }
 
             reply->writeInt32(type);
             reply->writeInt32(err);
@@ -927,14 +1023,14 @@ status_t BnOMX::onTransact(
             OMX_U32 port_index = data.readInt32();
             OMX_BOOL enable = (OMX_BOOL)data.readInt32();
 
-            MetadataBufferType type = kMetadataBufferTypeInvalid;
+            MetadataBufferType type;
             status_t err = storeMetaDataInBuffers(node, port_index, enable, &type);
-
             reply->writeInt32(type);
             reply->writeInt32(err);
 
             return NO_ERROR;
         }
+
 
         case PREPARE_FOR_ADAPTIVE_PLAYBACK:
         {
@@ -962,13 +1058,11 @@ status_t BnOMX::onTransact(
             OMX_BOOL tunneled = (OMX_BOOL)data.readInt32();
             OMX_U32 audio_hw_sync = data.readInt32();
 
-            native_handle_t *sideband_handle = NULL;
+            native_handle_t *sideband_handle;
             status_t err = configureVideoTunnelMode(
                     node, port_index, tunneled, audio_hw_sync, &sideband_handle);
             reply->writeInt32(err);
-            if(err == OK){
-                reply->writeNativeHandle(sideband_handle);
-            }
+            reply->writeNativeHandle(sideband_handle);
 
             return NO_ERROR;
         }

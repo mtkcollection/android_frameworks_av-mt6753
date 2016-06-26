@@ -24,6 +24,26 @@ LOCAL_C_INCLUDES := \
 	$(TOP)/frameworks/av/media/libstagefright/timedtext           \
 	$(TOP)/frameworks/av/media/libmediaplayerservice              \
 	$(TOP)/frameworks/native/include/media/openmax
+ifeq ($(strip $(MTK_DRM_APP)),yes)
+    LOCAL_CFLAGS += -DMTK_DRM_APP
+    LOCAL_C_INCLUDES += \
+        $(TOP)/vendor/mediatek/proprietary/frameworks/av/include \
+        bionic
+    LOCAL_SHARED_LIBRARIES += \
+        libdrmmtkutil  \
+        libutils       \
+        libcutils
+endif
+
+ifeq ($(strip $(MTK_USE_ANDROID_MM_DEFAULT_CODE)),yes)
+LOCAL_CFLAGS += -DANDROID_DEFAULT_CODE
+else
+
+ifeq ($(strip $(MTK_RTSP_BITRATE_ADAPTATION_SUPPORT)),yes)
+  LOCAL_CFLAGS += -DMTK_RTSP_BITRATE_ADAPTATION_SUPPORT
+endif
+
+endif
 
 LOCAL_CFLAGS += -Werror -Wall
 

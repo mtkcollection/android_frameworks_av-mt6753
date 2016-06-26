@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -33,10 +38,17 @@
 #include <utils/Vector.h>
 
 #include <inttypes.h>
-
+#ifdef MTK_AOSP_ENHANCEMENT
+static int kWholeBufSize = 40000000;    //40Mbytes
+static int kTargetTime = 2000;  //ms
+#endif
 namespace android {
 
+#ifdef MTK_AOSP_ENHANCEMENT
+const int64_t kNearEOSMarkUs = 1000000ll;   // change to 1 secs, ensure the data near the end in the file can be played and play smoothly
+#else
 const int64_t kNearEOSMarkUs = 2000000ll; // 2 secs
+#endif
 
 AnotherPacketSource::AnotherPacketSource(const sp<MetaData> &meta)
     : mIsAudio(false),
@@ -46,7 +58,18 @@ AnotherPacketSource::AnotherPacketSource(const sp<MetaData> &meta)
       mLastQueuedTimeUs(0),
       mEOSResult(OK),
       mLatestEnqueuedMeta(NULL),
-      mLatestDequeuedMeta(NULL) {
+#ifdef MTK_AOSP_ENHANCEMENT
+      mQueuedDiscontinuityCount(0),
+#endif
+      mLatestDequeuedMeta(NULL){
+#ifdef MTK_AOSP_ENHANCEMENT
+      mLatestDequeuedMeta = NULL;
+      mIsEOS = false;
+      mScanForIDR = true;
+      mIsAVC = false;
+      mNeedScanForIDR = false;
+      mStrmSourcePID = 0;
+#endif
     setFormat(meta);
 
     mDiscontinuitySegments.push_back(DiscontinuitySegment());
@@ -66,6 +89,28 @@ void AnotherPacketSource::setFormat(const sp<MetaData> &meta) {
     }
 
     mFormat = meta;
+#ifdef MTK_AOSP_ENHANCEMENT
+    const char *mime;
+    CHECK(meta->findCString(kKeyMIMEType, &mime));
+    if (!strncasecmp("audio/", mime, 6)) {
+        mIsAudio = true;
+    } else if (!strncasecmp("text/", mime, 5)) {
+    } else {
+        if (strncasecmp("video/", mime, 6)) {
+            CHECK(!strncasecmp("image/", mime, 6));
+        }
+    }
+
+    //for bitrate-adaptation
+    m_BufQueSize = kWholeBufSize;
+    m_TargetTime = kTargetTime;
+    m_uiNextAduSeqNum = -1;
+    // mtk80902: porting from APacketSource
+    if (!strcmp(MEDIA_MIMETYPE_VIDEO_AVC, mime)) {
+        ALOGD("This is avc mime!");
+        mIsAVC = true;
+    }
+#else
     const char *mime;
     CHECK(meta->findCString(kKeyMIMEType, &mime));
 
@@ -76,16 +121,28 @@ void AnotherPacketSource::setFormat(const sp<MetaData> &meta) {
     } else {
         CHECK(!strncasecmp("text/", mime, 5) || !strncasecmp("application/", mime, 12));
     }
+#endif
 }
 
 AnotherPacketSource::~AnotherPacketSource() {
 }
 
 status_t AnotherPacketSource::start(MetaData * /* params */) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    mIsEOS = false;
+#endif
     return OK;
 }
 
 status_t AnotherPacketSource::stop() {
+#ifdef MTK_AOSP_ENHANCEMENT
+#ifdef MTK_AUDIO_CHANGE_SUPPORT
+    clear(true);
+#else
+    //clear();
+#endif
+    mIsEOS = true;
+#endif
     return OK;
 }
 
@@ -129,7 +186,10 @@ status_t AnotherPacketSource::dequeueAccessUnit(sp<ABuffer> *buffer) {
             if (wasFormatChange(discontinuity)) {
                 mFormat.clear();
             }
-
+#ifdef MTK_AOSP_ENHANCEMENT
+            --mQueuedDiscontinuityCount;
+            ALOGD("dequeue a dis %d", discontinuity);
+#endif
             mDiscontinuitySegments.erase(mDiscontinuitySegments.begin());
             // CHECK(!mDiscontinuitySegments.empty());
             return INFO_DISCONTINUITY;
@@ -162,8 +222,13 @@ void AnotherPacketSource::requeueAccessUnit(const sp<ABuffer> &buffer) {
     mBuffers.push_front(buffer);
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+status_t AnotherPacketSource::read(
+        MediaBuffer **out, const ReadOptions *options) {
+#else
 status_t AnotherPacketSource::read(
         MediaBuffer **out, const ReadOptions *) {
+#endif
     *out = NULL;
 
     Mutex::Autolock autoLock(mLock);
@@ -174,6 +239,10 @@ status_t AnotherPacketSource::read(
     if (!mBuffers.empty()) {
 
         const sp<ABuffer> buffer = *mBuffers.begin();
+
+#ifdef MTK_AOSP_ENHANCEMENT
+        m_uiNextAduSeqNum = buffer->int32Data();
+#endif
         mBuffers.erase(mBuffers.begin());
 
         int32_t discontinuity;
@@ -216,6 +285,20 @@ status_t AnotherPacketSource::read(
             mediaBuffer->meta_data()->setData(kKeySEI, 0, sei->data(), sei->size());
         }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+            int32_t fgInvalidtimeUs = false;
+            if (buffer->meta()->findInt32("invt", &fgInvalidtimeUs)) {
+                mediaBuffer->meta_data()->setInt32(kInvalidKeyTime,
+                                                   fgInvalidtimeUs);
+            }
+
+            int64_t seekTimeUs;
+            ReadOptions::SeekMode seekMode;
+            if (options && options->getSeekTo(&seekTimeUs, &seekMode)) {
+                mediaBuffer->meta_data()->setInt64(kKeyTargetTime,
+                                                   seekTimeUs);
+            }
+#endif
         *out = mediaBuffer;
         return OK;
     }
@@ -238,6 +321,17 @@ bool AnotherPacketSource::wasFormatChange(
 
 void AnotherPacketSource::queueAccessUnit(const sp<ABuffer> &buffer) {
     int32_t damaged;
+#ifdef MTK_AOSP_ENHANCEMENT
+    // mtk80902: porting from APacketSource
+    // wait IDR for 264
+    if (mIsAVC && mNeedScanForIDR && mScanForIDR) {
+        if ((buffer->data()[0] & 0x1f) != 5) {
+            ALOGD("skipping AU while scanning for next IDR frame.");
+            return;
+        }
+        mScanForIDR = false;
+    }
+#endif
     if (buffer->meta()->findInt32("damaged", &damaged) && damaged) {
         // LOG(VERBOSE) << "discarding damaged AU";
         return;
@@ -250,7 +344,9 @@ void AnotherPacketSource::queueAccessUnit(const sp<ABuffer> &buffer) {
     int32_t discontinuity;
     if (buffer->meta()->findInt32("discontinuity", &discontinuity)){
         ALOGV("queueing a discontinuity with queueAccessUnit");
-
+#ifdef MTK_AOSP_ENHANCEMENT
+        ++mQueuedDiscontinuityCount;
+#endif
         mLastQueuedTimeUs = 0ll;
         mEOSResult = OK;
         mLatestEnqueuedMeta = NULL;
@@ -292,6 +388,25 @@ void AnotherPacketSource::queueAccessUnit(const sp<ABuffer> &buffer) {
     }
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+void AnotherPacketSource::clear(const bool bKeepFormat) {
+    Mutex::Autolock autoLock(mLock);
+    if (!mBuffers.empty()) {
+        mBuffers.clear();
+    }
+    mEOSResult = OK;
+    mQueuedDiscontinuityCount = 0;
+    mDiscontinuitySegments.clear();
+    mDiscontinuitySegments.push_back(DiscontinuitySegment());
+    mLatestDequeuedMeta = NULL;
+
+    if (bKeepFormat != true) {
+        mFormat = NULL;
+        mLatestEnqueuedMeta = NULL;
+    }
+
+}
+#else
 void AnotherPacketSource::clear() {
     Mutex::Autolock autoLock(mLock);
 
@@ -304,16 +419,54 @@ void AnotherPacketSource::clear() {
     mFormat = NULL;
     mLatestEnqueuedMeta = NULL;
 }
+#endif
 
 void AnotherPacketSource::queueDiscontinuity(
         ATSParser::DiscontinuityType type,
         const sp<AMessage> &extra,
         bool discard) {
     Mutex::Autolock autoLock(mLock);
+    ALOGI("queueDiscontinuity type=%d, discard=%d",type, discard);
+#ifdef MTK_AOSP_ENHANCEMENT
+#if 0
+    if (type == ATSParser::DISCONTINUITY_HTTPLIVE_MEDIATIME) {
+        if (!mBuffers.empty()) {
+            mBuffers.clear();
+        }
+        return;
+    }
+#endif
 
+    if (type & ATSParser::DISCONTINUITY_FLUSH_SOURCE_ONLY) {
+        //only flush source, don't queue discontinuity
+        if (!mBuffers.empty()) {
+            mBuffers.clear();
+        }
+        mEOSResult = OK;
+        mScanForIDR = true;
+
+        ALOGD("found discontinuity flush source only and clear mDiscontinuitySegments!");
+
+        for (List<DiscontinuitySegment>::iterator it2 = mDiscontinuitySegments.begin();
+                it2 != mDiscontinuitySegments.end();
+                ++it2) {
+            DiscontinuitySegment &seg = *it2;
+            seg.clear();
+        }
+
+        return;
+    }
+/*
+    //do not erase pending buffers while encount explicitDiscontinuity.
+    if(type & ATSParser::DISCONTINUITY_FORMATCHANGE)
+        ;
+    else {
+*/
+#endif
     if (discard) {
         // Leave only discontinuities in the queue.
         List<sp<ABuffer> >::iterator it = mBuffers.begin();
+        ALOGD("drop %zu buffers", mBuffers.size());
         while (it != mBuffers.end()) {
             sp<ABuffer> oldBuffer = *it;
 
@@ -322,6 +475,8 @@ void AnotherPacketSource::queueDiscontinuity(
                         "discontinuity", &oldDiscontinuityType)) {
                 it = mBuffers.erase(it);
                 continue;
+            }else{
+                ALOGD("left a dis buffer");
             }
 
             ++it;
@@ -335,7 +490,6 @@ void AnotherPacketSource::queueDiscontinuity(
         }
 
     }
-
     mEOSResult = OK;
     mLastQueuedTimeUs = 0;
     mLatestEnqueuedMeta = NULL;
@@ -343,7 +497,9 @@ void AnotherPacketSource::queueDiscontinuity(
     if (type == ATSParser::DISCONTINUITY_NONE) {
         return;
     }
-
+#ifdef MTK_AOSP_ENHANCEMENT
+    ++mQueuedDiscontinuityCount;
+#endif
     mDiscontinuitySegments.push_back(DiscontinuitySegment());
 
     sp<ABuffer> buffer = new ABuffer(0);
@@ -356,7 +512,6 @@ void AnotherPacketSource::queueDiscontinuity(
 
 void AnotherPacketSource::signalEOS(status_t result) {
     CHECK(result != OK);
-
     Mutex::Autolock autoLock(mLock);
     mEOSResult = result;
     mCondition.signal();
@@ -425,6 +580,94 @@ int64_t AnotherPacketSource::getBufferedDurationUs(status_t *finalResult) {
     return durationUs;
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+int64_t AnotherPacketSource::getBufferedDurationUs_l(status_t *finalResult) {
+    *finalResult = mEOSResult;
+
+    if (mBuffers.empty()) {
+        return 0;
+    }
+
+    int64_t time1 = -1;
+    int64_t time2 = -1;
+    int64_t durationUs = 0;
+
+    List<sp<ABuffer> >::iterator it = mBuffers.begin();
+    while (it != mBuffers.end()) {
+        const sp<ABuffer> &buffer = *it;
+
+        int64_t timeUs;
+        if (buffer->meta()->findInt64("timeUs", &timeUs)) {
+            if (time1 < 0 || timeUs < time1) {
+                time1 = timeUs;
+            }
+
+            if (time2 < 0 || timeUs > time2) {
+                time2 = timeUs;
+            }
+        } else {
+            // This is a discontinuity, reset everything.
+            if(time1 != -1 && time2 != -1){
+                durationUs += time2 - time1;
+                time1 = time2 = -1;
+                ALOGE("discontinuity duration:%lld, time1:%lld, time2:%lld",(long long)durationUs,(long long)time1,(long long)time2);
+            }
+        }
+
+        ++it;
+    }
+    if(time1 != -1 && time2 != -1){
+        durationUs += (time2 - time1);
+    }
+    ALOGD("getBufferedDurationUs_l time1:%lld,time2:%lld",(long long)time1,(long long)time2);
+    //return durationUs + (time2 - time1);
+    return durationUs;
+}
+#endif
+
+// A cheaper but less precise version of getBufferedDurationUs that we would like to use in
+// LiveSession::dequeueAccessUnit to trigger downwards adaptation.
+#ifdef MTK_AOSP_ENHANCEMENT
+int64_t AnotherPacketSource::getEstimatedDurationUs() {
+    Mutex::Autolock autoLock(mLock);
+    if (mBuffers.empty()) {
+        return 0;
+    }
+
+    if (mQueuedDiscontinuityCount > 0) {
+        status_t finalResult;
+        return getBufferedDurationUs_l(&finalResult);
+    }
+
+    List<sp<ABuffer> >::iterator it = mBuffers.begin();
+    sp<ABuffer> buffer = *it;
+
+    int64_t startTimeUs;
+    buffer->meta()->findInt64("timeUs", &startTimeUs);
+    if (startTimeUs < 0) {
+        return 0;
+    }
+
+    it = mBuffers.end();
+    --it;
+    buffer = *it;
+
+    int64_t endTimeUs;
+    buffer->meta()->findInt64("timeUs", &endTimeUs);
+    if (endTimeUs < 0) {
+        return 0;
+    }
+
+    int64_t diffUs;
+    if (endTimeUs > startTimeUs) {
+        diffUs = endTimeUs - startTimeUs;
+    } else {
+        diffUs = startTimeUs - endTimeUs;
+    }
+    return diffUs;
+}
+#endif
+
 status_t AnotherPacketSource::nextBufferTime(int64_t *timeUs) {
     *timeUs = 0;
 
@@ -444,7 +687,11 @@ bool AnotherPacketSource::isFinished(int64_t duration) const {
     if (duration > 0) {
         int64_t diff = duration - mLastQueuedTimeUs;
         if (diff < kNearEOSMarkUs && diff > -kNearEOSMarkUs) {
+#ifdef MTK_AOSP_ENHANCEMENT
+            ALOGD("Detecting EOS due to near end");
+#else
             ALOGV("Detecting EOS due to near end");
+#endif
             return true;
         }
     }
@@ -628,4 +875,54 @@ sp<AMessage> AnotherPacketSource::trimBuffersBeforeMeta(
     return firstMeta;
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+bool AnotherPacketSource::getNSN(int32_t * uiNextSeqNum) {
+    Mutex::Autolock autoLock(mLock);
+    if (!mBuffers.empty()) {
+        if (m_uiNextAduSeqNum != -1) {
+            *uiNextSeqNum = m_uiNextAduSeqNum;
+            return true;
+        }
+        *uiNextSeqNum = (*mBuffers.begin())->int32Data();
+        return true;
+    }
+    return false;
+}
+
+size_t AnotherPacketSource::getFreeBufSpace() {
+    size_t bufSizeUsed = 0;
+
+    if (mBuffers.empty()) {
+        return m_BufQueSize;
+    }
+
+    List<sp<ABuffer> >::iterator it = mBuffers.begin();
+    while (it != mBuffers.end()) {
+        bufSizeUsed += (*it)->size();
+        it++;
+    }
+    if (bufSizeUsed >= m_BufQueSize)
+        return 0;
+
+    return m_BufQueSize - bufSizeUsed;
+}
+unsigned AnotherPacketSource::getSourcePID(){
+    return mStrmSourcePID;
+}
+
+void AnotherPacketSource::setSourcePID(unsigned uStrmPid){
+    ALOGD("setSourcePID 0x%x",uStrmPid);
+    mStrmSourcePID = uStrmPid;
+    ALOGD("setSourcePID after 0x%x",mStrmSourcePID);
+}
+
+status_t AnotherPacketSource::isEOS() {
+    return mIsEOS;
+}
+
+void AnotherPacketSource::setScanForIDR(bool enable) {
+    mNeedScanForIDR = enable;
+}
+
+#endif
 }  // namespace android

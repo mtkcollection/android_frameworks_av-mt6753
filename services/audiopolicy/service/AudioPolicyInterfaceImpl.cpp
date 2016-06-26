@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,6 +21,9 @@
 
 #define LOG_TAG "AudioPolicyIntefaceImpl"
 //#define LOG_NDEBUG 0
+#ifdef MTK_AUDIO
+#define LOG_NDEBUG 0
+#endif
 
 #include <utils/Log.h>
 #include "AudioPolicyService.h"
@@ -23,7 +31,12 @@
 
 namespace android {
 
-
+#ifdef MTK_AUDIO
+    bool kHeadsetjavaStart = false;
+#ifdef MTK_CROSSMOUNT_SUPPORT
+    bool mSkipCaptureAudioOutputCheck = false;
+#endif
+#endif
 // ----------------------------------------------------------------------------
 
 status_t AudioPolicyService::setDeviceConnectionState(audio_devices_t device,
@@ -34,9 +47,23 @@ status_t AudioPolicyService::setDeviceConnectionState(audio_devices_t device,
     if (mAudioPolicyManager == NULL) {
         return NO_INIT;
     }
+#ifdef MTK_AUDIO
+    bool bSkipCheck = false;
+    if (mHeadsetDetect!=NULL) {
+        if (mHeadsetDetect->mCbkEnable == true) {
+            bSkipCheck = true;
+        }
+    }
+    if (false == bSkipCheck) {
+        if (!settingsAllowed()) {
+            return PERMISSION_DENIED;
+        }
+    }
+#else
     if (!settingsAllowed()) {
         return PERMISSION_DENIED;
     }
+#endif
     if (!audio_is_output_device(device) && !audio_is_input_device(device)) {
         return BAD_VALUE;
     }
@@ -47,6 +74,17 @@ status_t AudioPolicyService::setDeviceConnectionState(audio_devices_t device,
 
     ALOGV("setDeviceConnectionState()");
     Mutex::Autolock _l(mLock);
+#ifdef MTK_AUDIO
+    if(!kHeadsetjavaStart && mHeadsetDetect!=NULL)
+    {
+        //if this function is called by other threads, headsetdetect can exit.
+        if(!mHeadsetDetect->isCurrentThread())
+        {
+            kHeadsetjavaStart = true;
+            mHeadsetDetect->stop();
+        }
+    }
+#endif
     return mAudioPolicyManager->setDeviceConnectionState(device, state,
                                                          device_address, device_name);
 }
@@ -75,17 +113,43 @@ status_t AudioPolicyService::setPhoneState(audio_mode_t state)
     }
 
     ALOGV("setPhoneState()");
-
-    // acquire lock before calling setMode() so that setMode() + setPhoneState() are an atomic
-    // operation from policy manager standpoint (no other operation (e.g track start or stop)
-    // can be interleaved).
-    Mutex::Autolock _l(mLock);
+#ifdef MTK_AUDIO // routing first and set mode later
+    ALOGD("+setPhoneState()");
+#ifdef EVDO_DT_SUPPORT
+    if (state !=AUDIO_MODE_IN_CALL_EXTERNAL)
+#else
+    if (1)
+#endif
+    {
+        // Routing
+        {
+            Mutex::Autolock _l(mLock);
+            mAudioPolicyManager->setPhoneState(state);
+        }
+        // Set mode
+        AudioSystem::setMode(state);
+        {
+            Mutex::Autolock _l(mLock);
+            mPhoneState = state;
+        }
+    }
+    else
+    {
+        AudioSystem::setMode(state);
+        Mutex::Autolock _l(mLock);
+        mAudioPolicyManager->setPhoneState( state);
+        mPhoneState = state;
+    }
+    ALOGD("-setPhoneState()");
+#else // original Google code
 
     // TODO: check if it is more appropriate to do it in platform specific policy manager
     AudioSystem::setMode(state);
 
+    Mutex::Autolock _l(mLock);
     mAudioPolicyManager->setPhoneState(state);
     mPhoneState = state;
+#endif
     return NO_ERROR;
 }
 
@@ -112,6 +176,16 @@ status_t AudioPolicyService::setForceUse(audio_policy_force_use_t usage,
     }
     ALOGV("setForceUse()");
     Mutex::Autolock _l(mLock);
+#ifdef MTK_CROSSMOUNT_SUPPORT
+    if (AUDIO_POLICY_FORCE_FOR_RECORD == usage) {
+        if (config == AUDIO_POLICY_FORCE_REMOTE_SUBMIX_IN_WITH_FLAGS
+            || config == AUDIO_POLICY_FORCE_REMOTE_SUBMIX_IN) {
+                mSkipCaptureAudioOutputCheck = true;
+            } else {
+                mSkipCaptureAudioOutputCheck = false;
+            }
+    }
+#endif
     mAudioPolicyManager->setForceUse(usage, config);
     return NO_ERROR;
 }
@@ -161,7 +235,7 @@ status_t AudioPolicyService::getOutputForAttr(const audio_attributes_t *attr,
     if (mAudioPolicyManager == NULL) {
         return NO_INIT;
     }
-    ALOGV("getOutput()");
+    ALOGV("getOutputForAttr()");
     Mutex::Autolock _l(mLock);
 
     // if the caller is us, trust the specified uid
@@ -312,6 +386,12 @@ status_t AudioPolicyService::getInputForAttr(const audio_attributes_t *attr,
             case AudioPolicyInterface::API_INPUT_MIX_CAPTURE:
                 if (!captureAudioOutputAllowed()) {
                     ALOGE("getInputForAttr() permission denied: capture not allowed");
+#ifdef MTK_CROSSMOUNT_SUPPORT
+                    if (mSkipCaptureAudioOutputCheck) {
+                        ALOGW("getInputForAttr() For CrossMount usage, skip captureAudioOutputAllowed");
+                        break;
+                    }
+#endif
                     status = PERMISSION_DENIED;
                 }
                 break;
@@ -463,6 +543,11 @@ audio_devices_t AudioPolicyService::getDevicesForStream(audio_stream_type_t stre
     if (mAudioPolicyManager == NULL) {
         return AUDIO_DEVICE_NONE;
     }
+
+#ifdef MTK_AUDIO    //Race Condtion in setDeviceConnectionState, because of output description contents
+    Mutex::Autolock _l(mLock);
+#endif
+
     return mAudioPolicyManager->getDevicesForStream(stream);
 }
 
@@ -563,6 +648,9 @@ bool AudioPolicyService::isOffloadSupported(const audio_offload_info_t& info)
         ALOGV("mAudioPolicyManager == NULL");
         return false;
     }
+#ifdef MTK_AUDIO
+    ALOGD("[DEBUG] mAudioPolicyManager %p",mAudioPolicyManager);
+#endif
 
     return mAudioPolicyManager->isOffloadSupported(info);
 }
@@ -701,5 +789,132 @@ status_t AudioPolicyService::stopAudioSource(audio_io_handle_t handle)
 
     return mAudioPolicyManager->stopAudioSource(handle);
 }
+
+//<MTK_AUDIO_ADD
+status_t AudioPolicyService::SetPolicyManagerParameters(int par1, int par2, int par3, int par4)
+{
+#ifdef MTK_AUDIO
+    Mutex::Autolock _l(mLock);
+    if (mAudioPolicyManager == NULL) {
+        return NO_INIT;
+    }
+    return mAudioPolicyManager->SetPolicyManagerParameters(par1, par2, par3, par4);
+#else
+    return 0;
+#endif
+
+}
+
+status_t AudioPolicyService:: SampleRateRequestFocus (audio_io_handle_t output,audio_stream_type_t stream, int *samplerate)
+{
+#ifdef MTK_AUDIO
+    if (uint32_t(stream) >= AUDIO_STREAM_CNT) {
+        return BAD_VALUE;
+    }
+
+    if (mAudioPolicyManager == NULL) {
+        return NO_INIT;
+    }
+
+    return mAudioPolicyManager->SampleRateRequestFocus(output, stream, samplerate);
+#else
+    return 0;
+#endif
+}
+
+status_t AudioPolicyService:: SampleRateUnrequestFocus (audio_io_handle_t output,audio_stream_type_t stream, int samplerate)
+{
+#ifdef MTK_AUDIO
+    if (uint32_t(stream) >= AUDIO_STREAM_CNT) {
+        return BAD_VALUE;
+    }
+
+    if (mAudioPolicyManager == NULL) {
+        return NO_INIT;
+    }
+
+    return mAudioPolicyManager->SampleRateUnrequestFocus(output, stream, samplerate);
+#else
+    return 0;
+#endif
+}
+
+status_t AudioPolicyService:: StartOutputSamplerate (audio_io_handle_t output, audio_stream_type_t stream, audio_session_t session, int samplerate)
+{
+#ifdef MTK_AUDIO
+    if (uint32_t(stream) >= AUDIO_STREAM_CNT) {
+        return BAD_VALUE;
+    }
+
+    if (mAudioPolicyManager == NULL) {
+        return NO_INIT;
+    }
+    ALOGV("StartOutputSamplerate()");
+    sp<AudioPolicyEffects>audioPolicyEffects;
+    {
+        Mutex::Autolock _l(mLock);
+        audioPolicyEffects = mAudioPolicyEffects;
+    }
+    if (audioPolicyEffects != 0) {
+        // create audio processors according to stream
+        status_t status = audioPolicyEffects->addOutputSessionEffects(output, stream, session);
+        if (status != NO_ERROR && status != ALREADY_EXISTS) {
+            ALOGW("Failed to add effects on session %d", session);
+        }
+    }
+    Mutex::Autolock _l(mLock);
+    return mAudioPolicyManager->StartOutputSamplerate(output, stream, session, samplerate);
+#else
+    return 0;
+#endif
+}
+
+status_t AudioPolicyService::StopOutputSamplerate(audio_io_handle_t output,
+                                        audio_stream_type_t stream,
+                                        audio_session_t session,
+                                        int samplerate)
+{
+#ifdef MTK_AUDIO
+    if (uint32_t(stream) >= AUDIO_STREAM_CNT) {
+        return BAD_VALUE;
+    }
+
+    if (mAudioPolicyManager == NULL) {
+        return NO_INIT;
+    }
+    ALOGV("StopOutputSamplerate()");
+    mOutputCommandThread->stopOutputSamplerateCommand(output, stream, session, samplerate);
+    return NO_ERROR;
+#else
+    return 0;
+#endif
+}
+
+status_t  AudioPolicyService::doStopOutputSamplerate(audio_io_handle_t output,
+                                      audio_stream_type_t stream,
+                                      audio_session_t session,
+                                      int samplerate)
+{
+#ifdef MTK_AUDIO
+    ALOGV("doStopOutputSamplerate from tid %d", gettid());
+    sp<AudioPolicyEffects>audioPolicyEffects;
+    {
+        Mutex::Autolock _l(mLock);
+        audioPolicyEffects = mAudioPolicyEffects;
+    }
+    if (audioPolicyEffects != 0) {
+        // release audio processors from the stream
+        status_t status = audioPolicyEffects->releaseOutputSessionEffects(output, stream, session);
+        if (status != NO_ERROR && status != ALREADY_EXISTS) {
+            ALOGW("Failed to release effects on session %d", session);
+        }
+    }
+    Mutex::Autolock _l(mLock);
+    return mAudioPolicyManager->StopOutputSamplerate(output, stream, session, samplerate);
+#else
+    return 0;
+#endif
+}
+//MTK_AUDIO_ADD>
 
 }; // namespace android

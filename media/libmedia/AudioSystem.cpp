@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2006-2007 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -26,7 +31,29 @@
 
 #include <system/audio.h>
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <cutils/log.h>
+#endif
+#ifdef MTK_AUDIO
+#include <media/AudioParameter.h>
+#include <AudioPolicyParameters.h>
+#include <AudioMTKHardwareCommand.h>
+#endif
 // ----------------------------------------------------------------------------
+
+
+#ifdef MTK_AUDIO
+#include <utils/CallStack.h>
+#define CALLSTACK() \
+{ \
+    ALOGD("CALL STACK : - %s", __FUNCTION__); \
+    android::CallStack stack; \
+    stack.update(); \
+    String8 strtemp = stack.toString(""); \
+    ALOGD("\t%s", strtemp.string()); \
+}
+#endif
+
 
 namespace android {
 
@@ -38,7 +65,35 @@ sp<AudioSystem::AudioFlingerClient> AudioSystem::gAudioFlingerClient;
 audio_error_callback AudioSystem::gAudioErrorCallback = NULL;
 dynamic_policy_callback AudioSystem::gDynPolicyCallback = NULL;
 
+#ifdef MTK_AUDIO
+static const char* forceToSpeaker = "AudioSetForceToSpeaker";
+static const char* keySetFmEnable = "AudioSetFmEnable";
+static const char* keySetFmDigitalEnable = "AudioSetFmDigitalEnable";
+static const char* keySetMatvEnable = "AtvAudioLineInEnable";
+static const char* keySetFmPreStop = "AudioFmPreStop";
+static const char* keySetA2DPForceIgnore = "AudioA2DPForce2Ignore";
+static const char* keySetFmTxEnable = "SetFmTxEnable";
+static const char* keyFMRXForceDisableFMTX = "FMRXForceDisableFMTX";
+static const char* keySetLosslessBTStatusChar = "SetLosslessBTStatus";
+static const char* keyHACSetting = "HACSetting";
+#ifdef MTK_CROSSMOUNT_SUPPORT
+static const char* keySetCrossMountLocalPlayback = "CrossMountLocalPlayback";
+#endif
 
+static String8 keyFmForce = String8(forceToSpeaker);
+static String8 keyFmEnable = String8(keySetFmEnable);
+static String8 keyFmDigitalEnable = String8(keySetFmDigitalEnable);
+static String8 keyMatvEnable = String8(keySetMatvEnable);
+static String8 keyA2DPForceIgnore =String8(keySetA2DPForceIgnore);
+static String8 keyFmPreStop =String8(keySetFmPreStop);
+static String8 keyFmSetFmTxEnable =String8(keySetFmTxEnable);
+static String8 keyFmRXForceDisableFMTX =String8(keyFMRXForceDisableFMTX);
+static String8 keySetLosslessBTStatus =String8(keySetLosslessBTStatusChar);
+static String8 keySET_HAC_ENABLE = String8(keyHACSetting);
+#ifdef MTK_CROSSMOUNT_SUPPORT
+static String8 keyCrossMountLocalPlayback = String8(keySetCrossMountLocalPlayback);
+#endif
+#endif
 // establish binder interface to AudioFlinger service
 const sp<IAudioFlinger> AudioSystem::get_audio_flinger()
 {
@@ -196,11 +251,150 @@ status_t AudioSystem::setMode(audio_mode_t mode)
     return af->setMode(mode);
 }
 
-status_t AudioSystem::setParameters(audio_io_handle_t ioHandle, const String8& keyValuePairs)
-{
+status_t AudioSystem::setParameters(audio_io_handle_t ioHandle, const String8& keyValuePairs) {
+    status_t ret =NO_ERROR;
+#ifdef MTK_AUDIO
+    ALOGD("+setParameters(): %s ", keyValuePairs.string());
+    int value =0;
+    String8 value_str;
+    audio_io_handle_t FmDigitaloutput = 0;
+    AudioParameter param = AudioParameter(keyValuePairs);
+
+    if (param.getInt(keyFmSetFmTxEnable, value) == NO_ERROR){
+        const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
+        if(aps != 0)
+        {
+            aps->SetPolicyManagerParameters (POLICY_SET_FM_TX_ENABLE,value,0,0);
+        }
+    }
+    else if (param.getInt(keyFmRXForceDisableFMTX, value) == NO_ERROR){
+        const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
+        if(aps != 0)
+        {
+            aps->SetPolicyManagerParameters (POLICY_SET_FM_RX_FORCE_DISABLE_TX,value,0,0);
+        }
+    }
+    else if (param.getInt(keyA2DPForceIgnore, value) == NO_ERROR){
+        const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
+        if(aps != 0)
+        {
+            aps->SetPolicyManagerParameters (POLICY_SET_A2DP_FORCE_IGNORE,value,0,0);
+        }
+    }
+    else if (param.getInt(keyFmPreStop, value) == NO_ERROR){
+        const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
+        if(aps != 0)
+        {
+            aps->SetPolicyManagerParameters (POLICY_SET_FM_PRESTOP,value,0,0);
+        }
+    }
+    else if (param.getInt(keyFmForce, value) == NO_ERROR){
+        //Don't move this out of if, policyManager construct use this
+        //function and will be in deadloop.
+        const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
+        if(aps != 0)
+        {
+            aps->SetPolicyManagerParameters (POLICY_SET_FM_SPEAKER,value,0,0);
+        }
+    }
+    else if (param.getInt(keySetLosslessBTStatus, value) == NO_ERROR){
+        const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
+        if(aps != 0)
+        {
+            aps->SetPolicyManagerParameters (POLICY_SET_LOSSLESS_BT_STATUS,value,0,0);
+        }
+    }
+    else if(param.getInt(keyFmEnable, value) == NO_ERROR)
+    {
+        const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
+        if(aps != 0)
+        {
+            audio_io_handle_t output = aps->getOutput(AUDIO_STREAM_MUSIC);
+            ALOGD("setParameters(): out=%d, value=%d", output, value);
+            if(value != 0)
+            {
+                aps->StartOutputSamplerate(output, AUDIO_STREAM_MUSIC,AUDIO_SESSION_OUTPUT_MIX,44100);
+            }
+            else
+            {
+                aps->StopOutputSamplerate(output, AUDIO_STREAM_MUSIC,AUDIO_SESSION_OUTPUT_MIX,44100);
+            }
+        }
+    }
+    else if(param.getInt(keyFmDigitalEnable, value) == NO_ERROR)
+    {
+        const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
+        if(aps != 0)
+        {
+            audio_io_handle_t output = aps->getOutput(AUDIO_STREAM_MUSIC);
+            FmDigitaloutput = output;
+            ALOGD("setParameters(): out=%d, value=%d", output, value);
+            if(value != 0)
+            {
+                aps->StartOutputSamplerate(output, AUDIO_STREAM_MUSIC,AUDIO_SESSION_OUTPUT_MIX,44100);
+            }
+            else
+            {
+                aps->StopOutputSamplerate(output, AUDIO_STREAM_MUSIC,AUDIO_SESSION_OUTPUT_MIX,44100);
+            }
+        }
+    }
+    else if(param.getInt(keyMatvEnable, value) == NO_ERROR)
+    {
+        const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
+        if(aps != 0)
+        {
+            audio_io_handle_t output = aps->getOutput(AUDIO_STREAM_MUSIC);
+            ALOGD("setParameters(): out=%d, value=%d", output, value);
+            if(value != 0)
+            {
+                aps->startOutput(output,AUDIO_STREAM_MUSIC, AUDIO_SESSION_OUTPUT_MIX);
+            }
+            else
+            {
+                aps->stopOutput(output,AUDIO_STREAM_MUSIC, AUDIO_SESSION_OUTPUT_MIX);
+            }
+        }
+    }
+#ifdef MTK_CROSSMOUNT_SUPPORT
+    else if(param.getInt(keyCrossMountLocalPlayback, value) == NO_ERROR)
+    {
+        const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
+        if(aps != 0)
+        {
+            aps->SetPolicyManagerParameters (POLICY_SET_CROSSMOUNT_LOCAL_PLAYBACK,value,0,0);
+        }
+    }
+#endif
+#endif
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af == 0) return PERMISSION_DENIED;
-    return af->setParameters(ioHandle, keyValuePairs);
+    ret = af->setParameters(ioHandle, keyValuePairs);
+
+#ifdef MTK_AUDIO
+    if(param.getInt(keyFmDigitalEnable, value) == NO_ERROR)
+    {
+        const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
+        if(aps != 0)
+        {
+            ALOGD("Send POLICY_CHECK_FM_PRIMARY_KEY_ROUTING");
+            aps->SetPolicyManagerParameters(POLICY_CHECK_FM_PRIMARY_KEY_ROUTING,value,FmDigitaloutput,0);
+        }
+    }
+    else if (param.get(keySET_HAC_ENABLE, value_str) == NO_ERROR)
+    {
+        const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
+        if (aps != 0)
+        {
+            aps->SetPolicyManagerParameters(POLICY_LOAD_VOLUME, 0, 0, 0);
+        }
+    }
+#endif
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("-setParameters(): %s ", keyValuePairs.string());
+#endif
+    return ret;
 }
 
 String8 AudioSystem::getParameters(audio_io_handle_t ioHandle, const String8& keys)
@@ -422,6 +616,21 @@ audio_hw_sync_t AudioSystem::getAudioHwSyncForSession(audio_session_t sessionId)
     if (af == 0) return AUDIO_HW_SYNC_INVALID;
     return af->getAudioHwSyncForSession(sessionId);
 }
+status_t  AudioSystem::getHDMICapability(
+    int* HDMI_ChannelCount,
+    int* HDMI_Bitwidth,
+    int* HDMI_MaxSampleRate )
+{
+
+    ALOGD("AudioSystem::getHDMICapability");
+#ifdef MTK_AUDIO
+        const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
+        if (af == 0) return PERMISSION_DENIED;
+
+        return af->getHDMICapability(HDMI_ChannelCount,HDMI_Bitwidth,HDMI_MaxSampleRate);
+#endif
+        return 0;
+    }
 
 status_t AudioSystem::systemReady()
 {
@@ -436,6 +645,7 @@ status_t AudioSystem::systemReady()
 void AudioSystem::AudioFlingerClient::clearIoCache()
 {
     Mutex::Autolock _l(mLock);
+    ALOGV("clearIoCache: [Update mIoDescriptors] clear");
     mIoDescriptors.clear();
     mInBuffSize = 0;
     mInSamplingRate = 0;
@@ -452,6 +662,9 @@ void AudioSystem::AudioFlingerClient::binderDied(const wp<IBinder>& who __unused
         cb = gAudioErrorCallback;
     }
 
+#ifdef MTK_AUDIO
+    CALLSTACK();
+#endif
     // clear output handles and stream to output map caches
     clearIoCache();
 
@@ -476,11 +689,15 @@ void AudioSystem::AudioFlingerClient::ioConfigChanged(audio_io_config_event even
         switch (event) {
         case AUDIO_OUTPUT_OPENED:
         case AUDIO_INPUT_OPENED: {
-            sp<AudioIoDescriptor> oldDesc = getIoDescriptor_l(ioDesc->mIoHandle);
+            sp<AudioIoDescriptor> oldDesc = getIoDescriptor(ioDesc->mIoHandle);
             if (oldDesc == 0) {
+                ALOGV("ioConfigChanged: [Update mIoDescriptors] add ioHandle = %d -> descriptor = %p",
+                        ioDesc->mIoHandle, &ioDesc);
                 mIoDescriptors.add(ioDesc->mIoHandle, ioDesc);
             } else {
                 deviceId = oldDesc->getDeviceId();
+                ALOGV("ioConfigChanged: [Update mIoDescriptors] replace ioHandle = %d -> descriptor = %p",
+                        ioDesc->mIoHandle, &ioDesc);
                 mIoDescriptors.replaceValueFor(ioDesc->mIoHandle, ioDesc);
             }
 
@@ -498,27 +715,29 @@ void AudioSystem::AudioFlingerClient::ioConfigChanged(audio_io_config_event even
             } break;
         case AUDIO_OUTPUT_CLOSED:
         case AUDIO_INPUT_CLOSED: {
-            if (getIoDescriptor_l(ioDesc->mIoHandle) == 0) {
+            if (getIoDescriptor(ioDesc->mIoHandle) == 0) {
                 ALOGW("ioConfigChanged() closing unknown %s %d",
                       event == AUDIO_OUTPUT_CLOSED ? "output" : "input", ioDesc->mIoHandle);
                 break;
             }
             ALOGV("ioConfigChanged() %s %d closed",
                   event == AUDIO_OUTPUT_CLOSED ? "output" : "input", ioDesc->mIoHandle);
-
+            ALOGV("ioConfigChanged: [Update mIoDescriptors] remove ioHandle = %d", ioDesc->mIoHandle);
             mIoDescriptors.removeItem(ioDesc->mIoHandle);
             mAudioDeviceCallbacks.removeItem(ioDesc->mIoHandle);
             } break;
 
         case AUDIO_OUTPUT_CONFIG_CHANGED:
         case AUDIO_INPUT_CONFIG_CHANGED: {
-            sp<AudioIoDescriptor> oldDesc = getIoDescriptor_l(ioDesc->mIoHandle);
+            sp<AudioIoDescriptor> oldDesc = getIoDescriptor(ioDesc->mIoHandle);
             if (oldDesc == 0) {
                 ALOGW("ioConfigChanged() modifying unknown output! %d", ioDesc->mIoHandle);
                 break;
             }
 
             deviceId = oldDesc->getDeviceId();
+            ALOGV("ioConfigChanged: [Update mIoDescriptors] replace ioHandle = %d -> descriptor = %p",
+                    ioDesc->mIoHandle, &ioDesc);
             mIoDescriptors.replaceValueFor(ioDesc->mIoHandle, ioDesc);
 
             if (deviceId != ioDesc->getDeviceId()) {
@@ -575,20 +794,16 @@ status_t AudioSystem::AudioFlingerClient::getInputBufferSize(
     return NO_ERROR;
 }
 
-sp<AudioIoDescriptor> AudioSystem::AudioFlingerClient::getIoDescriptor_l(audio_io_handle_t ioHandle)
+sp<AudioIoDescriptor> AudioSystem::AudioFlingerClient::getIoDescriptor(audio_io_handle_t ioHandle)
 {
     sp<AudioIoDescriptor> desc;
     ssize_t index = mIoDescriptors.indexOfKey(ioHandle);
+    ALOGD("getIoDescriptor: ioHandle = %d, index = %zd, mIoDescriptors = %p",
+            ioHandle, index, &mIoDescriptors);
     if (index >= 0) {
         desc = mIoDescriptors.valueAt(index);
     }
     return desc;
-}
-
-sp<AudioIoDescriptor> AudioSystem::AudioFlingerClient::getIoDescriptor(audio_io_handle_t ioHandle)
-{
-    Mutex::Autolock _l(mLock);
-    return getIoDescriptor_l(ioHandle);
 }
 
 status_t AudioSystem::AudioFlingerClient::addAudioDeviceCallback(
@@ -1237,6 +1452,391 @@ void AudioSystem::AudioPolicyServiceClient::binderDied(const wp<IBinder>& who __
     }
 
     ALOGW("AudioPolicyService server died!");
+}
+
+int AudioSystem::xWayPlay_Start(int sample_rate)
+{
+#ifdef MTK_AUDIO
+    const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
+    if (af == 0) return PERMISSION_DENIED;
+    return af->xWayPlay_Start(sample_rate);
+#endif
+    return 0;
+}
+
+int AudioSystem::xWayPlay_Stop()
+{
+#ifdef MTK_AUDIO
+    const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
+    if (af == 0) return PERMISSION_DENIED;
+    return af->xWayPlay_Stop();
+#endif
+    return 0;
+}
+
+int AudioSystem::xWayPlay_Write(void *buffer, int size_bytes)
+{
+#ifdef MTK_AUDIO
+    const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
+    if (af == 0) return PERMISSION_DENIED;
+    return af->xWayPlay_Write(buffer,size_bytes);
+#endif
+    return 0;
+}
+
+int AudioSystem::xWayPlay_GetFreeBufferCount()
+{
+#ifdef MTK_AUDIO
+    const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
+    if (af == 0) return PERMISSION_DENIED;
+    return af->xWayPlay_GetFreeBufferCount();
+#endif
+    return 0;
+}
+
+int AudioSystem::xWayRec_Start(int sample_rate)
+{
+#ifdef MTK_AUDIO
+    const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
+    if (af == 0) return PERMISSION_DENIED;
+    return af->xWayRec_Start(sample_rate);
+#endif
+    return 0;
+}
+
+int AudioSystem::xWayRec_Stop()
+{
+#ifdef MTK_AUDIO
+    const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
+    if (af == 0) return PERMISSION_DENIED;
+    return af->xWayRec_Stop();
+#endif
+    return 0;
+}
+
+int AudioSystem::xWayRec_Read(void *buffer, int size_bytes)
+{
+#ifdef MTK_AUDIO
+    const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
+    if (af == 0) return PERMISSION_DENIED;
+    return af->xWayRec_Read(buffer,size_bytes);
+#endif
+    return 0;
+}
+//add by wendy
+int AudioSystem::ReadRefFromRing(void*buf, uint32_t datasz,void* DLtime)
+{
+//#ifndef ANDROID_DEFAULT_CODE
+#ifdef MTK_AUDIO
+
+        const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
+        if (af == 0) return PERMISSION_DENIED;
+        ALOGV("af->ReadRefFromRing");
+        return af->ReadRefFromRing(buf, datasz, DLtime);
+#else
+        return 0;
+#endif
+}
+int AudioSystem::GetVoiceUnlockULTime(void* DLtime)
+{
+//#ifndef ANDROID_DEFAULT_CODE
+#ifdef MTK_AUDIO
+        const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
+        if (af == 0) return PERMISSION_DENIED;
+        ALOGV("af->GetVoiceUnlockULTime");
+        return af->GetVoiceUnlockULTime( DLtime);
+#else
+        return 0;
+#endif
+}
+int AudioSystem::SetVoiceUnlockSRC(uint outSR, uint outChannel)
+{
+//#ifndef ANDROID_DEFAULT_CODE
+#ifdef MTK_AUDIO
+    const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
+    if (af == 0) return PERMISSION_DENIED;
+    ALOGD("af->SetVoiceUnlockSRC");
+    return af->SetVoiceUnlockSRC(outSR, outChannel);
+#else
+    return 0;
+#endif
+}
+bool AudioSystem::startVoiceUnlockDL()
+{
+//#ifndef ANDROID_DEFAULT_CODE
+#ifdef MTK_AUDIO
+    const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
+    if (af == 0)
+    {
+        ALOGE("startVoiceUnlockDL::PERMISSION_DENIED");
+        return PERMISSION_DENIED;
+    }
+    ALOGD("af->startVoiceUnlockDL");
+    return af->startVoiceUnlockDL();
+#else
+    return 0;
+#endif
+}
+bool AudioSystem:: stopVoiceUnlockDL()
+{
+//#ifndef ANDROID_DEFAULT_CODE
+#ifdef MTK_AUDIO
+    const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
+    if (af == 0)
+    {
+        ALOGE("stopVoiceUnlockDL::PERMISSION_DENIED");
+        return PERMISSION_DENIED;
+    }
+    ALOGD("af->stopVoiceUnlockDL");
+    return af->stopVoiceUnlockDL();
+#else
+    return 0;
+#endif
+}
+void AudioSystem::freeVoiceUnlockDLInstance()
+{
+//#ifndef ANDROID_DEFAULT_CODE
+#ifdef MTK_AUDIO
+    const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
+    if (af == 0) return ;
+    ALOGD("af->freeVoiceUnlockDLInstance");
+    return af->freeVoiceUnlockDLInstance();
+#else
+    return;
+#endif
+
+}
+int AudioSystem::GetVoiceUnlockDLLatency()
+{
+//#ifndef ANDROID_DEFAULT_CODE
+#ifdef MTK_AUDIO
+    const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
+    if (af == 0)
+    {
+        ALOGE("GetVoiceUnlockDLLatency::PERMISSION_DENIED");
+        return PERMISSION_DENIED;
+    }
+    ALOGD("af->GetVoiceUnlockDLLatency");
+    return af->GetVoiceUnlockDLLatency();
+#else
+    return 0;
+#endif
+}
+ bool AudioSystem::getVoiceUnlockDLInstance()
+{
+//#ifndef ANDROID_DEFAULT_CODE
+#ifdef MTK_AUDIO
+     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
+     if (af == 0)
+     {
+        ALOGE("getVoiceUnlockDLInstance::PERMISSION_DENIED");
+         return PERMISSION_DENIED;
+     }
+     ALOGD("af->getVoiceUnlockDLInstance");
+     return af->getVoiceUnlockDLInstance();
+#else
+     return 0;
+#endif
+}
+status_t  AudioSystem::setSurroundOnOff(int value)
+{
+    ALOGD("AudioSystem::setSurroundOnOff %d", value);
+#ifdef MTK_AUDIO
+    const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
+    if (af == 0) return PERMISSION_DENIED;
+    ALOGD("AudioSystem::setSurroundOnOff %d", value);
+    return af->setSurroundOnOff(value);
+#endif
+    return 0;
+}
+status_t  AudioSystem::setSurroundMode(int value)
+{
+    ALOGD("AudioSystem::setSurroundMode %d", value);
+#ifdef MTK_AUDIO
+    const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
+    if (af == 0) return PERMISSION_DENIED;
+
+    return af->setSurroundMode(value);
+#endif
+    return 0;
+}
+
+//add , for EM mode
+status_t AudioSystem::GetEMParameter(void *ptr,size_t len)
+{
+#ifdef MTK_AUDIO
+    const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
+    if (af == 0) return PERMISSION_DENIED;
+    return af->GetEMParameter(ptr,len);
+#endif
+    return OK;
+}
+
+status_t AudioSystem::SetEMParameter(void *ptr,size_t len)
+{
+#ifdef MTK_AUDIO
+    const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
+    if (af == 0) return PERMISSION_DENIED;
+    return af->SetEMParameter(ptr,len);
+#endif
+}
+
+status_t AudioSystem::SampleRateRequestFocus(audio_io_handle_t output, audio_stream_type_t stream, int *samplerate)
+{
+#ifdef MTK_AUDIO
+    const sp<IAudioPolicyService> &aps = AudioSystem::get_audio_policy_service();
+    if (aps == 0) { return false; }
+    return aps->SampleRateRequestFocus(output,stream,samplerate);
+#endif
+    return OK;
+}
+
+status_t AudioSystem::SampleRateUnrequestFocus(audio_io_handle_t output, audio_stream_type_t stream, int samplerate)
+{
+#ifdef MTK_AUDIO
+    const sp<IAudioPolicyService> &aps = AudioSystem::get_audio_policy_service();
+    if (aps == 0) { return false; }
+    return aps->SampleRateUnrequestFocus(output,stream,samplerate);
+#endif
+    return OK;
+}
+
+status_t AudioSystem::StartOutputSamplerate(audio_io_handle_t output, audio_stream_type_t stream, audio_session_t session , int samplerate)
+{
+#ifdef MTK_AUDIO
+    const sp<IAudioPolicyService> &aps = AudioSystem::get_audio_policy_service();
+    if (aps == 0) { return false; }
+    return aps->StartOutputSamplerate(output,stream,session,samplerate);
+#endif
+    return OK;
+}
+
+status_t AudioSystem::StopOutputSamplerate(audio_io_handle_t output, audio_stream_type_t stream, audio_session_t session , int samplerate)
+{
+#ifdef MTK_AUDIO
+    const sp<IAudioPolicyService> &aps = AudioSystem::get_audio_policy_service();
+    if (aps == 0) { return false; }
+    return aps->StopOutputSamplerate(output,stream,session,samplerate);
+#endif
+
+    return OK;
+}
+
+
+status_t AudioSystem::SetACFPreviewParameter(void *ptr,size_t len)
+{
+#ifdef MTK_AUDIO
+    ALOGD("AudioSystem::SetACFPreviewParameter!! 01");
+    const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
+    if (af == 0)
+    {
+        ALOGE("AudioSystem::SetACFPreviewParameter Error!! PERMISSION_DENIED");
+        return PERMISSION_DENIED;
+    }
+    return af->SetACFPreviewParameter(ptr,len);
+#endif
+    return OK;
+}
+
+status_t AudioSystem::SetHCFPreviewParameter(void *ptr,size_t len)
+{
+#ifdef MTK_AUDIO
+
+    ALOGD("AudioSystem::SetHCFPreviewParameter!! 01");
+    const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
+    if (af == 0)
+    {
+        ALOGE("AudioSystem::SetHCFPreviewParameter Error!! PERMISSION_DENIED");
+        return PERMISSION_DENIED;
+    }
+    return af->SetHCFPreviewParameter(ptr,len);
+#endif
+    return OK;
+}
+
+status_t AudioSystem::SetAudioCommand(int par1,int par2)
+{
+#ifdef MTK_AUDIO
+    status_t af_status;
+    ALOGD("AudioSystem::SetAudioCommand");
+    const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
+    if (af == 0)
+    {
+        ALOGE("AudioSystem::SetAudioCommand Error!! PERMISSION_DENIED");
+        return PERMISSION_DENIED;
+    }
+    af_status = af->SetAudioCommand(par1,par2);
+
+    if (par1 == SET_LOAD_VOLUME_SETTING)
+    {
+        const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
+        if(aps != 0)
+        {
+            aps->SetPolicyManagerParameters (POLICY_LOAD_VOLUME,0,0,0);
+        }
+    }
+
+    return af_status;
+
+#endif
+    return OK;
+}
+
+status_t AudioSystem::GetAudioCommand(int par1,int* par2)
+{
+#ifdef MTK_AUDIO
+    ALOGD("AudioSystem::GetAudioCommand");
+    const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
+    if (af == 0)
+    {
+        ALOGE("AudioSystem::GetAudioCommand Error!! PERMISSION_DENIED");
+        return PERMISSION_DENIED;
+    }
+    *par2 =  af->GetAudioCommand(par1);
+#endif
+    return NO_ERROR;
+}
+
+status_t AudioSystem::SetAudioData(int par1,size_t byte_len,void *ptr)
+{
+#ifdef MTK_AUDIO
+    status_t af_status;
+    ALOGD("SetAudioData");
+    const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
+    if (af == 0)
+    {
+        ALOGE("AudioSystem::SetAAudioData Error!! PERMISSION_DENIED");
+        return PERMISSION_DENIED;
+    }
+    af_status = af->SetAudioData(par1,byte_len,ptr);
+
+    if (par1 == SET_AUDIO_VER1_DATA)
+    {
+        const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
+        if(aps != 0)
+        {
+            aps->SetPolicyManagerParameters (POLICY_LOAD_VOLUME,0,0,0);
+        }
+    }
+
+    return af_status;
+#endif
+    return OK;
+}
+
+status_t AudioSystem::GetAudioData(int par1,size_t byte_len,void *ptr)
+{
+#ifdef MTK_AUDIO
+    ALOGD("GetAudioData");
+    const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
+    if (af == 0)
+    {
+        ALOGE("AudioSystem::GetAAudioData Error!! PERMISSION_DENIED");
+        return PERMISSION_DENIED;
+    }
+    return af->GetAudioData(par1,byte_len,ptr);
+#endif
+    return OK;
 }
 
 } // namespace android

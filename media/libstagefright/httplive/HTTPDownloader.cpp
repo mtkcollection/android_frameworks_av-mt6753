@@ -234,6 +234,9 @@ sp<M3UParser> HTTPDownloader::fetchPlaylist(
         return NULL;
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    dumpPlaylist(buffer);
+#endif
     // MD5 functionality is not available on the simulator, treat all
     // playlists as changed.
 
@@ -270,4 +273,16 @@ sp<M3UParser> HTTPDownloader::fetchPlaylist(
     return playlist;
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+void HTTPDownloader::dumpPlaylist(sp<ABuffer> &buffer) {
+    const int32_t nDumpSize = 3072;
+    char dumpM3U8[nDumpSize];
+    ALOGD("Playlist (size in zu = %zu) :\n", buffer->size());
+    size_t dumpSize = (buffer->size() > (nDumpSize - 1)) ? (nDumpSize - 1) : buffer->size();
+    memcpy(dumpM3U8, buffer->data(), dumpSize);
+    dumpM3U8[dumpSize] = '\0';
+    ALOGD("%s", dumpM3U8);
+    ALOGD(" %s", ((buffer->size() < (nDumpSize - 1)) ? " " : "trunked because larger than dumpsize"));
+}
+#endif
 }  // namespace android

@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright 2013, The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -114,6 +119,23 @@ private:
     void notifyNetworkStall(size_t numBytesQueued);
 
     DISALLOW_EVIL_CONSTRUCTORS(RTPSender);
+
+
+#ifdef MTK_AOSP_ENHANCEMENT
+private:
+    int64_t mFirstOutputBufferReadyTimeUs;
+    int64_t mFirstOutputBufferSentTimeUs;
+    uint32_t mVideoCount;
+    KeyedVector<int64_t,sp<ABuffer> > mSentRtpHistory;
+    KeyedVector<int64_t,sp<ABuffer> > mSentInHistory;
+    int32_t mSentRtpbps[3];
+    int32_t mSentInbps[3];
+    void queuePackets_pro(const sp<ABuffer> &Packets, int64_t timeUs,int64_t latencyB,int64_t startSendUs,int64_t delayUs);
+    int64_t queuePackets_pre(const sp<ABuffer> &Packets);
+    status_t calcSendRtpBitRate(const sp<ABuffer> &buffer);
+    status_t calcSendInBitRate(const sp<ABuffer> &buffer);
+    status_t sendRTPPackets(List<sp<ABuffer> > &packets ,int64_t timeUs);
+#endif
 };
 
 }  // namespace android

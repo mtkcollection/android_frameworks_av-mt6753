@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -107,6 +112,19 @@ private:
 
     AudioSource(const AudioSource &);
     AudioSource &operator=(const AudioSource &);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+public:
+//MTK80721 HDRecord 2011-12-23
+//#ifdef MTK_AUDIO_HD_REC_SUPPORT
+    AudioSource(
+            audio_source_t inputSource,
+            const String16 &opPackageName,
+            uint32_t sampleRate,
+            String8 Params,
+            uint32_t channels,
+            uint32_t outSampleRate = 0);
+#endif
 };
 
 }  // namespace android

@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2012 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -24,6 +29,13 @@
 #include "ATSParser.h"
 
 #include <media/mediaplayer.h>
+
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <media/stagefright/MediaExtractor.h>
+
+#include "TimedTextSource.h"
+
+#endif
 
 namespace android {
 
@@ -108,6 +120,9 @@ private:
         size_t mIndex;
         sp<MediaSource> mSource;
         sp<AnotherPacketSource> mPackets;
+#ifdef MTK_AOSP_ENHANCEMENT
+        bool isEOS;
+#endif
     };
 
     Vector<sp<MediaSource> > mSources;
@@ -209,7 +224,11 @@ private:
     void schedulePollBuffering();
     void cancelPollBuffering();
     void restartPollBuffering();
+#ifdef MTK_AOSP_ENHANCEMENT
+    void onPollBuffering(bool shouldNotify = true);
+#else
     void onPollBuffering();
+#endif
     void notifyBufferingUpdate(int32_t percentage);
     void startBufferingIfNecessary();
     void stopBufferingIfNecessary();
@@ -217,6 +236,70 @@ private:
     void ensureCacheIsFetching();
 
     DISALLOW_EVIL_CONSTRUCTORS(GenericSource);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+public:
+    bool mIsCurrentComplete;   // OMA DRM v1 implementation
+    String8 mDrmValue;
+    void getDRMClientProc(const Parcel *request);
+    virtual status_t initCheck() const;
+    virtual status_t getFinalStatus() const;
+    virtual bool hasVideo();
+    virtual void setParams(const sp<MetaData>& meta);
+private:
+    void onPollBuffering2();
+    void notifySeekDone(status_t err);
+    bool getCachedDuration(int64_t *durationUs, bool *eos);
+    bool getBitrate(int64_t *bitrate);
+
+    typedef void (*callback_t)(void *observer, int64_t durationUs);
+    static void updateAudioDuration(void *observer, int64_t durationUs);
+    void notifyDurationUpdate(int64_t duration);
+    status_t initFromDataSource_checkLocalSdp(const sp<MediaExtractor> extractor);
+    bool isTS();
+    bool isASF();
+    void  BufferingDataForTsVideo(media_track_type trackType, bool shouldBuffering);
+    status_t checkNetWorkErrorIfNeed();
+    void notifySizeForHttp();
+    void consumeRightIfNeed();
+    void resetCacheHttp();
+    void addMetaKeyIfNeed(void *format);
+    void changeMaxBuffersInNeed(size_t *maxBuffers, int64_t seekTimeUs);
+    void handleReadEOS(bool seeking, Track *track);
+    void init();
+    void setDrmFlag(const sp<MediaExtractor> &extractor);
+    void consumeRight2();
+    void addMetaKeyMbIfNeed(
+            MediaBuffer* mb,
+            media_track_type trackType,
+            int64_t seekTimeUs,
+            sp<AMessage> meta);
+    sp<MetaData> addMetaKeySdp() const;
+    sp<MetaData> getFormatMetaForHttp(bool audio);
+    status_t checkCachedIfNecessary();
+    String8 mRtspUri;
+    // sp<ASessionDescription> mSessionDesc;
+    bool mTSbuffering;                    // for ts
+    sp<RefBase> mSessionDesc;
+    status_t mInitCheck;
+    int64_t mSeekTimeUs;
+    sp<MetaData> mSDPFormatMeta;          // for sdp local file getFormatMeta -add by Jiapeng Yin
+    bool mCacheErrorNotify;
+    int mLastNotifyPercent;
+    int mFDforSniff;
+    bool mIsRequiresSecureBuffer;
+    bool mAudioIsRaw;
+    int mSeekingCount;
+    mutable Mutex mSeekingLock;
+    mutable Mutex mBufferingLock;
+    int mIsMtkMusic;
+    sp<TimedTextSource> mTimedTextSource;
+    bool mIs3gppSource;
+    void sendTextData2(
+            uint32_t what, media_track_type type,
+            int32_t curGen, sp<AnotherPacketSource> packets, sp<AMessage> msg);
+
+#endif
 };
 
 }  // namespace android

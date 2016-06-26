@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -122,6 +127,21 @@ public:
    // Check if offload is possible for given format, stream type, sample rate,
     // bit rate, duration, video and streaming or offload property is enabled
     virtual bool isOffloadSupported(const audio_offload_info_t& info) = 0;
+//<MTK_AUDIO_ADD
+    virtual status_t SetPolicyManagerParameters(int par1,int par2 ,int par3,int par4) = 0;
+    virtual status_t StartOutputSamplerate(audio_io_handle_t output,
+                                 audio_stream_type_t stream,
+                                 audio_session_t session ,int samplerate) = 0;
+    virtual status_t StopOutputSamplerate(audio_io_handle_t output,
+                                 audio_stream_type_t stream,
+                                 audio_session_t session ,int samplerate) = 0;
+    virtual status_t SampleRateRequestFocus(audio_io_handle_t output,
+                                 audio_stream_type_t stream,
+                                 int *samplerate) = 0;
+    virtual status_t SampleRateUnrequestFocus(audio_io_handle_t output,
+                                 audio_stream_type_t stream,
+                                 int samplerate) = 0;
+//MTK_AUDIO_ADD>
 
     /* List available audio ports and their attributes */
     virtual status_t listAudioPorts(audio_port_role_t role,

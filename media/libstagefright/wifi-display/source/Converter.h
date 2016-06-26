@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright 2012, The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -27,6 +32,28 @@ class IGraphicBufferProducer;
 struct MediaCodec;
 
 #define ENABLE_SILENCE_DETECTION        0
+
+#ifdef MTK_AOSP_ENHANCEMENT
+#define USE_OMX_BITRATE_CONTROLLER  (1)
+#endif
+
+
+
+#if USE_OMX_BITRATE_CONTROLLER
+    struct BitrateCtrler{
+        void *  bcLib;
+        void *bcHandle;
+        int (*InitBC)(void **);
+        int (*SetOneFrameBits)(void *, int, bool);
+        bool (*CheckSkip)(void *);
+        int (*UpdownLevel)(void *, int);
+        int (*GetStatus)(void *, int);
+        int (*SetTolerantBitrate)(void *, int);
+        int (*DeInitBC)(void *);
+    } ;
+
+#endif
+
 
 // Utility class that receives media access units and converts them into
 // media access unit of a different format.
@@ -149,8 +176,33 @@ private:
     sp<ABuffer> prependCSD(const sp<ABuffer> &accessUnit) const;
 
     DISALLOW_EVIL_CONSTRUCTORS(Converter);
-};
 
+#ifdef MTK_AOSP_ENHANCEMENT
+public:
+    status_t setWfdLevel(int32_t level);
+    int      getWfdParam(int paramType);
+    void  forceBlackScreen(bool blackNow) ;
+    void  initEncoder_ext();
+private:
+        bool mIsHEVC;
+
+        void doMoreWork_p(sp<ABuffer> &buffer, sp<ABuffer> &outbuf, int64_t &timeUs, uint32_t &flags);
+#if USE_OMX_BITRATE_CONTROLLER
+
+        BitrateCtrler mBitrateCtrler;
+        void bcInit(bool isVideo);
+        void bcDeinit();
+        void bcSetOneFrameBits(int bitSize, bool syncFrame);
+        void bcCheckSkip();
+        void bcUpdownLevel(int level);
+        int bcGetStatus(int type);
+        void bcSetTolerantBitrate(int bitrate);
+
+#endif
+#endif
+
+
+};
 }  // namespace android
 
 #endif  // CONVERTER_H_

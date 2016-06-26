@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -66,7 +71,15 @@ ID3::ID3(const sp<DataSource> &source, bool ignoreV1, off64_t offset)
     mIsValid = parseV2(source, offset);
 
     if (!mIsValid && !ignoreV1) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        if(source->flags() & DataSource::kIsCachingDataSource){
+        ALOGD("Streaming playback don't use ID3V1!");
+        }else{
         mIsValid = parseV1(source);
+            }
+#else
+        mIsValid = parseV1(source);
+#endif
     }
 }
 
@@ -356,9 +369,15 @@ bool ID3::removeUnsynchronizationV2_4(bool iTunesHack) {
             return false;
         }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        if ((offset + dataSize + 10 > mSize) || (dataSize == 0)) {
+            return false;
+        }
+#else
         if (dataSize > mSize - 10 - offset) {
             return false;
         }
+#endif
 
         uint16_t flags = U16_AT(&mData[offset + 8]);
         uint16_t prevFlags = flags;
@@ -385,6 +404,12 @@ bool ID3::removeUnsynchronizationV2_4(bool iTunesHack) {
             for (size_t i = 0; i + 1 < dataSize; ++i) {
                 if (mData[readOffset - 1] == 0xff
                         && mData[readOffset] == 0x00) {
+#ifdef MTK_AOSP_ENHANCEMENT
+                    if((i + 2) >= dataSize){
+                        ALOGE("The last two bytes of this ID3 frame are 0xff00");
+                        return false;
+                    }
+#endif
                     ++readOffset;
                     --mSize;
                     --dataSize;
@@ -488,7 +513,6 @@ void ID3::Iterator::getID(String8 *id) const {
     }
 }
 
-
 // the 2nd argument is used to get the data following the \0 in a comment field
 void ID3::Iterator::getString(String8 *id, String8 *comment) const {
     getstring(id, false);
@@ -544,6 +568,9 @@ void ID3::Iterator::getstring(String8 *id, bool otherdata) const {
 
     if (encoding == 0x00) {
         // supposedly ISO 8859-1
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGV("framesize = %zu in ISO8859-1",mFrameSize);
+#endif
         id->setTo((const char*)frameData + 1, n);
     } else if (encoding == 0x03) {
         // supposedly UTF-8
@@ -570,6 +597,10 @@ void ID3::Iterator::getstring(String8 *id, bool otherdata) const {
         // API wants number of characters, not number of bytes...
         int len = n / 2;
         const char16_t *framedata = (const char16_t *) (frameData + 1);
+#ifdef MTK_AOSP_ENHANCEMENT
+        if((*framedata!=0xfffe)&&(*framedata!=0xfeff))
+            return;
+#endif
         char16_t *framedatacopy = NULL;
         if (*framedata == 0xfffe) {
             // endianness marker doesn't match host endianness, convert
@@ -580,10 +611,17 @@ void ID3::Iterator::getstring(String8 *id, bool otherdata) const {
             framedata = framedatacopy;
         }
         // If the string starts with an endianness marker, skip it
+#ifdef MTK_AOSP_ENHANCEMENT
+        while(*framedata == 0xfeff && len>0){
+            framedata++;
+            len--;
+        }
+#else
         if (*framedata == 0xfeff) {
             framedata++;
             len--;
         }
+#endif
 
         // check if the resulting data consists entirely of 8-bit values
         bool eightBit = true;
@@ -815,9 +853,12 @@ static size_t StringSize(const uint8_t *start, uint8_t encoding) {
     while (start[n] != '\0' || start[n + 1] != '\0') {
         n += 2;
     }
-
+#ifdef MTK_AOSP_ENHANCEMENT
     // Add size of null termination.
     return n + 2;
+#else
+        return n;
+#endif
 }
 
 const void *

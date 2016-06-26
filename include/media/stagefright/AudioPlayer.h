@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -138,6 +143,24 @@ private:
 
     AudioPlayer(const AudioPlayer &);
     AudioPlayer &operator=(const AudioPlayer &);
+#ifdef MTK_AOSP_ENHANCEMENT
+
+public:
+    void enableAudioPad();
+    uint32_t getNumFramesPlayout() const;
+
+private:
+    void init();
+    int64_t mLastBufferTimeUs;
+    int64_t mLastBufferSize;
+    mutable int64_t mAVSyncLastRealTime;
+    bool mPadEnable;
+    bool mIsVorbisORApe;
+    int64_t mTempTimeUs;  // for music autoloop play
+    bool mDolbyProcessedAudio;
+    void updateDolbyProcessedAudioState();
+    void setDolbyProcessedAudioState(bool processed);
+#endif
 };
 
 }  // namespace android

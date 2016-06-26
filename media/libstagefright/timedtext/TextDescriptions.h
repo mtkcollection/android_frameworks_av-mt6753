@@ -1,3 +1,8 @@
+/*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
  /*
  * Copyright (C) 2011 The Android Open Source Project
  *
@@ -29,6 +34,20 @@ public:
         IN_BAND_TEXT_3GPP             = 0x01,
         OUT_OF_BAND_TEXT_SRT          = 0x02,
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        IN_BAND_TEXT_VOBSUB          = 0x03,
+        IN_BAND_TEXT_ASS             = 0x04,
+        IN_BAND_TEXT_SSA             = 0x05,
+        IN_BAND_TEXT_TXT             = 0x06,
+        IN_BAND_TEXT_DVB         = 0x07,
+        OUT_OF_BAND_TEXT_ASS          = 0x08,
+        OUT_OF_BAND_TEXT_SSA          = 0x09,
+        OUT_OF_BAND_TEXT_TXT          = 0x0A,
+        OUT_OF_BAND_TEXT_MPL          = 0x0B,
+        OUT_OF_BAND_TEXT_SMI          = 0x0C,
+        OUT_OF_BAND_TEXT_SUB          = 0x0D,
+        OUT_OF_BAND_TEXT_IDX          = 0x0E,
+#endif
         GLOBAL_DESCRIPTIONS           = 0x100,
         LOCAL_DESCRIPTIONS            = 0x200,
     };
@@ -57,6 +76,7 @@ private:
         KEY_STRUCT_TEXT_POS               = 14, // TextPos
         KEY_STRUCT_JUSTIFICATION          = 15, // Justification
         KEY_STRUCT_TEXT                   = 16, // Text
+        KEY_STRUCT_BITMAP                 = 17, // Bitmap
 
         KEY_GLOBAL_SETTING                = 101,
         KEY_LOCAL_SETTING                 = 102,
@@ -76,8 +96,37 @@ private:
     static status_t extract3GPPLocalDescriptions(
             const uint8_t *data, ssize_t size,
             int timeMs, Parcel *parcel);
-
     DISALLOW_EVIL_CONSTRUCTORS(TextDescriptions);
+#ifdef MTK_AOSP_ENHANCEMENT
+public:
+    static status_t getParcelOfDescriptions(
+        int32_t fd, ssize_t width, ssize_t height,
+        uint32_t flags, int timeMs, Parcel *parcel);
+
+private:
+    static status_t extractASSGlobalDescriptions(
+        const uint8_t *data, ssize_t size, Parcel *parcel, int depth) ;
+
+    static status_t extractASSLocalDescriptions(
+        const uint8_t *data, ssize_t size,
+        int timeMs, Parcel *parcel, int depth);
+    static status_t extractSSAGlobalDescriptions(
+        const uint8_t *data, ssize_t size, Parcel *parcel, int depth) ;
+
+    static status_t extractSSALocalDescriptions(
+        const uint8_t *data, ssize_t size,
+        int timeMs, Parcel *parcel, int depth);
+    static status_t extractTXTGlobalDescriptions(
+        const uint8_t *data, ssize_t size, Parcel *parcel, int depth) ;
+
+    static status_t extractTXTLocalDescriptions(
+        const uint8_t *data, ssize_t size,
+        int timeMs, Parcel *parcel, int depth);
+    static status_t extractVOBSUBLocalDescriptions(
+        int32_t fd, ssize_t width, ssize_t height, int timeMs, Parcel *parcel);
+    static status_t extractDVBBLocalDescriptions(
+        int32_t fd, ssize_t width, ssize_t height, int timeMs, Parcel *parcel);
+#endif
 };
 
 }  // namespace android

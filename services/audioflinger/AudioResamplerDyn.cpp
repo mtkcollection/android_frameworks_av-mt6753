@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2013 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -311,6 +316,7 @@ void AudioResamplerDyn<TC, TI, TO>::setSampleRate(int32_t inSampleRate)
             // 32b coefficients, 64 length
             useS32 = true;
             stopBandAtten = 98.;
+#ifndef MTK_AUDIO
             if (inSampleRate >= mSampleRate * 4) {
                 halfLength = 48;
             } else if (inSampleRate >= mSampleRate * 2) {
@@ -318,6 +324,16 @@ void AudioResamplerDyn<TC, TI, TO>::setSampleRate(int32_t inSampleRate)
             } else {
                 halfLength = 32;
             }
+#else
+            if (inSampleRate >= mSampleRate * 4) {
+                halfLength = 96;
+                tbwCheat = 1.1;
+            } else if (inSampleRate >= mSampleRate * 2) {
+                halfLength = 40;
+            } else {
+                halfLength = 48;
+            }
+#endif
         } else if (mFilterQuality == DYN_LOW_QUALITY) {
             // 16b coefficients, 16-32 length
             useS32 = false;
@@ -612,6 +628,14 @@ resample_exit:
     mPhaseFraction = phaseFraction;
     return outputIndex / OUTPUT_CHANNELS;
 }
+//<MTK_ADDED
+template<typename TC, typename TI, typename TO>
+void AudioResamplerDyn<TC, TI, TO>::init(int32_t SrcSampleRate)
+    {
+        mFilterSampleRate = 0; // always trigger new filter generation
+        mInBuffer.init();
+    }
+//MTK_ADDED>
 
 /* instantiate templates used by AudioResampler::create */
 template class AudioResamplerDyn<float, float, float>;

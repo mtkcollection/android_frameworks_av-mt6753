@@ -1,3 +1,8 @@
+/*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
  /*
  * Copyright (C) 2012 The Android Open Source Project
  *
@@ -28,6 +33,13 @@
 
 #include "TimedText3GPPSource.h"
 #include "TimedTextSRTSource.h"
+#ifdef MTK_SUBTITLE_SUPPORT
+#include "TimedTextASSSource.h"
+#include "TimedTextSSASource.h"
+#include "TimedTextVOBSUBSource.h"
+#include "TimedTextDVBSource.h"
+#include "TimedTextTXTSource.h"
+#endif
 
 namespace android {
 
@@ -36,9 +48,23 @@ sp<TimedTextSource> TimedTextSource::CreateTimedTextSource(
         const sp<MediaSource>& mediaSource) {
     const char *mime;
     CHECK(mediaSource->getFormat()->findCString(kKeyMIMEType, &mime));
+    ALOGE("[PANDA] CreateTimedTextSource, type = %s\n", mime);
     if (strcasecmp(mime, MEDIA_MIMETYPE_TEXT_3GPP) == 0) {
         return new TimedText3GPPSource(mediaSource);
     }
+#ifdef MTK_SUBTITLE_SUPPORT
+    else if (strcasecmp(mime, MEDIA_MIMETYPE_TEXT_ASS) == 0) {
+        return new TimedTextASSSource(mediaSource);
+    } else if (strcasecmp(mime, MEDIA_MIMETYPE_TEXT_SSA) == 0) {
+        return new TimedTextSSASource(mediaSource);
+    } else if (strcasecmp(mime, MEDIA_MIMETYPE_TEXT_VOBSUB) == 0) {
+        return new TimedTextVOBSUBSource(mediaSource);
+    } else if (strcasecmp(mime, MEDIA_MIMETYPE_TEXT_DVB) == 0) {
+        return new TimedTextDVBSource(mediaSource);
+    } else if (strcasecmp(mime, MEDIA_MIMETYPE_TEXT_TXT) == 0) {
+        return new TimedTextTXTSource(mediaSource);
+    }
+#endif
     ALOGE("Unsupported mime type for subtitle. : %s", mime);
     return NULL;
 }

@@ -23,6 +23,18 @@ LOCAL_SRC_FILES += NBLog.cpp
 # uncomment for systrace
 # LOCAL_CFLAGS += -DATRACE_TAG=ATRACE_TAG_AUDIO
 
+ifeq ($(strip $(BOARD_USES_MTK_AUDIO)),true)
+  ifeq ($(strip $(MTK_HIGH_RESOLUTION_AUDIO_SUPPORT)),yes)
+     LOCAL_CFLAGS += -DMTK_HD_AUDIO_ARCHITECTURE
+  endif
+endif
+
+ifeq ($(MTK_AUDIO),yes)
+LOCAL_CFLAGS += -DMTK_AUDIO
+LOCAL_C_INCLUDES+= \
+   $(MTK_PATH_SOURCE)/hardware/audio/common/include
+endif
+
 LOCAL_MODULE := libnbaio
 
 LOCAL_SHARED_LIBRARIES := \

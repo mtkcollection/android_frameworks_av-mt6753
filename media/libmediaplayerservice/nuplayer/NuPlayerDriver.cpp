@@ -31,6 +31,11 @@
 #include <media/stagefright/MetaData.h>
 #include <media/stagefright/Utils.h>
 
+#include <media/MtkMMLog.h>
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <media/stagefright/MediaErrors.h>    // for ALPS00595180
+#define Unuse(x) (void)(x) //mtk08123 for build error --unused
+#endif
 namespace android {
 
 NuPlayerDriver::NuPlayerDriver(pid_t pid)
@@ -59,11 +64,20 @@ NuPlayerDriver::NuPlayerDriver(pid_t pid)
     mLooper->registerHandler(mPlayer);
 
     mPlayer->setDriver(this);
+#ifdef MTK_AOSP_ENHANCEMENT
+      mSeekTimeUs = -1;
+#ifdef MTK_SLOW_MOTION_VIDEO_SUPPORT
+      mSpeed = 1;
+#endif
+#endif
 }
 
 NuPlayerDriver::~NuPlayerDriver() {
     ALOGV("~NuPlayerDriver(%p)", this);
     mLooper->stop();
+#ifdef MTK_AOSP_ENHANCEMENT
+    mLooper->unregisterHandler(mPlayer->id());
+#endif
 }
 
 status_t NuPlayerDriver::initCheck() {
@@ -269,6 +283,9 @@ status_t NuPlayerDriver::start() {
 
             // fall through
         }
+#ifdef MTK_AOSP_ENHANCEMENT
+        case STATE_PREPARING:   // the start will serialized after prepare
+#endif
 
         case STATE_PREPARED:
         {
@@ -278,6 +295,9 @@ status_t NuPlayerDriver::start() {
             if (mStartupSeekTimeUs >= 0) {
                 mPlayer->seekToAsync(mStartupSeekTimeUs);
                 mStartupSeekTimeUs = -1;
+#ifdef MTK_AOSP_ENHANCEMENT
+                mSeekTimeUs = -1;
+#endif
             }
             break;
         }
@@ -362,9 +382,9 @@ bool NuPlayerDriver::isPlaying() {
 }
 
 status_t NuPlayerDriver::setPlaybackSettings(const AudioPlaybackRate &rate) {
+    Mutex::Autolock autoLock(mLock);
     status_t err = mPlayer->setPlaybackSettings(rate);
     if (err == OK) {
-        Mutex::Autolock autoLock(mLock);
         if (rate.mSpeed == 0.f && mState == STATE_RUNNING) {
             mState = STATE_PAUSED;
             // try to update position
@@ -394,6 +414,15 @@ status_t NuPlayerDriver::seekTo(int msec) {
     Mutex::Autolock autoLock(mLock);
 
     int64_t seekTimeUs = msec * 1000ll;
+#ifdef MTK_AOSP_ENHANCEMENT
+    // it's live streaming, assume it's ok to seek, because some 3rd party don't get info of live
+    if (mDurationUs <= 0) {
+        notifySeekComplete_l();
+        ALOGE("cannot seek without duration, assume to seek complete");
+        return OK;
+    }
+    ALOGI("seekTo(%d ms) mState = %d", msec, (int)mState);
+#endif
 
     switch (mState) {
         case STATE_PREPARED:
@@ -416,6 +445,9 @@ status_t NuPlayerDriver::seekTo(int msec) {
     }
 
     mPositionUs = seekTimeUs;
+#ifdef MTK_AOSP_ENHANCEMENT
+    mSeekTimeUs = seekTimeUs;
+#endif
     return OK;
 }
 
@@ -423,9 +455,14 @@ status_t NuPlayerDriver::getCurrentPosition(int *msec) {
     int64_t tempUs = 0;
     {
         Mutex::Autolock autoLock(mLock);
+#ifdef MTK_AOSP_ENHANCEMENT
+        if ((mSeekInProgress || mState == STATE_PAUSED) && (!mAtEOS)) {
+#else
         if (mSeekInProgress || mState == STATE_PAUSED) {
+#endif
             tempUs = (mPositionUs <= 0) ? 0 : mPositionUs;
             *msec = (int)divRound(tempUs, (int64_t)(1000));
+            MM_LOGV("1 pos:%d", *msec);
             return OK;
         }
     }
@@ -438,8 +475,10 @@ status_t NuPlayerDriver::getCurrentPosition(int *msec) {
     // position value that's different the seek to position.
     if (ret != OK) {
         tempUs = (mPositionUs <= 0) ? 0 : mPositionUs;
+        MM_LOGV("2 pos:%lld", tempUs);
     } else {
         mPositionUs = tempUs;
+        MM_LOGV("3 pos:%lld", tempUs);
     }
     *msec = (int)divRound(tempUs, (int64_t)(1000));
     return OK;
@@ -447,6 +486,15 @@ status_t NuPlayerDriver::getCurrentPosition(int *msec) {
 
 status_t NuPlayerDriver::getDuration(int *msec) {
     Mutex::Autolock autoLock(mLock);
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (mDurationUs/1000 > 0x7fffffff) {
+        ALOGI("Duration(%llxms) > 0x7fffffff ms, reset it to %xms", mDurationUs/1000,  0x7fffffff);
+        mDurationUs = 0x7fffffffLL*1000;
+    } else if (mDurationUs < 0) {
+        *msec = 0;
+        return OK;
+    }
+#endif
 
     if (mDurationUs < 0) {
         return UNKNOWN_ERROR;
@@ -503,6 +551,9 @@ status_t NuPlayerDriver::reset() {
     mPositionUs = -1;
     mStartupSeekTimeUs = -1;
     mLooping = false;
+#ifdef MTK_AOSP_ENHANCEMENT
+    mSeekTimeUs = -1;
+#endif
 
     return OK;
 }
@@ -574,6 +625,7 @@ void NuPlayerDriver::setAudioSink(const sp<AudioSink> &audioSink) {
     mAudioSink = audioSink;
 }
 
+#ifndef MTK_AOSP_ENHANCEMENT
 status_t NuPlayerDriver::setParameter(
         int /* key */, const Parcel & /* request */) {
     return INVALID_OPERATION;
@@ -582,6 +634,7 @@ status_t NuPlayerDriver::setParameter(
 status_t NuPlayerDriver::getParameter(int /* key */, Parcel * /* reply */) {
     return INVALID_OPERATION;
 }
+#endif
 
 status_t NuPlayerDriver::getMetadata(
         const media::Metadata::Filter& /* ids */, Parcel *records) {
@@ -591,6 +644,9 @@ status_t NuPlayerDriver::getMetadata(
 
     Metadata meta(records);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    setMetadata(meta);
+#endif
     meta.appendBool(
             Metadata::kPauseAvailable,
             mPlayerFlags & NuPlayer::Source::FLAG_CAN_PAUSE);
@@ -639,6 +695,9 @@ void NuPlayerDriver::notifySeekComplete() {
     Mutex::Autolock autoLock(mLock);
     mSeekInProgress = false;
     notifySeekComplete_l();
+#ifdef MTK_AOSP_ENHANCEMENT
+    mSeekTimeUs = -1;
+#endif
 }
 
 void NuPlayerDriver::notifySeekComplete_l() {
@@ -747,8 +806,12 @@ void NuPlayerDriver::notifyListener_l(
                         // the last little bit of audio. If we're looping, we need to restart it.
                         mAudioSink->start();
                     }
-                    // don't send completion event when looping
+                #ifdef MTK_AOSP_ENHANCEMENT
+                    // handling the auto loop can't be paused in the sencond time
                     return;
+                #else
+                    break;
+                #endif
                 }
 
                 mPlayer->pause();
@@ -779,6 +842,9 @@ void NuPlayerDriver::notifySetDataSourceCompleted(status_t err) {
 
     mAsyncResult = err;
     mState = (err == OK) ? STATE_UNPREPARED : STATE_IDLE;
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("after notifySetDataSourceCompleted mState=%d", mState);
+#endif
     mCondition.broadcast();
 }
 
@@ -807,7 +873,13 @@ void NuPlayerDriver::notifyPrepareCompleted(status_t err) {
     } else {
         mState = STATE_UNPREPARED;
         if (mIsAsyncPrepare) {
+#ifdef MTK_AOSP_ENHANCEMENT
+            int ext1;
+            reviseNotifyErrorCode(err, &ext1);
+            notifyListener_l(MEDIA_ERROR, ext1, err);
+#else
             notifyListener_l(MEDIA_ERROR, MEDIA_ERROR_UNKNOWN, err);
+#endif
         }
     }
 
@@ -826,5 +898,204 @@ void NuPlayerDriver::notifyFlagsChanged(uint32_t flags) {
 
     mPlayerFlags = flags;
 }
+#ifdef MTK_AOSP_ENHANCEMENT
+void NuPlayerDriver::notifyUpdateDuration(int64_t durationUs) {
+    Mutex::Autolock autoLock(mLock);
+
+    ALOGD("The duration updated, durationUs: %lld -> %lld", mDurationUs, durationUs);
+    mDurationUs = durationUs;
+    notifyListener_l(MEDIA_DURATION_UPDATE, mDurationUs/1000, 0);
+}
+
+status_t NuPlayerDriver::stop_l() {
+    Mutex::Autolock autoLock(mLock);
+
+    switch (mState) {
+        case STATE_PAUSED:
+        case STATE_PREPARED:
+            return OK;
+
+        case STATE_RUNNING:
+            mPlayer->stop();
+            break;
+
+        default:
+            return INVALID_OPERATION;
+    }
+
+    mState = STATE_PAUSED;
+    return OK;
+}
+
+status_t NuPlayerDriver::setMetadata(media::Metadata &meta) {
+    // mtk80902: try android default's kXXXAvailable
+    // mtk80902: ALPS00448589
+    // porting from Stagefright
+
+    using media::Metadata;
+    sp<MetaData> player_meta = mPlayer->getMetaData();
+    if (player_meta != NULL) {
+        int timeout = 0;
+        if (player_meta->findInt32(kKeyServerTimeout, &timeout) && timeout > 0) {
+            meta.appendInt32(Metadata::kServerTimeout, timeout);
+        }
+
+        const char *val;
+        if (player_meta->findCString(kKeyTitle, &val)) {
+            ALOGI("meta title %s ", val);
+            meta.appendString(Metadata::kTitle, val);
+        }
+        if (player_meta->findCString(kKeyAuthor, &val)) {
+            ALOGI("meta author %s ", val);
+            meta.appendString(Metadata::kAuthor, val);
+        }
+        if (player_meta->findCString(kKeyAlbumArtMIME, &val)) {
+            meta.appendString(Metadata::kMimeType, val);
+            ALOGI("meta kKeyAlbumArtMIME %s ", val);
+        }
+
+        uint32_t type;
+        size_t dataSize;
+        const void *data;
+        if (player_meta->findData(kKeyAlbumArt, &type, &data, &dataSize)) {
+            const char *val2 = (const char *)data;
+            meta.appendByteArray(Metadata::kAlbumArt, val2, dataSize);
+            ALOGI("meta kKeyAlbumArt 0x%X0x%X0x%X0x%X, Size(%d)", val2[0], val2[1], val2[2], val2[3], dataSize);
+        }
+    }
+    return OK;
+}
+
+void NuPlayerDriver::reviseNotifyErrorCode(status_t err, int* ext1) {
+    *ext1 = MEDIA_ERROR_UNKNOWN;
+    switch (err) {
+        case ERROR_MALFORMED:   // -1007
+            *ext1 = MEDIA_ERROR_BAD_FILE;
+            break;
+        case ERROR_CANNOT_CONNECT:  // -1003
+            *ext1 = MEDIA_ERROR_CANNOT_CONNECT_TO_SERVER;
+            break;
+        case ERROR_UNSUPPORTED:  // -1010
+            *ext1 = MEDIA_ERROR_TYPE_NOT_SUPPORTED;
+            break;
+        case ERROR_FORBIDDEN:   // -1100
+            *ext1 = MEDIA_ERROR_INVALID_CONNECTION;
+            break;
+        default:
+            break;
+    }
+}
+
+#ifdef MTK_SLOW_MOTION_VIDEO_SUPPORT
+status_t NuPlayerDriver::setsmspeed(int32_t smspeed) {
+    if (mPlayer != NULL) {
+        return mPlayer->setsmspeed(smspeed);
+    } else {
+        ALOGW("mPlayer == NULL");
+        return NO_INIT;
+    }
+}
+status_t NuPlayerDriver::setslowmotionsection(int64_t slowmotion_start, int64_t slowmotion_end) {
+    if (mPlayer != NULL) {
+        return mPlayer->setslowmotionsection(slowmotion_start*1000, slowmotion_end*1000);  // ms->us
+    } else {
+        ALOGW("mPlayer == NULL");
+        return NO_INIT;
+    }
+}
+#endif
+
+status_t NuPlayerDriver::setParameter(
+        int key, const Parcel &request) {
+#ifdef MTK_CLEARMOTION_SUPPORT
+    if (key == KEY_PARAMETER_CLEARMOTION_DISABLE) {
+        int32_t disClearMotion;
+        request.readInt32(&disClearMotion);
+        ALOGI("setParameter enClearMotion %d", disClearMotion);
+        if (disClearMotion) {
+            mPlayer->enableClearMotion(0);
+        } else {
+            mPlayer->enableClearMotion(1);
+        }
+        return OK;
+    }
+#endif
+#ifdef MTK_SLOW_MOTION_VIDEO_SUPPORT
+    if (key == KEY_PARAMETER_SlowMotion_Speed_value) {
+        int SMSpeed = 1;
+        request.readInt32(&SMSpeed);
+        ALOGD("slowmotion set SMSpeed = %d", SMSpeed);
+        /*
+           if (isPlaying()) {
+           mPositionUs += (ALooper::GetNowUs()- mNotifyTimeRealUs)/SMSpeed;			
+           mNotifyTimeRealUs = ALooper::GetNowUs();
+           }	
+         */
+        mSpeed = SMSpeed;
+        return setsmspeed(SMSpeed);
+    }
+#endif
+#ifdef MTK_SLOW_MOTION_VIDEO_SUPPORT
+    if (key == KEY_PARAMETER_SlowMotion_Speed_Section) {
+        int64_t slowmotion_start = 0;
+        int64_t slowmotion_end = 0;
+        String8 mSlowmotionsection(request.readString16());
+        sscanf(mSlowmotionsection.string(), "%lldx%lld", &slowmotion_start, &slowmotion_end);
+        ALOGD("mSlowmotionsection.string(%s), slowmotion_start = %lld,slowmotion_end = %lld",
+                mSlowmotionsection.string(), slowmotion_start, slowmotion_end);
+        return setslowmotionsection(slowmotion_start, slowmotion_end);
+    }
+#endif
+#ifdef MTK_DRM_APP
+    if (key == KEY_PARAMETER_DRM_CLIENT_PROC) {
+        mPlayer->getDRMClientProc(&request);
+    }
+#endif
+    if (key == KEY_PARAMETER_PLAYBACK_MTK) {
+        int value = 0;
+        request.readInt32(&value);
+        bool isMtkPlayback = (value == 1) ? true:false;
+        if (mPlayer != NULL) {
+            mPlayer->setIsMtkPlayback(isMtkPlayback);
+        }
+        return OK;
+    }
+    return INVALID_OPERATION;
+}
+
+status_t NuPlayerDriver::getParameter(int  key , Parcel *  reply ) {
+#ifndef MTK_SLOW_MOTION_VIDEO_SUPPORT //mtk08123 for merge build error --unused
+    Unuse(key);
+    Unuse(reply);
+#endif
+#ifdef MTK_SLOW_MOTION_VIDEO_SUPPORT
+    ALOGD("NuPlayerDriver::getParameter");
+    if (key == KEY_PARAMETER_SlowMotion_Speed_value) {
+        int32_t SpeedValue = 0;
+        sp<MetaData> meta = NULL;
+        if (mPlayer != NULL) {
+            meta = mPlayer->getFormatMeta(false);
+            if (meta != NULL) {
+                meta->findInt32(kKeySlowMotionSpeedValue, &SpeedValue);
+            }
+        }
+        ALOGD("getparameter = %d", SpeedValue);
+        if ( SpeedValue > 0 ) {
+#ifdef MTK_16X_SLOWMOTION_VIDEO_SUPPORT
+            reply->writeString16(String16("16,4,2,1"));
+#else
+            reply->writeString16(String16("4,2,1"));
+#endif
+        }
+        else {
+            reply->writeString16(String16("0"));
+        }
+        return OK;
+    }
+#endif
+    return INVALID_OPERATION;
+}
+
+#endif
 
 }  // namespace android

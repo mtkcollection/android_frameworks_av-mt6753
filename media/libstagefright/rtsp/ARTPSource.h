@@ -1,4 +1,10 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -30,6 +36,11 @@ struct ABuffer;
 struct AMessage;
 struct ARTPAssembler;
 struct ASessionDescription;
+#ifdef MTK_AOSP_ENHANCEMENT
+struct AString;
+struct APacketSource;
+struct AnotherPacketSource; //for bitrate adaptation
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
 
 struct ARTPSource : public RefBase {
     ARTPSource(
@@ -66,6 +77,46 @@ private:
     bool queuePacket(const sp<ABuffer> &buffer);
 
     DISALLOW_EVIL_CONSTRUCTORS(ARTPSource);
+#ifdef MTK_AOSP_ENHANCEMENT
+public:
+    void init();
+    bool GetClockRate(const AString &desc, uint32_t *clockRate);
+    void fakeSSRC(int ssrc, uint8_t* data);
+    uint32_t extendSeqNumber(uint32_t seqNum, uint32_t mHighestSeqNumber);
+    int32_t calculateArrivalJitter(const sp<ABuffer> &buffer);
+    void setEstablishedStatus();
+    uint8_t getFractionLost();
+    uint8_t getCumulativeLost();
+    void setHighestSeqNumber(uint32_t rtpSeq);
+    void flushRTPPackets();
+    void addSDES(const AString& cname, const sp<ABuffer> &buffer);
+    void updateExpectedTimeoutUs(const int32_t& samples);
+    void updateExpectedTimeoutUs(const int64_t& duration);
+    int64_t getExpectedTimeoutUs() const { return mExpectedTimeoutUs; }
+    static const int64_t kAccessUnitTimeoutUs = 3000000ll;
+    static const size_t kVotePacketNumber = 10;
+    //for stagefright
+    void addNADUApp(sp<APacketSource> &pApacketSource,const sp<ABuffer> &buffer);
+    //for nuplayer
+    void addNADUApp(const sp<AnotherPacketSource> &pAnotherPacketSource,const sp<ABuffer> &buffer);
+
+private:
+    bool mEstablished;
+    bool mHighestSeqNumberSet;
+    uint32_t mClockRate;
+
+    uint32_t mLastPacketRtpTime;
+    int64_t mLastPacketRecvTimeUs; //in RTP timestamp units
+
+    uint32_t mUIInterarrivalJitter;
+    double mDInterarrivalJitter;
+
+    uint32_t mNumLastRRPackRecv;
+    uint32_t mLastRRPackRecvSeqNum;
+
+    uint32_t mFirstPacketSeqNum;
+    int64_t mExpectedTimeoutUs;
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
 };
 
 }  // namespace android

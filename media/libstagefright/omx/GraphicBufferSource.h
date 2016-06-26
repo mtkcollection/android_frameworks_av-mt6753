@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2013 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -321,6 +326,11 @@ private:
     int64_t mPrevFrameUs;
 
     MetadataBufferType mMetadataBufferType;
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    FILE* mDumpRawFile;
+    bool mIsDumpRawFile;
+#endif //MTK_AOSP_ENHANCEMENT
 
     void onMessageReceived(const sp<AMessage> &msg);
 

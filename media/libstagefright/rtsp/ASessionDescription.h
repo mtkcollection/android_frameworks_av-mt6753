@@ -1,4 +1,10 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -24,6 +30,9 @@
 #include <utils/KeyedVector.h>
 #include <utils/RefBase.h>
 #include <utils/Vector.h>
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <utils/String8.h>
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
 
 namespace android {
 
@@ -76,6 +85,14 @@ private:
     bool parse(const void *data, size_t size);
 
     DISALLOW_EVIL_CONSTRUCTORS(ASessionDescription);
+public:
+#ifdef MTK_AOSP_ENHANCEMENT
+        bool    parseRtpMap(AString key, int &rtpmapNum, bool &unsupported);
+        int     parseString(const char* s) const ;
+        bool    tryGetWH(size_t index, int32_t *width, int32_t *height, char *key, AString &value) const;
+        bool    getBitrate(size_t index, int32_t* bitrate) const;
+        status_t getSessionUrl(String8& uri) const;
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
 };
 
 }  // namespace android

@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2011 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -59,6 +64,12 @@ static const struct {
     { "OMX.google.raw.decoder", "rawdec", "audio_decoder.raw" },
     { "OMX.google.flac.encoder", "flacenc", "audio_encoder.flac" },
     { "OMX.google.gsm.decoder", "gsmdec", "audio_decoder.gsm" },
+#ifdef MTK_AUDIO_DDPLUS_SUPPORT
+    { "OMX.dolby.ac3.decoder", "ddpdec", "audio_decoder.ac3" },
+    { "OMX.dolby.ec3.decoder", "ddpdec", "audio_decoder.ec3" },
+    { "OMX.dolby.ec3_joc.decoder", "ddpdec", "audio_decoder.ec3_joc" },
+#endif // DOLBY_UDC
+
 };
 
 static const size_t kNumComponents =

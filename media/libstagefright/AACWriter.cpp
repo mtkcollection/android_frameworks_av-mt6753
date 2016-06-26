@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2011 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -34,6 +39,12 @@
 #include <media/stagefright/MetaData.h>
 #include <media/mediarecorder.h>
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#define AACWRITER_USE_XLOG
+#ifdef AACWRITER_USE_XLOG
+#include <cutils/log.h>
+#endif
+#endif
 namespace android {
 
 AACWriter::AACWriter(int fd)
@@ -49,9 +60,15 @@ AACWriter::AACWriter(int fd)
       mSampleRate(-1),
       mAACProfile(OMX_AUDIO_AACObjectLC),
       mFrameDurationUs(0) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGI("AACWriter Constructor,file fd(%d)",mFd);
+#endif
 }
 
 AACWriter::~AACWriter() {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGI("~AACWriter destructor");
+#endif
     if (mStarted) {
         reset();
     }
@@ -86,7 +103,9 @@ status_t AACWriter::addSource(const sp<MediaSource> &source) {
     CHECK(meta->findInt32(kKeyChannelCount, &mChannelCount));
     CHECK(meta->findInt32(kKeySampleRate, &mSampleRate));
     CHECK(mChannelCount >= 1 && mChannelCount <= 2);
-
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGI("addSource,mChannelCount=%d,mSampleRate=%d",mChannelCount,mSampleRate);
+#endif
     // Optionally, we want to check whether AACProfile is also set.
     if (meta->findInt32(kKeyAACProfile, &mAACProfile)) {
         ALOGI("AAC profile is changed to %d", mAACProfile);
@@ -116,8 +135,13 @@ status_t AACWriter::start(MetaData * /* params */) {
 
     mFrameDurationUs = (kSamplesPerFrame * 1000000LL + (mSampleRate >> 1))
                             / mSampleRate;
-
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGI("start,call source start+++,mFrameDurationUs=%d",mFrameDurationUs);
+#endif
     status_t err = mSource->start();
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGI("start,call source start---,err = %d",err);
+#endif
 
     if (err != OK) {
         return err;
@@ -139,6 +163,10 @@ status_t AACWriter::start(MetaData * /* params */) {
 }
 
 status_t AACWriter::pause() {
+#ifdef MTK_AOSP_ENHANCEMENT
+    //no lock protected
+    ALOGI("pause");
+#endif
     if (!mStarted) {
         return OK;
     }
@@ -147,6 +175,9 @@ status_t AACWriter::pause() {
 }
 
 status_t AACWriter::reset() {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGI("reset");
+#endif
     if (!mStarted) {
         return OK;
     }
@@ -157,12 +188,18 @@ status_t AACWriter::reset() {
     pthread_join(mThread, &dummy);
 
     status_t err = static_cast<status_t>(reinterpret_cast<uintptr_t>(dummy));
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGI("reset,call source stop+++");
+#endif
     {
         status_t status = mSource->stop();
         if (err == OK &&
             (status != OK && status != ERROR_END_OF_STREAM)) {
             err = status;
         }
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGI("reset,call source stop---,status=%d",status);
+#endif
     }
 
     mStarted = false;
@@ -311,6 +348,9 @@ status_t AACWriter::threadFunc() {
         if (exceedsFileSizeLimit()) {
             buffer->release();
             buffer = NULL;
+#ifdef MTK_AOSP_ENHANCEMENT
+            ALOGW("reach max file size limit, mMaxFileSizeLimitBytes=%lld", (long long)mMaxFileSizeLimitBytes);
+#endif
             notify(MEDIA_RECORDER_EVENT_INFO, MEDIA_RECORDER_INFO_MAX_FILESIZE_REACHED, 0);
             break;
         }
@@ -342,6 +382,9 @@ status_t AACWriter::threadFunc() {
         if (exceedsFileDurationLimit()) {
             buffer->release();
             buffer = NULL;
+#ifdef MTK_AOSP_ENHANCEMENT
+            ALOGW("reach max file duration limit,mMaxFileDurationLimitUs=%lld", (long long)mMaxFileDurationLimitUs);
+#endif
             notify(MEDIA_RECORDER_EVENT_INFO, MEDIA_RECORDER_INFO_MAX_DURATION_REACHED, 0);
             break;
         }
@@ -350,6 +393,15 @@ status_t AACWriter::threadFunc() {
         // 1. an ADTS header, followed by
         // 2. the compressed audio data.
         ssize_t dataLength = buffer->range_length();
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (dataLength==0)
+        {
+            ALOGW("threadFunc, read buffer length == 0");
+            buffer->release();
+            buffer = NULL;
+            continue;
+        }
+#endif
         uint8_t *data = (uint8_t *)buffer->data() + buffer->range_offset();
         if (writeAdtsHeader(kAdtsHeaderLength + dataLength) != OK ||
             dataLength != write(mFd, data, dataLength)) {
@@ -369,6 +421,9 @@ status_t AACWriter::threadFunc() {
     }
 
     if ((err == OK || err == ERROR_END_OF_STREAM) && stoppedPrematurely) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGE("threadFunc,no frame writen to file");
+#endif
         err = ERROR_MALFORMED;
     }
 

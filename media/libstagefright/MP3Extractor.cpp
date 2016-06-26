@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -37,6 +42,17 @@
 #include <media/stagefright/Utils.h>
 #include <utils/String8.h>
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#include "TableOfContentThread.h"
+
+
+#define MIN_RANDOM_FRAMES_TO_SCAN 4
+#define MIN_RANDOM_LOCATION_TO_SCAN 30
+#define MP3_LOW_POWER
+//int mFrameCount;
+bool mError;
+#define MULTI_FRAME 20
+#endif
 namespace android {
 
 // Everything must match except for
@@ -60,8 +76,11 @@ static bool Resync(
             uint8_t id3header[10];
             if (source->readAt(*inout_pos, id3header, sizeof(id3header))
                     < (ssize_t)sizeof(id3header)) {
+#ifdef MTK_AOSP_ENHANCEMENT
                 // If we can't even read these 10 bytes, we might as well bail
                 // out, even if there _were_ 10 bytes of valid mp3 audio data...
+                ALOGV("Read no enough data");
+#endif
                 return false;
             }
 
@@ -209,7 +228,11 @@ static bool Resync(
     return valid;
 }
 
+#ifndef MTK_AOSP_ENHANCEMENT
 class MP3Source : public MediaSource {
+#else
+class MP3Source : public MediaSource,public TableOfContentThread{
+#endif
 public:
     MP3Source(
             const sp<MetaData> &meta, const sp<DataSource> &source,
@@ -224,6 +247,10 @@ public:
     virtual status_t read(
             MediaBuffer **buffer, const ReadOptions *options = NULL);
 
+    virtual status_t MTK_read(
+            MediaBuffer **buffer, const ReadOptions *options = NULL);
+
+    virtual ssize_t readMultiFrameFunc(size_t *frame_size,int *sample_rate,int *bitrate, int *num_samples);
 protected:
     virtual ~MP3Source();
 
@@ -238,13 +265,27 @@ private:
     bool mStarted;
     sp<MP3Seeker> mSeeker;
     MediaBufferGroup *mGroup;
-
     int64_t mBasisTimeUs;
     int64_t mSamplesRead;
-
     MP3Source(const MP3Source &);
     MP3Source &operator=(const MP3Source &);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+public:
+    virtual status_t getNextFramePos(off_t *curPos, off_t *pNextPos,int64_t * frameTsUs);
+    virtual status_t sendDurationUpdateEvent(int64_t duration);
+private:
+    bool mEnableTOC;//TOC is enable (some case has to disable TOC, ex. streaming)
+    typedef void (*callback_t)(void *observer, int64_t durationUs);
+    void *mObserver;
+    callback_t mCallback;
+    bool mIsMTKMusic;
+#endif
+
 };
+
+
+
 
 MP3Extractor::MP3Extractor(
         const sp<DataSource> &source, const sp<AMessage> &meta)
@@ -322,8 +363,15 @@ MP3Extractor::MP3Extractor(
     int sample_rate;
     int num_channels;
     int bitrate;
+#ifndef MTK_AOSP_ENHANCEMENT
     GetMPEGAudioFrameSize(
             header, &frame_size, &sample_rate, &num_channels, &bitrate);
+#else
+    int32_t sampleperframe;
+    GetMPEGAudioFrameSize(
+            header, &frame_size, &sample_rate, &num_channels, &bitrate,&sampleperframe);
+
+#endif
 
     unsigned layer = 4 - ((header >> 17) & 3);
 
@@ -345,6 +393,11 @@ MP3Extractor::MP3Extractor(
     mMeta->setInt32(kKeyBitRate, bitrate * 1000);
     mMeta->setInt32(kKeyChannelCount, num_channels);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    mMeta->setInt32(kKeySamplesperframe, sampleperframe);
+	getGeneralDuration(bitrate);
+#else
+
     int64_t durationUs;
 
     if (mSeeker == NULL || !mSeeker->getDuration(&durationUs)) {
@@ -359,13 +412,19 @@ MP3Extractor::MP3Extractor(
     if (durationUs >= 0) {
         mMeta->setInt64(kKeyDuration, durationUs);
     }
+#endif
 
     mInitCheck = OK;
 
     // Get iTunes-style gapless info if present.
     // When getting the id3 tag, skip the V1 tags to prevent the source cache
     // from being iterated to the end of the file.
+#ifndef MTK_AOSP_ENHANCEMENT
     ID3 id3(mDataSource, true);
+#else
+    ID3 id3(mDataSource, false);
+#endif
+
     if (id3.isValid()) {
         ID3::Iterator *com = new ID3::Iterator(id3, "COM");
         if (com->done()) {
@@ -427,7 +486,12 @@ sp<MetaData> MP3Extractor::getTrackMetaData(
 // ((1152 samples/frame * 160000 bits/sec) /
 //  (8000 samples/sec * 8 bits/byte)) + 1 padding byte/frame = 2881 bytes/frame.
 // Set our max frame size to the nearest power of 2 above this size (aka, 4kB)
+#ifdef MTK_AOSP_ENHANCEMENT
+const size_t MP3Source::kMaxFrameSize = (1 << 16);
+#else
 const size_t MP3Source::kMaxFrameSize = (1 << 12); /* 4096 bytes */
+#endif
+
 MP3Source::MP3Source(
         const sp<MetaData> &meta, const sp<DataSource> &source,
         off64_t first_frame_pos, uint32_t fixed_header,
@@ -443,11 +507,37 @@ MP3Source::MP3Source(
       mGroup(NULL),
       mBasisTimeUs(0),
       mSamplesRead(0) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    mError = false;//for mtk_read mp3 low power
+    mEnableTOC = true;
+    void *ptr = NULL;
+    mObserver = NULL;
+    mCallback = NULL;
+    if (meta->findPointer(kKeyDataSourceObserver, &ptr)) {
+        mObserver = ptr;
+    }
+    if (meta->findPointer(kKeyUpdateDuraCallback, &ptr) ) {
+        mCallback = (callback_t)ptr;
+    }
+    int32_t isMtkMusic = 0;
+    mIsMTKMusic = false;
+    if (mMeta->findInt32(kKeyIsMtkMusic, &isMtkMusic) && (isMtkMusic == 1) ) {
+        ALOGD("It's MTK Music, use MTK readMultiFrameFunc()");
+        mIsMTKMusic = true;
+        isMtkMusic = 0;
+    }
+    if(mIsMTKMusic){
+        mMeta->setInt32(kKeyIsFromMP3Extractor, 1);
+    }
+#endif
 }
 
 MP3Source::~MP3Source() {
     if (mStarted) {
         stop();
+#ifdef MTK_AOSP_ENHANCEMENT
+        mIsMTKMusic = false;
+#endif
     }
 }
 
@@ -462,16 +552,32 @@ status_t MP3Source::start(MetaData *) {
     mCurrentTimeUs = 0;
 
     mBasisTimeUs = mCurrentTimeUs;
+    ALOGD("mBasisTimeUs = %lld",(long long)mBasisTimeUs);
     mSamplesRead = 0;
 
     mStarted = true;
+#ifdef MTK_AOSP_ENHANCEMENT
+    if(mDataSource->flags() & DataSource::kIsCachingDataSource){
+        mEnableTOC = false; //if it's streaming, disable TOC thread
+    }
+    if(mEnableTOC){
+        startTOCThread(mFirstFramePos);
 
+    } else {
+        ALOGW("Streaming Playback don't use TOCThread!");
+    }
+#endif
     return OK;
 }
 
 status_t MP3Source::stop() {
     CHECK(mStarted);
-
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (mEnableTOC) {
+        //ALOGD("stopTOCThread!");
+        stopTOCThread();
+    }
+#endif
     delete mGroup;
     mGroup = NULL;
 
@@ -484,8 +590,228 @@ sp<MetaData> MP3Source::getFormat() {
     return mMeta;
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+
+ssize_t MP3Source::readMultiFrameFunc(size_t *frame_size,int *sample_rate,int *bitrate, int *num_samples)
+{
+    uint8_t headbuf[4]={0};
+    size_t frame_size_temp = 0;
+    off64_t mPosition = 0;
+    int num_samples_temp = 0;
+    mPosition = mCurrentPos;
+    ssize_t mFrameCount = 0;
+    *num_samples = 0;
+
+    for(int i = 0; i< MULTI_FRAME ;i++)
+    {
+        ssize_t n = mDataSource->readAt(mPosition,headbuf,4);
+
+        if (n < 4) {
+            ALOGV("Bad header");
+            return mFrameCount;
+        }
+
+        uint32_t header = U32_AT((const uint8_t *)headbuf);
+
+        if ((header & kMask) == (mFixedHeader & kMask)
+            && GetMPEGAudioFrameSize(
+            header, &frame_size_temp, sample_rate, NULL,
+            bitrate, &num_samples_temp)) {
+
+            *frame_size += frame_size_temp;//20 frame length
+            mPosition += frame_size_temp; //new position
+            *num_samples += num_samples_temp;
+            mFrameCount++;
+            }else{
+                break;
+            }
+    }
+
+    return mFrameCount;
+}
+
+
+status_t MP3Source::MTK_read(
+    MediaBuffer **out, const ReadOptions *options) {
+    ALOGV("MTK_read +++");
+    *out = NULL;
+
+    int64_t seekTimeUs;
+    ReadOptions::SeekMode mode;
+    bool seekCBR = false;
+
+    if (options != NULL && options->getSeekTo(&seekTimeUs, &mode)) {
+        int64_t actualSeekTimeUs = seekTimeUs;
+
+        if(!mEnableTOC){
+            if (mSeeker == NULL
+                || !mSeeker->getOffsetForTime(&actualSeekTimeUs, &mCurrentPos)) {
+                int32_t bitrate;
+                if (!mMeta->findInt32(kKeyBitRate, &bitrate)) {
+                // bitrate is in bits/sec.
+                ALOGI("no bitrate");
+
+                return ERROR_UNSUPPORTED;
+        }
+
+        mCurrentTimeUs = seekTimeUs;
+        mCurrentPos = mFirstFramePos + seekTimeUs * bitrate / 8000000;
+        seekCBR = true;
+        } else {
+            mCurrentTimeUs = actualSeekTimeUs;
+        }
+
+    }else{
+        ALOGD("before getFramePos seekTimeUs=%lld",(long long)seekTimeUs);
+        off_t ActualPos=0;
+        status_t stat=getFramePos(seekTimeUs, &mCurrentTimeUs, &ActualPos, true);
+        if(stat==BAD_VALUE){
+            int32_t bitrate;
+            if (!mMeta->findInt32(kKeyBitRate, &bitrate)) {
+            // bitrate is in bits/sec.
+                ALOGW("no bitrate");
+                return ERROR_UNSUPPORTED;
+            }
+            mCurrentTimeUs = seekTimeUs;
+            mCurrentPos = mFirstFramePos + seekTimeUs * bitrate / 8000000;
+            if (mSeeker == NULL || !mSeeker->getOffsetForTime(&actualSeekTimeUs, &mCurrentPos)) {
+                int32_t bitrate;
+                if (!mMeta->findInt32(kKeyBitRate, &bitrate)) {
+                // bitrate is in bits/sec.
+                ALOGI("no bitrate");
+
+                return ERROR_UNSUPPORTED;
+            }
+
+            mCurrentTimeUs = seekTimeUs;
+            mCurrentPos = mFirstFramePos + seekTimeUs * bitrate / 8000000;
+            seekCBR = true;
+            } else {
+                mCurrentTimeUs = actualSeekTimeUs;
+            }
+        }else if(stat == ERROR_END_OF_STREAM){
+            return stat;
+        }else{
+            mCurrentPos= ActualPos;
+            ALOGD("after seek mCurrentTimeUs=%lld,pActualPos=%ld",(long long)mCurrentTimeUs,ActualPos);
+        }
+
+        }
+
+    mBasisTimeUs = mCurrentTimeUs;
+    mSamplesRead = 0;
+   }
+
+    MediaBuffer *buffer;
+    status_t err = mGroup->acquire_buffer(&buffer);
+    if (err != OK) {
+        return err;
+    }
+
+    size_t frame_size;
+    int bitrate;
+    int num_samples;
+    int sample_rate;
+
+    for (;;) {
+
+        if(mError == false) {
+            ALOGV("Read MultiFrameFunc in +++++");
+            frame_size = 0;
+            ssize_t m = readMultiFrameFunc(&frame_size,&sample_rate,&bitrate, &num_samples);
+            ALOGV("Read MultiFrameFunc out ----");
+
+            if(m == MULTI_FRAME){
+                break;
+            }else if(m > 0 && m < MULTI_FRAME){
+                ALOGV("Read not enough data");
+                mError = true;
+                break;
+            }else{
+                ALOGD("Read multi frame fail, do read with default read function again, frame count = %zd",m);
+                mError = true;
+                continue;
+            }
+        }else {
+            mError = false;
+            ssize_t n = mDataSource->readAt(mCurrentPos, buffer->data(), 4);
+
+        if (n < 4) {
+            buffer->release();
+            buffer = NULL;
+
+            return ERROR_END_OF_STREAM;
+        }
+
+        uint32_t header = U32_AT((const uint8_t *)buffer->data());
+
+        if ((header & kMask) == (mFixedHeader & kMask)
+            && GetMPEGAudioFrameSize(
+            header, &frame_size, &sample_rate, NULL,
+            &bitrate, &num_samples)) {
+
+        // re-calculate mCurrentTimeUs because we might have called Resync()
+        if (seekCBR) {
+            mCurrentTimeUs = (mCurrentPos - mFirstFramePos) * 8000 / bitrate;
+            mBasisTimeUs = mCurrentTimeUs;
+        }
+
+        break;
+    }
+
+        // Lost sync.
+        ALOGV("lost sync! header = 0x%08x, old header = 0x%08x\n", header, mFixedHeader);
+
+        off64_t pos = mCurrentPos;
+        if (!Resync(mDataSource, mFixedHeader, &pos, NULL, NULL)) {
+            ALOGE("Unable to resync. Signalling end of stream.");
+
+            buffer->release();
+            buffer = NULL;
+
+            return ERROR_END_OF_STREAM;
+        }
+
+        mCurrentPos = pos;
+
+        // Try again with the new position.
+        }
+    }
+    CHECK(frame_size <= buffer->size());
+
+    ssize_t n = mDataSource->readAt(mCurrentPos, buffer->data(), frame_size);
+
+
+    if (n < (ssize_t)frame_size) {
+        buffer->release();
+        buffer = NULL;
+
+        return ERROR_END_OF_STREAM;
+    }
+
+    buffer->set_range(0, frame_size);
+
+    buffer->meta_data()->setInt64(kKeyTime, mCurrentTimeUs);
+    buffer->meta_data()->setInt32(kKeyIsSyncFrame, 1);
+
+    mCurrentPos += frame_size;
+    mSamplesRead += num_samples;
+    mCurrentTimeUs = mBasisTimeUs + ((mSamplesRead * 1000000) / sample_rate);
+
+    *out = buffer;
+
+    return OK;
+}
+
+
 status_t MP3Source::read(
         MediaBuffer **out, const ReadOptions *options) {
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    if(mIsMTKMusic == true)
+        return MTK_read(out,options);
+#endif
+
     *out = NULL;
 
     int64_t seekTimeUs;
@@ -510,7 +836,6 @@ status_t MP3Source::read(
         } else {
             mCurrentTimeUs = actualSeekTimeUs;
         }
-
         mBasisTimeUs = mCurrentTimeUs;
         mSamplesRead = 0;
     }
@@ -526,7 +851,9 @@ status_t MP3Source::read(
     int num_samples;
     int sample_rate;
     for (;;) {
+
         ssize_t n = mDataSource->readAt(mCurrentPos, buffer->data(), 4);
+
         if (n < 4) {
             buffer->release();
             buffer = NULL;
@@ -570,7 +897,11 @@ status_t MP3Source::read(
 
     CHECK(frame_size <= buffer->size());
 
+
+
     ssize_t n = mDataSource->readAt(mCurrentPos, buffer->data(), frame_size);
+
+
     if (n < (ssize_t)frame_size) {
         buffer->release();
         buffer = NULL;
@@ -593,6 +924,8 @@ status_t MP3Source::read(
     return OK;
 }
 
+#endif
+
 sp<MetaData> MP3Extractor::getMetaData() {
     sp<MetaData> meta = new MetaData;
 
@@ -601,8 +934,11 @@ sp<MetaData> MP3Extractor::getMetaData() {
     }
 
     meta->setCString(kKeyMIMEType, "audio/mpeg");
-
+#ifdef MTK_AOSP_ENHANCEMENT
+    ID3 id3(mDataSource, false);
+#else
     ID3 id3(mDataSource);
+#endif
 
     if (!id3.isValid()) {
         return meta;
@@ -679,5 +1015,313 @@ bool SniffMP3(
 
     return true;
 }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+bool FastSniffMP3(
+    const sp<DataSource> &source, String8 *mimeType,
+    float *confidence, sp<AMessage> *meta) {
+    off64_t inout_pos = 0;
+    off64_t post_id3_pos;
+    uint32_t header;
+
+    if (inout_pos == 0) {
+        // Skip an optional ID3 header if syncing at the very beginning
+        // of the datasource.
+
+        for (;;) {
+            uint8_t id3header[10];
+
+            if (source->readAt(inout_pos, id3header, sizeof(id3header))
+                    < (ssize_t)sizeof(id3header)) {
+                ALOGV("Read no enough data");
+                return false;
+            }
+
+            if (memcmp("ID3", id3header, 3)) {
+                break;
+            }
+
+            size_t len =
+                ((id3header[6] & 0x7f) << 21)
+                | ((id3header[7] & 0x7f) << 14)
+                | ((id3header[8] & 0x7f) << 7)
+                | (id3header[9] & 0x7f);
+
+            len += 10;
+
+            inout_pos += len;
+
+        }
+
+        post_id3_pos = inout_pos;
+    }
+
+    off64_t pos = inout_pos;
+    bool valid = true;
+    uint32_t test_header = 0;
+
+    for (int j = 0; j < 4; ++j) {
+        uint8_t tmp[4];
+
+        if (source->readAt(pos, tmp, 4) < 4) {
+            valid = false;
+            break;
+        }
+
+        test_header = U32_AT(tmp);
+
+        size_t test_frame_size;
+
+        if (!GetMPEGAudioFrameSize(
+                    test_header, &test_frame_size)) {
+            valid = false;
+            break;
+        }
+
+        ALOGV("found subsequent frame #%d at %lld", j + 2, (long long)pos);
+
+        pos += test_frame_size;
+    }
+
+    if (false == valid)
+    {
+        ALOGV("no dice, no valid sequence of frames found.");
+        return false;
+    }
+    else
+        header = test_header;
+
+
+    *meta = new AMessage;
+    (*meta)->setInt64("offset", inout_pos);
+    (*meta)->setInt32("header", header);
+    (*meta)->setInt64("post-id3-offset", inout_pos);
+
+    *mimeType = MEDIA_MIMETYPE_AUDIO_MPEG;
+    *confidence = 0.2f;
+
+    return true;
+}
+
+static status_t ComputeDurationFromNRandomFrames(const sp<DataSource> &source,off64_t FirstFramePos,uint32_t FixedHeader,int32_t *Averagebr,int32_t *isSingle)
+{
+    const size_t V1_TAG_SIZE = 128;
+    off_t audioDataSize = 0;
+    off64_t fileSize = 0;
+   // off_t fileoffset = 0;
+    off64_t audioOffset = 0;
+    int32_t totBR = 0;
+    int32_t avgBitRate = 0;
+    int32_t BitRate = 0;
+    int32_t randomByteOffset = 0;
+    int32_t framecount = 0;
+    size_t frame_size = 0;
+
+    if (source->getSize(&fileSize) == OK) {
+        audioDataSize = fileSize - FirstFramePos;
+        uint8_t *mData;
+        mData = NULL;
+        if ( fileSize > (off_t)V1_TAG_SIZE) {
+            mData = (uint8_t *)malloc(V1_TAG_SIZE);
+            if (source->readAt(fileSize - V1_TAG_SIZE, mData, V1_TAG_SIZE)== (ssize_t)V1_TAG_SIZE)
+            {
+                if (!memcmp("TAG", mData, 3)) {
+                    audioDataSize -= V1_TAG_SIZE;
+                    ALOGV("TAG V1_TAG_SIZE 128!");
+                }
+            }
+            free(mData);
+            mData = NULL;
+        }
+    }else{
+        ALOGD("ComputeDurationFromNRandomFrames::Read File Size Error!");
+        return UNKNOWN_ERROR;
+    }
+
+    //ALOGD("audioDataSize=%d,FirstFramePos=%d,fileSize=%d",audioDataSize,FirstFramePos,fileSize);
+    randomByteOffset = FirstFramePos;
+    uint32_t skipMultiple = audioDataSize / (MIN_RANDOM_LOCATION_TO_SCAN + 1);
+    //ALOGD("skipMultiple=%d",skipMultiple);
+    int32_t numSearchLoc = 0,currFilePosn = 0;
+    //off64_t post_id3_pos = 0;
+    audioOffset=FirstFramePos;
+    while (numSearchLoc < MIN_RANDOM_LOCATION_TO_SCAN)
+    {
+        // find random location to which we should seek in order to find
+        currFilePosn = audioOffset;
+        randomByteOffset = currFilePosn + skipMultiple;
+        if (randomByteOffset > fileSize)
+        {
+            //ALOGD("Duration   finish 1!( pos>file size)");
+            break;
+        }
+        // initialize frame count
+        framecount = 0;
+        audioOffset = randomByteOffset;
+        //ALOGD("audioOffset=%d",audioOffset);
+        if (false == Resync(source, FixedHeader, &audioOffset, NULL,NULL) )
+        {
+            //ALOGD("Resync no success !");
+            break;
+        }
+
+        // lets check rest of the frames
+        while (framecount < MIN_RANDOM_FRAMES_TO_SCAN)
+        {
+            uint8_t mp3header[4];
+            ssize_t n = source->readAt(audioOffset, mp3header, sizeof(mp3header));
+
+            if (n < 4) {
+                break;
+            }
+
+            uint32_t header = U32_AT((const uint8_t *)mp3header);
+
+            if ((header & kMask) != (FixedHeader & kMask)) {
+                //ALOGD("header error!");
+                 break;
+            }
+            if(!GetMPEGAudioFrameSize(
+                    header, &frame_size,
+                    NULL, NULL, &BitRate)){
+                //ALOGD("getmp3framesize error");
+                break;
+            }
+            if(((header>>6) & 3) == 3 )
+            {
+                *isSingle = 1;  //if channel count is single channel
+            }
+            // ALOGD("framecount=%d,frame_size=%d,BitRate=%d",framecount,frame_size,BitRate);
+            audioOffset += frame_size;
+            framecount++;
+            // initialize avgBitRate first time only
+            if (1 == framecount)
+            {
+                avgBitRate =BitRate;
+                //ALOGD("avgBitRate=%d",avgBitRate);
+            }
+
+            if (BitRate != avgBitRate)
+            {
+                avgBitRate += (BitRate - avgBitRate) / framecount;
+            }
+        }
+        //ALOGD("numSearchLoc=%d",numSearchLoc);
+        totBR += avgBitRate;
+        numSearchLoc++;
+    }
+     // calculate average bitrate
+    *Averagebr = numSearchLoc > 0 ? totBR / numSearchLoc : 0;
+    //ALOGD("RandomScan Averagebr=%d",*Averagebr);
+    if ( *Averagebr <= 0)
+    {
+        return BAD_VALUE;
+    }
+    return OK;
+}
+
+void MP3Extractor::getGeneralDuration(int bitrate)
+{
+
+    if(mDataSource->flags() & DataSource::kIsCachingDataSource){//streaming using
+        int64_t durationUsStream;
+        if (mSeeker == NULL || !mSeeker->getDuration(&durationUsStream)){
+            off64_t fileSize_Stream;
+            if (mDataSource->getSize(&fileSize_Stream) == OK) {
+                durationUsStream = 8000LL * (fileSize_Stream - mFirstFramePos) / bitrate;
+            } else {
+                durationUsStream = -1;
+                ALOGD("durationUsStream = -1");
+            }
+        }
+        if (durationUsStream >= 0) {
+            mMeta->setInt64(kKeyDuration, durationUsStream);
+        }
+        ALOGD("streaming duration = %lld",(long long)durationUsStream);
+    }else{
+
+
+        int64_t durationUs ;
+        int32_t averagebr =0;
+        off64_t fileSize_Enh = 0;
+        bool specialheader = false;
+        int32_t isSingle = 0;//if channel is single channel
+        if(mSeeker != NULL && mSeeker->getDuration(&durationUs)){
+           specialheader = true;
+           //ALOGD("Duration %lld from XING&VBRI Header ",durationUs);
+        }
+        if (!specialheader && mDataSource->getSize(&fileSize_Enh) == OK){
+            if(ComputeDurationFromNRandomFrames(mDataSource,mFirstFramePos,mFixedHeader,&averagebr,&isSingle)==OK)
+            {
+                durationUs = (fileSize_Enh - mFirstFramePos) * 8000LL / averagebr; //[byte/(kbit*8)]*1000*1000 us
+                //ALOGD("RandomScan:AverageBitrate=%d, Duration1=%lld",averagebr,durationUs);
+                //ALOGD("DirectCal:Bitrate =%d,Duration=%lld",bitrate,8000LL * (fileSize_Enh - mFirstFramePos) / bitrate);
+            }else{
+                durationUs = 8000LL * (fileSize_Enh - mFirstFramePos) / bitrate;
+                //ALOGD("No use EnhancedDuration ComputeDuration ! duration=%lld",durationUs);
+            }
+        }
+        if (durationUs >= 0) {
+            mMeta->setInt64(kKeyDuration, durationUs);
+        }
+        if(isSingle == 1)
+        {
+            //add error handle for those bad split joint mp3 file
+            mMeta->setInt32(kKeyChannelCount, isSingle);
+        }
+    }
+}
+
+status_t MP3Source::getNextFramePos(off_t *curPos, off_t *pNextPos,int64_t * frameTsUs)
+{
+
+    uint8_t mp3header[4];
+    size_t frame_size;
+    int samplerate=0;
+    int num_sample =0;
+    for(;;)
+    {
+        ssize_t n = mDataSource->readAt(*curPos, mp3header, 4);
+        if (n < 4) {
+            ALOGD("For Seek Talbe :ERROR_END_OF_STREAM");
+            return ERROR_END_OF_STREAM;
+        }
+       // ALOGD("mp3header[0]=%0x,mp3header[1]=%0x,mp3header[2]=%0x,mp3header[3]=%0x",mp3header[0],mp3header[1],mp3header[2],mp3header[3]);
+        uint32_t header = U32_AT((const uint8_t *)mp3header);
+        if ((header & kMask) == (mFixedHeader & kMask)
+            && GetMPEGAudioFrameSize(header, &frame_size,
+                                &samplerate, NULL,NULL,&num_sample))
+        {
+            break;
+        }
+        // Lost sync.
+        //ALOGD("getNextFramePos::lost sync! header = 0x%08x, old header = 0x%08x\n", header, mFixedHeader);
+        off64_t pos = *curPos;
+        if (!Resync(mDataSource, mFixedHeader, &pos, NULL,NULL)) {
+             //ALOGD("getNextFramePos---Unable to resync. Signalling end of stream.");
+             return ERROR_END_OF_STREAM;
+        }
+        *curPos = pos;
+        // Try again with the new position.
+     }
+     *pNextPos=*curPos+frame_size;
+     *frameTsUs = 1000000ll * num_sample/samplerate;
+   return OK;
+}
+
+
+status_t MP3Source::sendDurationUpdateEvent(int64_t duration)
+{
+    if (mObserver != NULL && mCallback != NULL) {
+        mCallback(mObserver, duration);
+        ALOGD("Seek Table :duration=%lld",(long long)duration);
+    }
+
+    return OK;
+
+}
+
+
+#endif
 
 }  // namespace android

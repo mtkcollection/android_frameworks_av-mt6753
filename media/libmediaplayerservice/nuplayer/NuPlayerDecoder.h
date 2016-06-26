@@ -123,6 +123,20 @@ private:
     void notifyResumeCompleteIfNecessary();
 
     DISALLOW_EVIL_CONSTRUCTORS(Decoder);
+#ifdef MTK_AOSP_ENHANCEMENT
+private:
+    /* for ALPS02065697:
+    bool mAudioAllDropped; //if all audio dropped from the first audio
+    int64_t mNumFramesHandleOutput; //Buffer count in hanleAnOutputBuffer()
+    */
+    sp<ABuffer> mLeftOverBuffer;
+    void setRenderBufferInfo(size_t bufferIx, const sp<AMessage> &msgFrom);
+    bool checkHandlePartialFrame(sp<ABuffer> srcBuffer, const sp<ABuffer> &codecBuffer, bool isCsd, bool isEos,
+            uint32_t *flags, MediaBuffer * mBuffer);
+    bool mSupportsPartialFrames;
+    void handleError(int32_t err, bool isACodecErr);    // for ACodec error notify
+    bool mIsSMPL;
+#endif
 };
 
 }  // namespace android

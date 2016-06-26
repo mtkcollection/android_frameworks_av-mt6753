@@ -1,4 +1,10 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -24,6 +30,9 @@
 #include <media/stagefright/foundation/AString.h>
 
 #include <stdlib.h>
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <media/stagefright/MediaErrors.h>
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
 
 namespace android {
 
@@ -54,12 +63,25 @@ bool ASessionDescription::parse(const void *data, size_t size) {
 
     AString desc((const char *)data, size);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    int rtpmapNum = 0;
+    bool unsupported = false;
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
     size_t i = 0;
     for (;;) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (i >= desc.size()) {
+            break;
+        }
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
         ssize_t eolPos = desc.find("\n", i);
 
         if (eolPos < 0) {
+#ifdef MTK_AOSP_ENHANCEMENT
+            eolPos = desc.size();
+#else
             break;
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
         }
 
         AString line;
@@ -80,6 +102,13 @@ bool ASessionDescription::parse(const void *data, size_t size) {
             return false;
         }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (unsupported && line.c_str()[0] != 'm') {
+            ALOGI("skip %s in unsupported media description", line.c_str());
+            i = eolPos + 1;
+            continue;
+        } else
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
         ALOGI("%s", line.c_str());
 
         switch (line.c_str()[0]) {
@@ -109,6 +138,10 @@ bool ASessionDescription::parse(const void *data, size_t size) {
                             return false;
                         }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+                        if(!parseRtpMap(key, rtpmapNum, unsupported))
+                            break;
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
                         key.setTo(line, 0, spacePos);
 
                         colonPos = spacePos;
@@ -131,6 +164,10 @@ bool ASessionDescription::parse(const void *data, size_t size) {
                 ALOGV("new section '%s'",
                      AString(line, 2, line.size() - 2).c_str());
 
+#ifdef MTK_AOSP_ENHANCEMENT
+                rtpmapNum = 0;
+                unsupported = false;
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
                 mTracks.push(Attribs());
                 mFormats.push(AString(line, 2, line.size() - 2));
                 break;
@@ -232,7 +269,11 @@ bool ASessionDescription::getDimensions(
     sprintf(key, "a=framesize:%lu", PT);
     AString value;
     if (!findAttribute(index, key, &value)) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        return tryGetWH(index, width, height, key, value);
+#else
         return false;
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
     }
 
     const char *s = value.c_str();
@@ -259,7 +300,12 @@ bool ASessionDescription::getDurationUs(int64_t *durationUs) const {
         return false;
     }
 
-    if (strncmp(value.c_str(), "npt=", 4)) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (strncmp(value.c_str(), "npt=", 4) && strncmp(value.c_str(), "npt:", 4))
+#else
+    if (strncmp(value.c_str(), "npt=", 4))
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
+    {
         return false;
     }
 
@@ -320,8 +366,14 @@ bool ASessionDescription::parseNTPRange(
     s = end + 1;  // skip the dash.
 
     if (*s == '\0') {
+#ifdef MTK_AOSP_ENHANCEMENT
+                // change for ALPS01771091 by mtk08585
+                // if come here, it is a live streaming
+                return false;
+#else
         *npt2 = FLT_MAX;  // open ended.
         return true;
+#endif
     }
 
     if (!strncmp("now", s, 3)) {
@@ -336,6 +388,104 @@ bool ASessionDescription::parseNTPRange(
 
     return *npt2 > *npt1;
 }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+bool ASessionDescription::parseRtpMap(AString key, int &rtpmapNum, bool &unsupported) {
+    if (key == "a=rtpmap") {
+        if (rtpmapNum > 0) {
+            mTracks.pop();
+            mFormats.pop();
+            unsupported = true;
+            ALOGW("ASessionDescription: multiple rtpmap"
+                    " for one media is not supported yet");
+            return false;
+        } else {
+            rtpmapNum++;
+        }
+    }
+    return true;
+}
+
+int ASessionDescription::parseString(const char* s) const {
+    ALOGI("parseString %s", s);
+
+    int len = strlen(s);
+    if (len < 9)
+        return -1;
+
+    if (strncmp(s, "integer;", 8))
+        return -1;
+
+    //const char *tmp = s + 8;
+    int v;
+    sscanf(s + 8, "%d", &v);
+    return v;
+}
+
+bool ASessionDescription::tryGetWH(size_t index, int32_t *width, int32_t *height, char *key, AString &value) const {
+    // try to get dimensions from cliprect if no framesize
+    strcpy(key, "a=cliprect");
+    if (!findAttribute(index, key, &value)) {
+        ALOGW("no framesize and cliprect, try Width/Height");
+        strcpy(key, "a=Width");
+        if (!findAttribute(index, key, &value)) {
+            return false;
+        }
+        int w = parseString(value.c_str());
+
+        strcpy(key, "a=Height");
+        if (!findAttribute(index, key, &value)) {
+            return false;
+        }
+        int h = parseString(value.c_str());
+
+        if (w > 0 && h > 0) {
+            *width = w;
+            *height = h;
+            return true;
+        }
+        return false;
+    }
+
+    const char *s = value.c_str();
+    int a = -1, b = -1, c = -1, d = -1;
+    sscanf(s, "%d,%d,%d,%d", &a, &b, &c, &d);
+    if (a == -1 || b == -1 || c == -1 || d == -1)
+        return false;
+    *height = c - a;
+    *width = d - b;
+    return true;
+}
+
+bool ASessionDescription::getBitrate(size_t index, int32_t* bitrate) const {
+    char key[] = "b=AS";
+    AString value;
+    if (!findAttribute(index, key, &value))
+        return false;
+    int32_t b = atoi(value.c_str());
+    b *= 1000;
+    if (b < 0)
+        return false;
+    *bitrate = b;
+    return true;
+}
+
+status_t ASessionDescription::getSessionUrl(String8& uri) const{
+    AString line;
+    if(findAttribute(0, "a=control", &line)) {
+        // rtsp without aggregation control url will be considered as pure RTP
+        if (!line.startsWith("rtsp://"))
+            return ERROR_UNSUPPORTED;
+
+        uri.setTo(line.c_str());
+    } else {
+        // assume as rtp streaming
+        uri.setTo("rtp://0.0.0.0");
+    }
+    return OK;
+}
+
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
 
 }  // namespace android
 

@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,6 +22,18 @@
 #include <inttypes.h>
 
 //#define LOG_NDEBUG 0
+#ifdef MTK_AOSP_ENHANCEMENT
+// for INT64_MAX
+#undef __STRICT_ANSI__
+#define __STDINT_LIMITS
+#define __STDC_LIMIT_MACROS
+#include <stdint.h>
+//#include <cutils/log.h>
+#include <media/AudioSystem.h>
+#endif
+#ifdef LOG_TAG
+#undef LOG_TAG
+#endif
 #define LOG_TAG "AudioPlayer"
 #include <utils/Log.h>
 #include <cutils/compiler.h>
@@ -35,8 +52,21 @@
 
 #include "include/AwesomePlayer.h"
 
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_AUDIO_DDPLUS_SUPPORT)
+#include <media/IAudioFlinger.h>
+#include <utils/String8.h>
+#include <hardware/audio.h>
+#include "ds_config.h"
+#endif
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <media/AudioTrackCenter.h>
+#endif
+
 namespace android {
 
+#ifdef MTK_AOSP_ENHANCEMENT
+extern AudioTrackCenter gAudioTrackCenter;
+#endif
 AudioPlayer::AudioPlayer(
         const sp<MediaPlayerBase::AudioSink> &audioSink,
         uint32_t flags,
@@ -62,7 +92,15 @@ AudioPlayer::AudioPlayer(
       mPinnedTimeUs(-1ll),
       mPlaying(false),
       mStartPosUs(0),
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_AUDIO_DDPLUS_SUPPORT)
+      mCreateFlags(flags),
+      mDolbyProcessedAudio(false){
+#else
       mCreateFlags(flags) {
+#endif//DOLBY_END
+#ifdef MTK_AOSP_ENHANCEMENT
+          init();
+#endif
 }
 
 AudioPlayer::~AudioPlayer() {
@@ -96,10 +134,16 @@ status_t AudioPlayer::start(bool sourceAlreadyStarted) {
 
     CHECK(mFirstBuffer == NULL);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    bool wasSeeking = false;
+#endif
     MediaSource::ReadOptions options;
     if (mSeeking) {
         options.setSeekTo(mSeekTimeUs);
         mSeeking = false;
+#ifdef MTK_AOSP_ENHANCEMENT
+        wasSeeking = true;
+#endif
     }
 
     mFirstBufferResult = mSource->read(&mFirstBuffer, &options);
@@ -135,6 +179,28 @@ status_t AudioPlayer::start(bool sourceAlreadyStarted) {
 
     audio_format_t audioFormat = AUDIO_FORMAT_PCM_16_BIT;
 
+#ifdef MTK_AOSP_ENHANCEMENT         // get bitWidth from metadata
+    const char *audiomime;
+#ifdef MTK_AUDIO_APE_SUPPORT
+    mIsVorbisORApe = (format->findCString(kKeyApeFlag, &audiomime) &&
+            !strcasecmp(audiomime, MEDIA_MIMETYPE_AUDIO_APE)) ||
+        (format->findCString(kKeyVorbisFlag, &audiomime) &&
+         !strcasecmp(audiomime, MEDIA_MIMETYPE_AUDIO_VORBIS));
+#else
+    mIsVorbisORApe = format->findCString(kKeyVorbisFlag, &audiomime)
+        && !strcasecmp(audiomime, MEDIA_MIMETYPE_AUDIO_VORBIS);
+#endif
+#ifdef MTK_HIGH_RESOLUTION_AUDIO_SUPPORT
+    int32_t bitWidth = 0;
+    if (format->findInt32(kKeyBitWidth, &bitWidth) && bitWidth == 24) {
+        ALOGI("audio player use 24 bit");
+    audioFormat = AUDIO_FORMAT_PCM_8_24_BIT;
+    }
+    else {
+        audioFormat = AUDIO_FORMAT_PCM_16_BIT;
+    }
+#endif
+#endif
     if (useOffload()) {
         if (mapMimeToAudioFormat(audioFormat, mime) != OK) {
             ALOGE("Couldn't map mime type \"%s\" to a valid AudioSystem::audio_format", mime);
@@ -220,6 +286,24 @@ status_t AudioPlayer::start(bool sourceAlreadyStarted) {
             return err;
         }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        //for music auto loop
+        if (!useOffload())
+        {
+            if (mAudioSink.get() != NULL)
+            {
+                int64_t numFramesPlayed = 0;
+                intptr_t trackId = 0;
+                trackId = gAudioTrackCenter.getTrackId(NULL, mAudioSink.get());
+                if (trackId)
+                {
+                    gAudioTrackCenter.getRealTimePosition(trackId, &numFramesPlayed);
+                    mTempTimeUs = numFramesPlayed * mAudioSink->msecsPerFrame() * 1000ll;
+                 }
+            }
+        }
+#endif
+
     } else {
         // playing to an AudioTrack, set up mask if necessary
         audio_channel_mask_t audioMask = channelMask == CHANNEL_MASK_USE_CHANNEL_ORDER ?
@@ -228,10 +312,17 @@ status_t AudioPlayer::start(bool sourceAlreadyStarted) {
             return BAD_VALUE;
         }
 
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_HIGH_RESOLUTION_AUDIO_SUPPORT)    // for 24 bit audio
+        mAudioTrack = new AudioTrack(
+                AUDIO_STREAM_MUSIC, mSampleRate, audioFormat, audioMask,
+                0 /*frameCount*/, AUDIO_OUTPUT_FLAG_NONE, &AudioCallback, this,
+                0 /*notificationFrames*/);
+#else
         mAudioTrack = new AudioTrack(
                 AUDIO_STREAM_MUSIC, mSampleRate, AUDIO_FORMAT_PCM_16_BIT, audioMask,
                 0 /*frameCount*/, AUDIO_OUTPUT_FLAG_NONE, &AudioCallback, this,
                 0 /*notificationFrames*/);
+#endif
 
         if ((err = mAudioTrack->initCheck()) != OK) {
             mAudioTrack.clear();
@@ -258,6 +349,16 @@ status_t AudioPlayer::start(bool sourceAlreadyStarted) {
     mPlaying = true;
     mPinnedTimeUs = -1ll;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+      if (wasSeeking) {
+          SLOGI("start with seeking");
+          mPositionTimeRealUs = 0;
+          mPositionTimeMediaUs = mSeekTimeUs;
+      }
+#endif
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_AUDIO_DDPLUS_SUPPORT)
+    updateDolbyProcessedAudioState();
+#endif
     return OK;
 }
 
@@ -273,6 +374,9 @@ void AudioPlayer::pause(bool playPendingSamples) {
 
         mNumFramesPlayed = 0;
         mNumFramesPlayedSysTimeUs = ALooper::GetNowUs();
+#ifdef MTK_AOSP_ENHANCEMENT
+        mAVSyncLastRealTime = -1ll;
+#endif
     } else {
         if (mAudioSink.get() != NULL) {
             mAudioSink->pause();
@@ -284,6 +388,9 @@ void AudioPlayer::pause(bool playPendingSamples) {
     }
 
     mPlaying = false;
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_AUDIO_DDPLUS_SUPPORT)
+    updateDolbyProcessedAudioState();
+#endif // DOLBY_END
 }
 
 status_t AudioPlayer::resume() {
@@ -299,6 +406,9 @@ status_t AudioPlayer::resume() {
     if (err == OK) {
         mPlaying = true;
     }
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_AUDIO_DDPLUS_SUPPORT)
+    updateDolbyProcessedAudioState();
+#endif // DOLBY_END
 
     return err;
 }
@@ -308,8 +418,16 @@ void AudioPlayer::reset() {
 
     ALOGV("reset: mPlaying=%d mReachedEOS=%d useOffload=%d",
                                 mPlaying, mReachedEOS, useOffload() );
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_AUDIO_DDPLUS_SUPPORT)
+    setDolbyProcessedAudioState(false);
+#endif // DOLBY_END
 
     if (mAudioSink.get() != NULL) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        //for audioflinger ramp down
+        mAudioSink->pause();
+        usleep(23*1000);
+#endif
         mAudioSink->stop();
         // If we're closing and have reached EOS, we don't want to flush
         // the track because if it is offloaded there could be a small
@@ -372,6 +490,9 @@ void AudioPlayer::reset() {
     mNumFramesPlayedSysTimeUs = ALooper::GetNowUs();
     mPositionTimeMediaUs = -1;
     mPositionTimeRealUs = -1;
+#ifdef MTK_AOSP_ENHANCEMENT
+    mAVSyncLastRealTime = -1ll;
+#endif
     mSeeking = false;
     mSeekTimeUs = 0;
     mReachedEOS = false;
@@ -491,6 +612,35 @@ uint32_t AudioPlayer::getNumFramesPendingPlayout() const {
     // may have played out by now.
     return mNumFramesPlayed - numFramesPlayedOut;
 }
+#ifdef MTK_AOSP_ENHANCEMENT //weiguo.li
+uint32_t AudioPlayer::getNumFramesPlayout() const {
+    uint32_t numFramesPlayedOut=0;
+    status_t err;
+
+    if (mAudioSink != NULL) {
+        err = mAudioSink->getPosition(&numFramesPlayedOut);
+    } else {
+        err = mAudioTrack->getPosition(&numFramesPlayedOut);
+    }
+
+    if (err != OK ) {
+        return 0;
+    }
+    SLOGV("getNumFramesPlayout:: numFramesPlayedOut =%u",numFramesPlayedOut);
+    //add latency only if two frames have been played out.
+    //this accurate time is for camera burst shot . now audiosink callback will send mute
+    // data to audiotrack if no data is available before eos is send out. if extra latency is add
+    // more mute data will be send to audiotrack. the interval of burstshot will has  more
+    // mute data.
+    int64_t playedUs =(1000000ll * numFramesPlayedOut) / mSampleRate;
+    uint32_t afLatency = 0;
+    AudioSystem::getOutputLatency(&afLatency, AUDIO_STREAM_MUSIC);
+    if(playedUs > (2* afLatency))
+        return numFramesPlayedOut;
+    return 0;
+}
+#endif
+
 
 size_t AudioPlayer::fillBuffer(void *data, size_t size) {
     if (mNumFramesPlayed == 0) {
@@ -501,6 +651,9 @@ size_t AudioPlayer::fillBuffer(void *data, size_t size) {
         return 0;
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    bool needSkipFrames = false;
+#endif
     bool postSeekComplete = false;
     bool postEOS = false;
     int64_t postEOSDelayUs = 0;
@@ -516,6 +669,26 @@ size_t AudioPlayer::fillBuffer(void *data, size_t size) {
 
             if (mSeeking) {
                 if (mIsFirstBuffer) {
+#ifdef MTK_AOSP_ENHANCEMENT
+                    // sam for first frame err--->
+                    if (mFirstBufferResult != OK) {
+                        mPositionTimeMediaUs = mSeekTimeUs;
+                        mSeeking = false;
+                        if (mObserver) {
+                            postSeekComplete = true;
+                        }
+
+                        if (mObserver && !mReachedEOS) {
+                            postEOS = true;;
+                        }
+                        SLOGW("AudioPlayer::fillBuffer--first frame error(when seek)!!");
+                        mReachedEOS = true;
+                        mIsFirstBuffer = false;
+                        mFinalStatus = mFirstBufferResult;
+                        break;
+                    }
+                    // <---sam for first frame err
+#endif  //#ifdef MTK_AOSP_ENHANCEMENT
                     if (mFirstBuffer != NULL) {
                         mFirstBuffer->release();
                         mFirstBuffer = NULL;
@@ -523,6 +696,12 @@ size_t AudioPlayer::fillBuffer(void *data, size_t size) {
                     mIsFirstBuffer = false;
                 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+                if (mPadEnable) {
+                    mLastBufferSize = 0;//hai
+                    mLastBufferTimeUs = mSeekTimeUs;
+                }
+#endif
                 options.setSeekTo(mSeekTimeUs);
                 refreshSeekTime = true;
 
@@ -530,11 +709,27 @@ size_t AudioPlayer::fillBuffer(void *data, size_t size) {
                     mInputBuffer->release();
                     mInputBuffer = NULL;
                 }
+#ifdef MTK_AOSP_ENHANCEMENT
+                SLOGD("Release the data when seek, size_done is %zu", size_done);
+                size_remaining += size_done;
+                size_done = 0;
+                memset((char *)data, 0, size_remaining);
+#endif
 
                 mSeeking = false;
                 if (mObserver) {
                     postSeekComplete = true;
                 }
+#ifdef MTK_AOSP_ENHANCEMENT
+                // don't do this for RTSP
+                if (mSeekTimeUs != INT64_MAX)
+                {
+                    if(mIsVorbisORApe)
+                        needSkipFrames = true;
+                    else
+                        needSkipFrames = false;
+                }
+#endif
             }
         }
 
@@ -549,8 +744,45 @@ size_t AudioPlayer::fillBuffer(void *data, size_t size) {
                 mIsFirstBuffer = false;
             } else {
                 err = mSource->read(&mInputBuffer, &options);
-            }
+#ifdef MTK_AOSP_ENHANCEMENT
+                if(needSkipFrames) {
+                    Mutex::Autolock autoLock(mLock);
+                    int64_t positionTimeMediaUS = mPositionTimeMediaUs;
+                    struct timeval ts,te;
+                    gettimeofday(&ts,NULL);
 
+                    do{
+                        gettimeofday(&te,NULL);
+                        if((te.tv_sec - ts.tv_sec) > 3) {
+                            SLOGD("accurate read costs much time");
+                                        needSkipFrames = false;
+                            break;
+                        }
+                              CHECK((err == OK && mInputBuffer != NULL)|| (err != OK && mInputBuffer == NULL));
+                              if(err != OK)
+                                   needSkipFrames = false;
+                              else {
+                                   CHECK(mInputBuffer->meta_data()->findInt64(kKeyTime, &positionTimeMediaUS));
+                                   //for ape extra high compress type, frame is more than 180s..
+                                   if(((mSeekTimeUs - positionTimeMediaUS) > 100000)
+                                           && ((mSeekTimeUs - positionTimeMediaUS) < 200000000)) {
+                                      mInputBuffer->release();
+                                  mInputBuffer = NULL;
+                                      err = mSource->read(&mInputBuffer);
+                                   }
+                                   else
+                                    needSkipFrames = false;
+                               }
+                            }while(needSkipFrames);
+                      }
+#endif
+            }
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_AUDIO_DDPLUS_SUPPORT)
+            if (err == INFO_DOLBY_PROCESSED_AUDIO_START || err == INFO_DOLBY_PROCESSED_AUDIO_STOP) {
+                setDolbyProcessedAudioState(err == INFO_DOLBY_PROCESSED_AUDIO_START);
+                err = OK;
+            }
+#endif // DOLBY_END
             CHECK((err == OK && mInputBuffer != NULL)
                    || (err != OK && mInputBuffer == NULL));
 
@@ -597,7 +829,19 @@ size_t AudioPlayer::fillBuffer(void *data, size_t size) {
 
                             postEOS = true;
                             if (mAudioSink->needsTrailingPadding()) {
+#ifdef MTK_AOSP_ENHANCEMENT
+                        uint32_t afLatency = 0;
+                        if(getNumFramesPlayout() >0) {
+                            if (AudioSystem::getOutputLatency(&afLatency, AUDIO_STREAM_MUSIC) != NO_ERROR) {
+                                                afLatency = mLatencyUs/3;
+                            }
+                        }
+
+                        postEOSDelayUs = timeToCompletionUs + 2*1000*afLatency;
+                        SLOGD("postEOSDelayUs =%lld ms",(long long)(postEOSDelayUs/1000));
+#else
                                 postEOSDelayUs = timeToCompletionUs + mLatencyUs;
+#endif
                             } else {
                                 postEOSDelayUs = 0;
                             }
@@ -622,6 +866,72 @@ size_t AudioPlayer::fillBuffer(void *data, size_t size) {
                         kKeyTime, &mPositionTimeMediaUs));
             }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+            if (mPadEnable)
+            {//hai
+                if (mPositionTimeMediaUs < mLastBufferTimeUs) {
+                    // Demon, skip the frame if all samples are late
+                    // INT64_MAX is used for seeking
+                    if (mLastBufferTimeUs != INT64_MAX) {
+                        size_t size = (mLastBufferTimeUs - mPositionTimeMediaUs)
+                            *mSampleRate*mFrameSize/1000000 + mLastBufferSize;
+                        if (size > mInputBuffer->range_length()) {
+                            SLOGW("AudioPlayer: drop late buffer %lld",
+                                    (long long)mPositionTimeMediaUs);
+                            mInputBuffer->release();
+                            mInputBuffer = NULL;
+                            continue;
+                        }
+                    }
+                    mLastBufferTimeUs = mPositionTimeMediaUs;
+                }
+                size_t NeedLastBufferSize = (mPositionTimeMediaUs - mLastBufferTimeUs)*mSampleRate*mFrameSize/1000000;
+                if ((int64_t)(NeedLastBufferSize - mLastBufferSize) > mLastBufferSize)
+                {
+                    SLOGD("mPositionTimeMediaUs=%lld, mLastBufferTimeUs=%lld, mSampleRate=%d, mFrameSize=%zu",
+                            (long long)mPositionTimeMediaUs, (long long)mLastBufferTimeUs, mSampleRate, mFrameSize);
+                    SLOGD("NeedLastBufferSize=%zu, mLastBufferSize=%lld", NeedLastBufferSize, (long long)mLastBufferSize);
+                    int64_t tempTimeUs;
+                    size_t NeedPaddingSize = NeedLastBufferSize - mLastBufferSize;
+                    NeedPaddingSize = NeedPaddingSize - NeedPaddingSize % mFrameSize;
+                    if (NeedPaddingSize < 2*1024*1024)//max padding size is 2M
+                    {
+                        MediaBuffer *tempBuf = new MediaBuffer(NeedPaddingSize + mInputBuffer->range_length());
+                        if (tempBuf != NULL)
+                        {
+                            memset(tempBuf->data(), 0, NeedPaddingSize);
+                            memcpy(((char *)tempBuf->data()) + NeedPaddingSize,
+                                    ((const char*)mInputBuffer->data()) + mInputBuffer->range_offset(),
+                                    mInputBuffer->range_length());
+                            tempTimeUs = mPositionTimeMediaUs;
+                            mPositionTimeMediaUs = mLastBufferTimeUs +
+                                mLastBufferSize * 1000000 / (mFrameSize * mSampleRate);
+                            mLastBufferSize = mInputBuffer->range_length();
+                            mLastBufferTimeUs = tempTimeUs;
+                            mInputBuffer->release();
+                            mInputBuffer = tempBuf;
+                        }
+                        else
+                        {
+                            SLOGW("Malloc audio pad buffer failed!");
+                            mLastBufferSize = mInputBuffer->range_length();
+                            mLastBufferTimeUs = mPositionTimeMediaUs;
+                        }
+                    }
+                    else
+                    {
+                        SLOGW("Too large audio padding size(%zu)!!!", NeedPaddingSize);
+                        mLastBufferSize = mInputBuffer->range_length();
+                        mLastBufferTimeUs = mPositionTimeMediaUs;
+                    }
+                }
+                else
+                {
+                    mLastBufferSize = mInputBuffer->range_length();
+                    mLastBufferTimeUs = mPositionTimeMediaUs;
+                }
+            }
+#endif
             // need to adjust the mStartPosUs for offload decoding since parser
             // might not be able to get the exact seek time requested.
             if (refreshSeekTime) {
@@ -693,6 +1003,9 @@ size_t AudioPlayer::fillBuffer(void *data, size_t size) {
 
         if (mReachedEOS) {
             mPinnedTimeUs = mNumFramesPlayedSysTimeUs;
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_AUDIO_DDPLUS_SUPPORT)
+            setDolbyProcessedAudioState(false);
+#endif // DOLBY_END
         } else {
             mPinnedTimeUs = -1ll;
         }
@@ -705,6 +1018,13 @@ size_t AudioPlayer::fillBuffer(void *data, size_t size) {
     if (postSeekComplete) {
         mObserver->postAudioSeekComplete();
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+    intptr_t trackId = 0;
+    trackId = gAudioTrackCenter.getTrackId(NULL, mAudioSink.get());
+    if (trackId) {
+        gAudioTrackCenter.setTrackActive(trackId, !mReachedEOS);
+    }
+#endif
 
     return size_done;
 }
@@ -725,6 +1045,17 @@ int64_t AudioPlayer::getRealTimeUs() {
 int64_t AudioPlayer::getRealTimeUsLocked() const {
     CHECK(mStarted);
     CHECK_NE(mSampleRate, 0);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    int64_t numFramesPlayed = 0;
+    intptr_t trackId = 0;
+    trackId = gAudioTrackCenter.getTrackId(NULL, mAudioSink.get());
+    if (trackId) {
+        gAudioTrackCenter.getRealTimePosition(trackId, &numFramesPlayed);
+        int64_t realTimeUs = numFramesPlayed * mAudioSink->msecsPerFrame() * 1000ll;
+        return realTimeUs;
+    }
+#endif
     int64_t result = -mLatencyUs + (mNumFramesPlayed * 1000000) / mSampleRate;
 
     // Compensate for large audio buffers, updates of mNumFramesPlayed
@@ -794,7 +1125,12 @@ int64_t AudioPlayer::getMediaTimeUs() {
         return mSeekTimeUs;
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    //for music auto loop
+    int64_t realTimeOffset = getRealTimeUsLocked() - mPositionTimeRealUs - mTempTimeUs;
+#else
     int64_t realTimeOffset = getRealTimeUsLocked() - mPositionTimeRealUs;
+#endif
     if (realTimeOffset < 0) {
         realTimeOffset = 0;
     }
@@ -833,10 +1169,16 @@ status_t AudioPlayer::seekTo(int64_t time_us) {
     mNumFramesPlayed = 0;
     mNumFramesPlayedSysTimeUs = ALooper::GetNowUs();
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    mAVSyncLastRealTime = -1ll;
+#endif
     if (mAudioSink != NULL) {
         if (mPlaying) {
             mAudioSink->pause();
         }
+#ifdef MTK_AOSP_ENHANCEMENT
+    usleep(23*1000);//for audioflinger ramp down
+#endif
         mAudioSink->flush();
         if (mPlaying) {
             mAudioSink->start();
@@ -850,8 +1192,53 @@ status_t AudioPlayer::seekTo(int64_t time_us) {
             mAudioTrack->start();
         }
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+        int64_t numFramesPlayed = 0;
+        intptr_t trackId = 0;
+        trackId = gAudioTrackCenter.getTrackId(NULL, mAudioSink.get());
+        if (trackId) {
+            gAudioTrackCenter.getRealTimePosition(trackId, &numFramesPlayed);
+            mTempTimeUs = numFramesPlayed * mAudioSink->msecsPerFrame() * 1000ll;
+        }
+#endif
 
     return OK;
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+void AudioPlayer::enableAudioPad() {
+    mPadEnable = true;
+}
+
+void AudioPlayer::init() {
+    mSeekTimeUs = -1;   // should reset to -1 now
+    mLastBufferTimeUs = 0;
+    mLastBufferSize = 0;
+    mAVSyncLastRealTime = -1ll;
+    mIsVorbisORApe = false;
+    mPadEnable= false;
+    mTempTimeUs = 0;
+}
+#endif
+
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_AUDIO_DDPLUS_SUPPORT)
+void AudioPlayer::updateDolbyProcessedAudioState() {
+    ALOGD("%s(processed=%d, playing=%d)", __FUNCTION__, mDolbyProcessedAudio, mPlaying);
+    int value = mDolbyProcessedAudio && mPlaying;
+    String8 params = String8::format("%s=%d", DOLBY_PARAM_PROCESSED_AUDIO, value);
+    if (mAudioSink.get() != NULL) {
+        mAudioSink->setParameters(params);
+    } else {
+        mAudioTrack->setParameters(params);
+    }
+}
+
+void AudioPlayer::setDolbyProcessedAudioState(bool processed) {
+    ALOGD("%s(processed=%d)", __FUNCTION__, processed);
+    if(processed != mDolbyProcessedAudio) {
+        mDolbyProcessedAudio = processed;
+        updateDolbyProcessedAudioState();
+    }
+}
+#endif // DOLBY_END
 }

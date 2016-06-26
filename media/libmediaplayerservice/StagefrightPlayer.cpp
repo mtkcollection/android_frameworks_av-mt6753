@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -95,7 +100,11 @@ status_t StagefrightPlayer::start() {
 status_t StagefrightPlayer::stop() {
     ALOGV("stop");
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    return mPlayer->pause(true);
+#else
     return pause();  // what's the difference?
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
 }
 
 status_t StagefrightPlayer::pause() {
@@ -220,6 +229,39 @@ status_t StagefrightPlayer::getMetadata(
             Metadata::kSeekAvailable,
             flags & MediaExtractor::CAN_SEEK);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    // Set video width/height to indicate that video exists
+    // This is for new Gallery/Gallery3D
+    int32_t width, height;
+    if (mPlayer->getVideoDimensions(&width, &height) == OK) {
+        if (width > 0 && height > 0) {
+            metadata.appendInt32(Metadata::kVideoWidth, width);
+            metadata.appendInt32(Metadata::kVideoHeight, height);
+        }
+    }
+
+    sp<MetaData> meta = mPlayer->getMetaData();
+    if (meta != NULL) {
+        int timeout = 0;
+        if (meta->findInt32(kKeyServerTimeout, &timeout) && timeout > 0) {
+            metadata.appendInt32(Metadata::kServerTimeout, timeout);
+        }
+
+        const char *val;
+        if (meta->findCString(kKeyTitle, &val)) {
+            ALOGI("meta title %s ", val);
+            metadata.appendString(Metadata::kTitle, val);
+        }
+        if (meta->findCString(kKeyAuthor, &val)) {
+            ALOGI("meta author %s ", val);
+            metadata.appendString(Metadata::kAuthor, val);
+        }
+        /*  let app can check whether a/v processing is drm file */
+        int32_t isDRMProtected = 0;
+        ALOGD("init isDRMProtected = %d", isDRMProtected);
+        metadata.appendBool(Metadata::kDrmCrippled, isDRMProtected);
+    }
+#endif
     return OK;
 }
 

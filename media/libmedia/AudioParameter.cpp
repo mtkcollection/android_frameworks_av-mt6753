@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2006-2011 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,8 +23,11 @@
 //#define LOG_NDEBUG 0
 
 #include <utils/Log.h>
-
+#ifdef MTK_AUDIO
+#include <hardware/audio_mtk.h>
+#else
 #include <hardware/audio.h>
+#endif
 #include <media/AudioParameter.h>
 
 namespace android {
@@ -32,6 +40,29 @@ const char * const AudioParameter::keyChannels = AUDIO_PARAMETER_STREAM_CHANNELS
 const char * const AudioParameter::keyFrameCount = AUDIO_PARAMETER_STREAM_FRAME_COUNT;
 const char * const AudioParameter::keyInputSource = AUDIO_PARAMETER_STREAM_INPUT_SOURCE;
 const char * const AudioParameter::keyScreenState = AUDIO_PARAMETER_KEY_SCREEN_STATE;
+
+#ifdef MTK_AUDIO
+const char * const AudioParameter::keyTimestretch = AUDIO_PARAMETER_KEY_TIME_STRETCH;
+const char * const AudioParameter::keyBessurroundOnOff = AUDIO_PARAMETER_KEY_BESSURROUND_ONOFF;
+const char * const AudioParameter::keyBessurroundMode = AUDIO_PARAMETER_KEY_BESSURROUND_MODE;
+const char * const AudioParameter::keyHDMIBitwidth = AUDIO_PARAMETER_KEY_HDMI_BITWIDCH;
+const char * const AudioParameter::keyHDMIChannel = AUDIO_PARAMETER_KEY_HDMI_CHANNEL;
+const char * const AudioParameter::keyHDMIMaxSamplerate = AUDIO_PARAMETER_KEY_HDMI_MAXSAMPLERATE;
+//LosslessBT related
+const char * const AudioParameter::keyLosslessBTVolumeSatisfied = AUDIO_PARAMETER_KEY_LOSSLESS_BT_VOLUME_SATISFIED;
+const char * const AudioParameter::keyLosslessBTPcmPlaying = AUDIO_PARAMETER_KEY_LOSSLESS_BT_PCM_PLAYING;
+const char * const AudioParameter::keyLosslessBTOffloadPlaying = AUDIO_PARAMETER_KEY_LOSSLESS_BT_OFFLOAD_PLAYING;
+const char * const AudioParameter::keyLosslessBTDoStandybyWhenMute = AUDIO_PARAMETER_KEY_LOSSLESS_BT_STANDBY_WHEN_MUTE;
+const char * const AudioParameter::keyLosslessBTOffloadSupport = AUDIO_PARAMETER_KEY_LOSSLESS_BT_OFFLOAD_SUPPORT;
+const char * const AudioParameter::keyLosslessBTStatus = AUDIO_PARAMETER_KEY_LOSSLESS_BT_STATUS;
+const char * const AudioParameter::keyLosslessBTWorking = AUDIO_PARAMETER_KEY_LOSSLESS_BT_WORKING;
+const char * const AudioParameter::keyLosslessBTAbsoluteVolume = AUDIO_PARAMETER_KEY_LOSSLESS_BT_ABSOLUTE_VOLUME;
+const char * const AudioParameter::keyRoutingToNone = AUDIO_PARAMETER_KEY_ROUTING_TO_NONE;
+const char * const AudioParameter::keyFmDirectControl = AUDIO_PARAMETER_KEY_FM_DIRECT_CONTROL;
+//Offload Audio Playback Usage
+const char * const AudioParameter::keyOffloadAudioDoStandybyWhenMute = AUDIO_PARAMETER_KEY_OFFLOAD_AUDIO_STANDBY_WHEN_MUTE;
+
+#endif
 
 AudioParameter::AudioParameter(const String8& keyValuePairs)
 {

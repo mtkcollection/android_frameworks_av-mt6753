@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,7 +24,6 @@
 namespace android {
 
 const char *MEDIA_MIMETYPE_IMAGE_JPEG = "image/jpeg";
-
 const char *MEDIA_MIMETYPE_VIDEO_VP8 = "video/x-vnd.on2.vp8";
 const char *MEDIA_MIMETYPE_VIDEO_VP9 = "video/x-vnd.on2.vp9";
 const char *MEDIA_MIMETYPE_VIDEO_AVC = "video/avc";
@@ -64,4 +68,42 @@ const char *MEDIA_MIMETYPE_TEXT_VTT = "text/vtt";
 const char *MEDIA_MIMETYPE_TEXT_CEA_608 = "text/cea-608";
 const char *MEDIA_MIMETYPE_DATA_TIMED_ID3 = "application/x-id3v4";
 
+#ifdef MTK_AOSP_ENHANCEMENT
+const char *MEDIA_MIMETYPE_VIDEO_VPX = "video/x-vnd.on2.vp8";
+const char *MEDIA_MIMETYPE_VIDEO_DIVX = "video/divx";
+const char *MEDIA_MIMETYPE_VIDEO_DIVX3 = "video/divx3";
+const char *MEDIA_MIMETYPE_VIDEO_XVID = "video/xvid";
+const char *MEDIA_MIMETYPE_VIDEO_MSMPEG4V3 = "video/msmp4v3";
+const char *MEDIA_MIMETYPE_APPLICATION_SDP = "application/sdp";
+const char *MEDIA_MIMETYPE_CONTAINER_ASF = "video/asfff";
+const char *MEDIA_MIMETYPE_ELEMENT_STREAM = "video/es";
+const char *MEDIA_MIMETYPE_VIDEO_MJPEG = "video/x-motion-jpeg";
+const char *MEDIA_MIMETYPE_VIDEO_WMV = "video/x-ms-wmv";
+const char *MEDIA_MIMETYPE_AUDIO_WMA = "audio/x-ms-wma";  // maybe other contains with this codec
+const char *MEDIA_MIMETYPE_AUDIO_WMAPRO = "audio/x-ms-wmapro";  // maybe other contains with this codec
+const char *MEDIA_MIMETYPE_VIDEO_SORENSON_SPARK = "video/flv1";
+const char *MEDIA_MIMETYPE_CONTAINER_FLV = "video/x-flv";
+const char *MEDIA_MIMETYPE_VIDEO_FLV = "video/x-flv";
+const char *MEDIA_MIMETYPE_CONTAINER_OGM = "video/ogm";
+
+const char *MEDIA_MIMETYPE_AUDIO_APE = "audio/ape";
+const char *MEDIA_MIMETYPE_AUDIO_ALAC = "audio/alac";
+const char *MEDIA_MIMETYPE_AUDIO_FLV = "audio/x-flv";  // maybe other contains with this codec
+const char *MEDIA_MIMETYPE_AUDIO_MS_ADPCM = "audio/x-adpcm-ms";
+const char *MEDIA_MIMETYPE_AUDIO_DVI_IMA_ADPCM = "audio/x-adpcm-dvi-ima";
+const char *MEDIA_MIMETYPE_AUDIO_EAC3_JOC = "audio/eac3-joc";
+
+const char *MEDIA_MIMETYPE_TEXT_ASS = "text/ass";
+const char *MEDIA_MIMETYPE_TEXT_SSA = "text/ssa";
+const char *MEDIA_MIMETYPE_TEXT_TXT = "text/txt";
+const char *MEDIA_MIMETYPE_TEXT_VOBSUB = "text/vobsub";
+const char *MEDIA_MIMETYPE_TEXT_DVB =  "text/dvb";
+const char *MEDIA_MIMETYPE_TEXT_SUBASS = "application/x-subtitle-ass";
+const char *MEDIA_MIMETYPE_TEXT_SUBSSA = "application/x-subtitle-ssa";
+const char *MEDIA_MIMETYPE_TEXT_SUBTXT = "application/x-subtitle-txt";
+const char *MEDIA_MIMETYPE_TEXT_SUBMPL = "application/x-subtitle-mpl";   // MPL
+const char *MEDIA_MIMETYPE_TEXT_SUBSMI = "application/x-subtitle-smi";   // SMI
+const char *MEDIA_MIMETYPE_TEXT_SUB = "application/x-subtitle-sub";      // SUB
+const char *MEDIA_MIMETYPE_TEXT_SUBIDX = "application/x-subtitle-idx";
+#endif
 }  // namespace android

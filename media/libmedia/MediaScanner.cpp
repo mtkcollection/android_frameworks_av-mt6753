@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -80,6 +85,9 @@ void MediaScanner::loadSkipList() {
 
 MediaScanResult MediaScanner::processDirectory(
         const char *path, MediaScannerClient &client) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGI("processDirectory: %s \n", path);
+#endif
     int pathLength = strlen(path);
     if (pathLength >= PATH_MAX) {
         return MEDIA_SCAN_RESULT_SKIPPED;
@@ -99,7 +107,17 @@ MediaScanResult MediaScanner::processDirectory(
 
     client.setLocale(locale());
 
-    MediaScanResult result = doProcessDirectory(pathBuffer, pathRemaining, client, false);
+    /// M: add for the new feature about the new thread pool on JB9.MP/KK/KK.AOSP branch
+    bool flag = false;
+    for (int i = pathLength - 1; i >= 1; i--) {
+        if ((pathBuffer[i] == '.') && (pathBuffer[i - 1] == '/')) {
+            ALOGW("Include nomeida folder.");
+            flag = true;
+        }
+    }
+
+    MediaScanResult result = doProcessDirectory(pathBuffer, pathRemaining, client, flag);
+    /// @}
 
     free(pathBuffer);
 
@@ -174,7 +192,9 @@ MediaScanResult MediaScanner::doProcessDirectoryEntry(
         struct dirent* entry, char* fileSpot) {
     struct stat statbuf;
     const char* name = entry->d_name;
-
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGV("doProcessDirectoryEntry: %s \n", path);
+#endif
     // ignore "." and ".."
     if (name[0] == '.' && (name[1] == 0 || (name[1] == '.' && name[2] == 0))) {
         return MEDIA_SCAN_RESULT_SKIPPED;

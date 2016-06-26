@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2012 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -97,6 +102,13 @@ void SDPLoader::onLoad(const sp<AMessage> &msg) {
 
         if (err != OK) {
             ALOGE("connect() returned %d", err);
+#ifdef MTK_AOSP_ENHANCEMENT
+            if (err == ERROR_IO) {
+                err = ERROR_CANNOT_CONNECT;
+                ALOGE("reset err id from %d to %d for connect retry", ERROR_IO, ERROR_CANNOT_CONNECT);
+            }
+#endif
+
         }
     }
 

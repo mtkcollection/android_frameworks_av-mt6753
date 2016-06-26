@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -26,6 +31,7 @@
 #include <math.h>
 #include <audio_effects/effect_visualizer.h>
 
+//#define DEBUGDUMP
 
 extern "C" {
 
@@ -141,7 +147,10 @@ int Visualizer_setConfig(VisualizerContext *pContext, effect_config_t *pConfig)
     if (pConfig->inputCfg.channels != AUDIO_CHANNEL_OUT_STEREO) return -EINVAL;
     if (pConfig->outputCfg.accessMode != EFFECT_BUFFER_ACCESS_WRITE &&
             pConfig->outputCfg.accessMode != EFFECT_BUFFER_ACCESS_ACCUMULATE) return -EINVAL;
+#ifdef MTK_HD_AUDIO_ARCHITECTURE
+#else
     if (pConfig->inputCfg.format != AUDIO_FORMAT_PCM_16_BIT) return -EINVAL;
+#endif
 
     pContext->mConfig = *pConfig;
 
@@ -304,6 +313,27 @@ static inline int16_t clamp16(int32_t sample)
     return sample;
 }
 
+static inline int32_t clamp32(int64_t sample)
+{
+    // check overflow for both positive and negative values:
+    // all bits above short range must me equal to sign bit
+    if ((sample>>31) ^ (sample>>63))
+        sample = 0x7FFFFFFF ^ (sample>>63);
+    return sample;
+}
+
+#ifdef DEBUGDUMP
+static void audio_dump(const char * filepath, void * buffer, int count)
+{
+    FILE * fp= fopen(filepath, "ab+");
+    if(fp!=NULL)
+    {
+        fwrite(buffer,1,count,fp);
+        fclose(fp);
+    }
+}
+#endif
+
 int Visualizer_process(
         effect_handle_t self,audio_buffer_t *inBuffer, audio_buffer_t *outBuffer)
 {
@@ -353,7 +383,11 @@ int Visualizer_process(
         shift = 32;
         int len = inBuffer->frameCount * 2;
         for (int i = 0; i < len; i++) {
+#ifdef MTK_HD_AUDIO_ARCHITECTURE
+        int32_t smp = inBuffer->s32[i]>>16;
+#else
             int32_t smp = inBuffer->s16[i];
+#endif
             if (smp < 0) smp = -smp - 1; // take care to keep the max negative in range
             int32_t clz = __builtin_clz(smp);
             if (shift > clz) shift = clz;
@@ -382,10 +416,27 @@ int Visualizer_process(
             // wrap around
             captIdx = 0;
         }
+#ifdef MTK_HD_AUDIO_ARCHITECTURE
+    int32_t smp = (inBuffer->s32[2 * inIdx]>>16) + (inBuffer->s32[2 * inIdx + 1]>>16);
+#else
         int32_t smp = inBuffer->s16[2 * inIdx] + inBuffer->s16[2 * inIdx + 1];
+#endif
+
+#ifdef MTK_AUDIOMIXER_ENABLE_DRC
+    int32_t temp = smp;
+    smp = smp >> shift;
+    if(0==smp && 0!=temp)
+        smp = 1;
+//    smp = 1;  // forced pass gapless test
+#else
         smp = smp >> shift;
+#endif
         buf[captIdx] = ((uint8_t)smp)^0x80;
     }
+
+#ifdef DEBUGDUMP
+    audio_dump("/sdcard/mtklog/audio_dump/effect_visualizer_capt_format8bit_mono.pcm",buf,inBuffer->frameCount*sizeof(int8_t));
+#endif
 
     // XXX the following two should really be atomic, though it probably doesn't
     // matter much for visualization purposes
@@ -395,10 +446,19 @@ int Visualizer_process(
         pContext->mBufferUpdateTime.tv_sec = 0;
     }
 
+#ifdef DEBUGDUMP
+    audio_dump("/sdcard/mtklog/audio_dump/effect_visualizer_in_format16bit_stereo.pcm",inBuffer->raw,outBuffer->frameCount*2*sizeof(int16_t));
+#endif
+
     if (inBuffer->raw != outBuffer->raw) {
         if (pContext->mConfig.outputCfg.accessMode == EFFECT_BUFFER_ACCESS_ACCUMULATE) {
             for (size_t i = 0; i < outBuffer->frameCount*2; i++) {
+
+#ifdef MTK_HD_AUDIO_ARCHITECTURE
+                outBuffer->s32[i] = clamp32(outBuffer->s32[i] + inBuffer->s32[i]);
+#else
                 outBuffer->s16[i] = clamp16(outBuffer->s16[i] + inBuffer->s16[i]);
+#endif
             }
         } else {
             memcpy(outBuffer->raw, inBuffer->raw, outBuffer->frameCount * 2 * sizeof(int16_t));

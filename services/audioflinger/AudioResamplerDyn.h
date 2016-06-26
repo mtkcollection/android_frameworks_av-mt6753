@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2013 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -125,6 +130,10 @@ private:
             int32_t mFilterSampleRate; // designed filter sample rate.
         src_quality mFilterQuality;    // designed filter quality.
               void* mCoefBuffer;       // if a filter is created, this is not null
+public:
+//<MTK_ADDED
+    virtual void init(int32_t SrcSampleRate);
+//MTK_ADDED>
 };
 
 } // namespace android

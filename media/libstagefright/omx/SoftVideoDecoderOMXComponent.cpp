@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2013 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -28,8 +33,11 @@
 #include <media/stagefright/foundation/AMessage.h>
 #include <media/stagefright/foundation/AUtils.h>
 #include <media/stagefright/MediaDefs.h>
+#include <OMX_VideoExt.h>
 
 namespace android {
+
+
 
 template<class T>
 static void InitOMXParams(T *params) {
@@ -301,6 +309,12 @@ OMX_ERRORTYPE SoftVideoDecoderOMXComponent::internalGetParameter(
                 return OMX_ErrorNoMore;
             }
 
+            if( mProfileLevels[profileLevel->nProfileIndex].mProfile == OMX_VIDEO_HEVCProfileMain
+                && mProfileLevels[profileLevel->nProfileIndex].mLevel >= OMX_VIDEO_HEVCMainTierLevel4) {
+                ALOGE("Not Support mProfile %d, mLevel %d", mProfileLevels[profileLevel->nProfileIndex].mProfile, mProfileLevels[profileLevel->nProfileIndex].mLevel);
+                return OMX_ErrorNoMore;
+            }
+
             profileLevel->eProfile = mProfileLevels[profileLevel->nProfileIndex].mProfile;
             profileLevel->eLevel   = mProfileLevels[profileLevel->nProfileIndex].mLevel;
             return OMX_ErrorNone;
@@ -388,6 +402,18 @@ OMX_ERRORTYPE SoftVideoDecoderOMXComponent::internalSetParameter(
             uint32_t oldHeight = def->format.video.nFrameHeight;
             uint32_t newWidth = video_def->nFrameWidth;
             uint32_t newHeight = video_def->nFrameHeight;
+#ifdef MTK_AOSP_ENHANCEMENT
+            // 20150126 Marcus Huang: Fix ALPS01919422; limits the max width/height
+            //@Vdec_drv_if_public.c
+            //  DEC_MAX_WIDTH = 1920;
+            //  DEC_MAX_HEIGHT = 1088;
+#define MAX_SUPPORT_WIDTH 1920
+#define MAX_SUPPORT_HEIGHT 1088
+            if (newWidth > MAX_SUPPORT_WIDTH || newHeight > MAX_SUPPORT_HEIGHT) {
+                ALOGE("frame size is not supported (%d x %d)", newWidth, newHeight);
+                return OMX_ErrorUnsupportedSetting;
+            }
+#endif
             if (newWidth != oldWidth || newHeight != oldHeight) {
                 bool outputPort = (newParams->nPortIndex == kOutputPortIndex);
                 if (outputPort) {

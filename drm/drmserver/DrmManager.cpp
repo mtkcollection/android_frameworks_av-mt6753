@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,7 +19,7 @@
  * limitations under the License.
  */
 
-//#define LOG_NDEBUG 0
+#define LOG_NDEBUG 0
 #define LOG_TAG "DrmManager(Native)"
 #include "utils/Log.h"
 
@@ -400,6 +405,45 @@ status_t DrmManager::getAllSupportInfo(
     *length = validPlugins;
     return DRM_NO_ERROR;
 }
+
+//Add by rui
+//To pass client's client to drmserver
+
+DecryptHandle* DrmManager::openDecryptSession(
+        int uniqueId, int fd, off64_t offset, off64_t length, const char* mime, pid_t pid) {
+
+    Mutex::Autolock _l(mDecryptLock);
+    status_t result = DRM_ERROR_CANNOT_HANDLE;
+    Vector<String8> plugInIdList = mPlugInManager.getPlugInIdList();
+
+    DecryptHandle* handle = new DecryptHandle();
+    if (NULL != handle) {
+        handle->decryptId = mDecryptSessionId + 1;
+        //pass client's client pid to drmserver
+        String8 pid_str;
+        pid_str.appendFormat("%d",pid);
+        ALOGD("pid = %d ",pid);
+        ALOGD("pid_str = %s",pid_str.string());
+        handle->extendedData.add(String8("ClientPid"),pid_str);
+
+        for (unsigned int index = 0; index < plugInIdList.size(); index++) {
+            String8 plugInId = plugInIdList.itemAt(index);
+            IDrmEngine& rDrmEngine = mPlugInManager.getPlugIn(plugInId);
+            result = rDrmEngine.openDecryptSession(uniqueId, handle, fd, offset, length, mime);
+
+            if (DRM_NO_ERROR == result) {
+                ++mDecryptSessionId;
+                mDecryptSessionMap.add(mDecryptSessionId, &rDrmEngine);
+                break;
+            }
+        }
+    }
+    if (DRM_NO_ERROR != result) {
+        delete handle; handle = NULL;
+    }
+    return handle;
+}
+
 
 DecryptHandle* DrmManager::openDecryptSession(
         int uniqueId, int fd, off64_t offset, off64_t length, const char* mime) {

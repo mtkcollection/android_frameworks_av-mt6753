@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -49,6 +54,10 @@ struct ATSParser : public RefBase {
         DISCONTINUITY_FORMAT_ONLY       =
             DISCONTINUITY_AUDIO_FORMAT
                 | DISCONTINUITY_VIDEO_FORMAT,
+#ifdef MTK_AOSP_ENHANCEMENT
+        DISCONTINUITY_HTTPLIVE_MEDIATIME     = 0x20000000,
+        DISCONTINUITY_FLUSH_SOURCE_ONLY       = 0x80000000,
+#endif
     };
 
     enum Flags {
@@ -60,6 +69,10 @@ struct ATSParser : public RefBase {
         TS_TIMESTAMPS_ARE_ABSOLUTE = 1,
         // Video PES packets contain exactly one (aligned) access unit.
         ALIGNED_VIDEO_DATA         = 2,
+#ifdef MTK_AOSP_ENHANCEMENT
+        TS_SOURCE_IS_LOCAL = 0x40000000,
+        TS_SOURCE_IS_STREAMING = 0x80000000,
+#endif
     };
 
     // Event is used to signal sync point event at feedTSPacket().
@@ -100,8 +113,12 @@ struct ATSParser : public RefBase {
     status_t feedTSPacket(
             const void *data, size_t size, SyncEvent *event = NULL);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    void signalDiscontinuity(DiscontinuityType type, const sp <AMessage> &extra = NULL);
+#else
     void signalDiscontinuity(
             DiscontinuityType type, const sp<AMessage> &extra);
+#endif
 
     void signalEOS(status_t finalResult);
 
@@ -110,6 +127,11 @@ struct ATSParser : public RefBase {
         AUDIO = 1,
         META  = 2,
         NUM_SOURCE_TYPES = 3
+#ifdef MTK_AOSP_ENHANCEMENT
+#ifdef MTK_AOSP_ENHANCEMENT
+        ,SUBTITLE
+#endif
+#endif
     };
     sp<MediaSource> getSource(SourceType type);
     bool hasSource(SourceType type) const;
@@ -123,28 +145,49 @@ struct ATSParser : public RefBase {
         STREAMTYPE_MPEG2_VIDEO          = 0x02,
         STREAMTYPE_MPEG1_AUDIO          = 0x03,
         STREAMTYPE_MPEG2_AUDIO          = 0x04,
+#ifdef MTK_AOSP_ENHANCEMENT
+#ifdef MTK_AOSP_ENHANCEMENT
+        STREAMTYPE_SUBTITLE = 0x06,
+#endif
+#endif
         STREAMTYPE_MPEG2_AUDIO_ADTS     = 0x0f,
         STREAMTYPE_MPEG4_VIDEO          = 0x10,
         STREAMTYPE_METADATA             = 0x15,
         STREAMTYPE_H264                 = 0x1b,
-
+#ifdef MTK_AOSP_ENHANCEMENT
+        STREAMTYPE_HEVC                 = 0x24,
+        STREAMTYPE_AUDIO_PSLPCM = 0xa0,
+        STREAMTYPE_AUDIO_BDLPCM = 0x80,
+        STREAMTYPE_VC1_VIDEO = 0xea,
+#endif
         // From ATSC A/53 Part 3:2009, 6.7.1
         STREAMTYPE_AC3                  = 0x81,
-
+        STREAMTYPE_PCM_AUDIO            = 0x83,
         // Stream type 0x83 is non-standard,
         // it could be LPCM or TrueHD AC3
-        STREAMTYPE_LPCM_AC3             = 0x83,
+        STREAMTYPE_EC3                  = 0x87,
     };
+
+        sp<MediaSource> getSource(unsigned PID, unsigned index);
+
+    bool       isParsedPIDEmpty();
+    unsigned   parsedPIDSize();
+    void       removeParsedPID(unsigned index);
+    void       addParsedPID(unsigned elemPID);
+    unsigned   getParsedPID(unsigned index);
+    size_t getPlayProgramPID(size_t playindex);
 
 protected:
     virtual ~ATSParser();
 
 private:
+        Vector<unsigned> mParsedPID;
     struct Program;
     struct Stream;
     struct PSISection;
 
     uint32_t mFlags;
+    bool isSourceFromWFD;
     Vector<sp<Program> > mPrograms;
 
     // Keyed by PID
@@ -158,7 +201,11 @@ private:
 
     size_t mNumTSPacketsParsed;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    status_t parseProgramAssociationTable(ABitReader *br);
+#else
     void parseProgramAssociationTable(ABitReader *br);
+#endif
     void parseProgramMap(ABitReader *br);
     // Parse PES packet where br is pointing to. If the PES contains a sync
     // frame, set event with the time and the start offset of this PES.
@@ -188,6 +235,28 @@ private:
     size_t mNumPCRs;
 
     DISALLOW_EVIL_CONSTRUCTORS(ATSParser);
+#ifdef MTK_AOSP_ENHANCEMENT
+public:
+    void setQueue(bool isQueue);
+    int64_t getMaxPTS();
+    bool firstPTSIsValid();
+    bool findPAT(const void *data, size_t size);
+    bool getDequeueState();
+    void setDequeueState(bool needDequeuePES);
+    void useFrameBase();
+    bool isFrameBase();
+    size_t getPlayIndex(){return currentPlayIndex;}
+    void setPlayIndex(size_t playindex){currentPlayIndex = playindex;}
+    void setFirstPTSIsValid();
+    void DumpTS(const void *data);//mtk08123 for tsdump
+    void configureTSDump();//mtk08123 for tsdump
+private:
+    FILE* mDumptsfile;
+    bool Dumptsfile;
+    bool mNeedDequeuePES;
+    bool mUseFrameBase;
+    size_t currentPlayIndex;
+#endif
 };
 
 }  // namespace android

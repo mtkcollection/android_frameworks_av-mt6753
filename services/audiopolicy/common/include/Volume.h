@@ -72,7 +72,15 @@ public:
         if (device == AUDIO_DEVICE_NONE) {
             // this happens when forcing a route update and no track is active on an output.
             // In this case the returned category is not important.
+#ifdef MTK_CROSSMOUNT_SUPPORT //ALPS02193613
+            if (device & AUDIO_DEVICE_OUT_REMOTE_SUBMIX) {
+                device = AUDIO_DEVICE_OUT_REMOTE_SUBMIX;
+            } else {
+                device = AUDIO_DEVICE_OUT_SPEAKER;
+            }
+#else
             device =  AUDIO_DEVICE_OUT_SPEAKER;
+#endif
         } else if (popcount(device) > 1) {
             // Multiple device selection is either:
             //  - speaker + one other device: give priority to speaker in this case.
@@ -81,8 +89,13 @@ public:
             // selection if not the speaker.
             //  - HDMI-CEC system audio mode only output: give priority to available item in order.
             if (device & AUDIO_DEVICE_OUT_SPEAKER) {
-                device = AUDIO_DEVICE_OUT_SPEAKER;
-            } else if (device & AUDIO_DEVICE_OUT_SPEAKER_SAFE) {
+//MTK_CROSSMOUNT_SUPPORT //ALPS02193613
+                if (device & AUDIO_DEVICE_OUT_REMOTE_SUBMIX) {
+                    device = AUDIO_DEVICE_OUT_REMOTE_SUBMIX;
+                } else {
+                    device = AUDIO_DEVICE_OUT_SPEAKER;
+                }
+              } else if (device & AUDIO_DEVICE_OUT_SPEAKER_SAFE) {
                 device = AUDIO_DEVICE_OUT_SPEAKER_SAFE;
             } else if (device & AUDIO_DEVICE_OUT_HDMI_ARC) {
                 device = AUDIO_DEVICE_OUT_HDMI_ARC;

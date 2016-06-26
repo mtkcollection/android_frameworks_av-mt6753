@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -162,6 +167,15 @@ private:
 
     CameraSourceTimeLapse(const CameraSourceTimeLapse &);
     CameraSourceTimeLapse &operator=(const CameraSourceTimeLapse &);
+#ifdef MTK_AOSP_ENHANCEMENT
+public:
+    void setForcePick(bool force, int32_t mode) { mForcePick = force; mForcePickMode = mode; }
+private:
+    bool mForcePick;
+    int32_t mForcePickMode;
+
+    bool forcePick(int64_t *timestampUs);
+#endif
 };
 
 }  // namespace android

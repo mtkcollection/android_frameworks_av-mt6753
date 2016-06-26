@@ -77,7 +77,9 @@ private:
 
     Mutex mLock;
     bool mDisconnecting;
-
+#ifdef MTK_AOSP_ENHANCEMENT
+    void dumpPlaylist(sp<ABuffer> &buffer);
+#endif
     DISALLOW_EVIL_CONSTRUCTORS(HTTPDownloader);
 };
 

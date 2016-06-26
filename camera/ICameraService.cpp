@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
 **
 ** Copyright 2008, The Android Open Source Project
 **
@@ -285,6 +290,32 @@ public:
         return reply.readInt32();
     }
 
+//!++
+#if 1   // defined(MTK_CAMERA_BSP_SUPPORT)
+
+    virtual status_t getProperty(String8 const& key, String8& value) const
+    {
+        Parcel data, reply;
+        data.writeInterfaceToken(ICameraService::getInterfaceDescriptor());
+        data.writeString8(key);
+        remote()->transact(BnCameraService::GET_PROPERTY, data, &reply);
+        value = reply.readString8();
+        return reply.readInt32();
+    }
+
+    virtual status_t setProperty(String8 const& key, String8 const& value)
+    {
+        Parcel data, reply;
+        data.writeInterfaceToken(ICameraService::getInterfaceDescriptor());
+        data.writeString8(key);
+        data.writeString8(value);
+        remote()->transact(BnCameraService::SET_PROPERTY, data, &reply);
+        return reply.readInt32();
+    }
+
+#endif
+//!--
+
     virtual status_t getLegacyParameters(int cameraId, String16* parameters) {
         if (parameters == NULL) {
             ALOGE("%s: parameters must not be null", __FUNCTION__);
@@ -445,6 +476,31 @@ status_t BnCameraService::onTransact(
             reply->writeInt32(removeListener(listener));
             return NO_ERROR;
         } break;
+
+//!++
+#if 1   // defined(MTK_CAMERA_BSP_SUPPORT)
+        case GET_PROPERTY: {
+            CHECK_INTERFACE(ICameraService, data, reply);
+            String8 const key = data.readString8();
+            String8 value;
+            status_t const status = getProperty(key, value);
+            reply->writeString8(value);
+            reply->writeInt32(status);
+            ALOGD("[GET_PROPERTY] - pid=%d, uid=%d (%s)=(%s) \n", IPCThreadState::self()->getCallingPid(), IPCThreadState::self()->getCallingUid(), key.string(), value.string());
+            return OK;
+        } break;
+        case SET_PROPERTY: {
+            CHECK_INTERFACE(ICameraService, data, reply);
+            String8 const key = data.readString8();
+            String8 const value = data.readString8();
+            status_t const status = setProperty(key, value);
+            reply->writeInt32(status);
+            ALOGD("[SET_PROPERTY] - pid=%d, uid=%d (%s)=(%s) \n", IPCThreadState::self()->getCallingPid(), IPCThreadState::self()->getCallingUid(), key.string(), value.string());
+            return OK;
+        } break;
+#endif
+//!--
+
         case GET_LEGACY_PARAMETERS: {
             CHECK_INTERFACE(ICameraService, data, reply);
             int cameraId = data.readInt32();

@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
 **
 ** Copyright 2009, The Android Open Source Project
 **
@@ -73,6 +78,13 @@ enum {
     REGISTER_POLICY_MIXES,
     START_AUDIO_SOURCE,
     STOP_AUDIO_SOURCE,
+#ifdef MTK_AUDIO
+    SET_POLICYMANAGER_PARAMETERS,
+    START_OUTPUT_SAMPLERATE,
+    STOP_OUTPUT_SAMPLERATE,
+    REQUEST_OUTPUT_SAMPLERATE,
+    UNREQUEST_OUTPUT_SAMPLERATE,
+#endif
     SET_AUDIO_PORT_CALLBACK_ENABLED,
 };
 
@@ -504,6 +516,105 @@ public:
         *count = retCount;
         return status;
     }
+//<MTK_AUDIO_ADD
+#ifdef MTK_AUDIO
+    virtual status_t SetPolicyManagerParameters(int par1,int par2 ,int par3,int par4)
+    {
+        Parcel data, reply;
+        data.writeInterfaceToken(IAudioPolicyService::getInterfaceDescriptor());
+        data.writeInt32(par1);
+        data.writeInt32(par2);
+        data.writeInt32(par3);
+        data.writeInt32(par4);
+        remote()->transact(SET_POLICYMANAGER_PARAMETERS, data, &reply);
+        return static_cast <status_t> (reply.readInt32());
+    }
+    virtual status_t SampleRateRequestFocus(audio_io_handle_t output,
+                                 audio_stream_type_t stream,
+                                 int *samplerate)
+    {
+        Parcel data, reply;
+        data.writeInterfaceToken(IAudioPolicyService::getInterfaceDescriptor());
+        data.writeInt32(output);
+        data.writeInt32((int32_t)stream);
+        data.writeInt32(*samplerate);
+        remote()->transact(REQUEST_OUTPUT_SAMPLERATE, data, &reply);
+        int lSampleRate = reply.readInt32();
+        if(samplerate)  *samplerate = lSampleRate;
+        return static_cast <status_t> (reply.readInt32());
+    }
+    virtual status_t SampleRateUnrequestFocus(audio_io_handle_t output,
+                                 audio_stream_type_t stream,
+                                 int samplerate)
+    {
+        Parcel data, reply;
+        data.writeInterfaceToken(IAudioPolicyService::getInterfaceDescriptor());
+        data.writeInt32(output);
+        data.writeInt32((int32_t)stream);
+        data.writeInt32(samplerate);
+        remote()->transact(UNREQUEST_OUTPUT_SAMPLERATE, data, &reply);
+        return static_cast <status_t> (reply.readInt32());
+    }
+    virtual status_t StartOutputSamplerate(audio_io_handle_t output,
+                                 audio_stream_type_t stream,
+                                 audio_session_t session ,int samplerate)
+    {
+        Parcel data, reply;
+        data.writeInterfaceToken(IAudioPolicyService::getInterfaceDescriptor());
+        data.writeInt32(output);
+        data.writeInt32((int32_t)stream);
+        data.writeInt32((int32_t)session);
+        data.writeInt32(samplerate);
+        remote()->transact(START_OUTPUT_SAMPLERATE, data, &reply);
+        return static_cast <status_t> (reply.readInt32());
+    }
+    virtual status_t StopOutputSamplerate(audio_io_handle_t output,
+                                 audio_stream_type_t stream,
+                                 audio_session_t session ,int samplerate)
+    {
+        Parcel data, reply;
+        data.writeInterfaceToken(IAudioPolicyService::getInterfaceDescriptor());
+        data.writeInt32(output);
+        data.writeInt32((int32_t)stream);
+        data.writeInt32((int32_t)session);
+        data.writeInt32(samplerate);
+        remote()->transact(STOP_OUTPUT_SAMPLERATE, data, &reply);
+        return static_cast <status_t> (reply.readInt32());
+    }
+
+#else
+    virtual status_t SetPolicyManagerParameters(int par1,int par2 ,int par3,int par4)
+    {
+        return 0;
+    }
+    virtual status_t SampleRateRequestFocus(audio_io_handle_t output,
+                                 audio_stream_type_t stream,
+                                 int *samplerate)
+    {
+        return 0;
+    }
+    virtual status_t SampleRateUnrequestFocus(audio_io_handle_t output,
+                                 audio_stream_type_t stream,
+                                 int samplerate)
+    {
+        return 0;
+    }
+
+    virtual status_t StartOutputSamplerate(audio_io_handle_t output,
+                                 audio_stream_type_t stream,
+                                 audio_session_t session ,int samplerate)
+    {
+        return 0;
+    }
+    virtual status_t StopOutputSamplerate(audio_io_handle_t output,
+                                 audio_stream_type_t stream,
+                                 audio_session_t session ,int samplerate)
+    {
+        return 0;
+    }
+
+#endif
+//MTK_AUDIO_ADD>
 
     virtual bool isOffloadSupported(const audio_offload_info_t& info)
     {
@@ -1104,6 +1215,54 @@ status_t BnAudioPolicyService::onTransact(
             delete[] descriptors;
             return status;
         }
+#ifdef MTK_AUDIO
+        case SET_POLICYMANAGER_PARAMETERS: {
+            CHECK_INTERFACE(IAudioPolicyService, data, reply);
+            int par1 =data.readInt32();
+            int par2 =data.readInt32();
+            int par3 =data.readInt32();
+            int par4 =data.readInt32();
+            reply->writeInt32(SetPolicyManagerParameters(par1,par2,par3,par4));
+            return NO_ERROR;
+        } break;
+        case START_OUTPUT_SAMPLERATE: {
+            CHECK_INTERFACE(IAudioPolicyService, data, reply);
+            int output =data.readInt32();
+            audio_stream_type_t stream =(audio_stream_type_t)data.readInt32();
+            audio_session_t session = (audio_session_t) data.readInt32();
+            int samplerate =data.readInt32();
+            reply->writeInt32(StartOutputSamplerate(output,stream,session,samplerate));
+            return NO_ERROR;
+        }
+        case STOP_OUTPUT_SAMPLERATE: {
+            CHECK_INTERFACE(IAudioPolicyService, data, reply);
+            int output =data.readInt32();
+            audio_stream_type_t stream =(audio_stream_type_t)data.readInt32();
+            audio_session_t session = (audio_session_t) data.readInt32();
+            int samplerate =data.readInt32();
+            reply->writeInt32(StopOutputSamplerate(output,stream,session,samplerate));
+            return NO_ERROR;
+        }
+        case REQUEST_OUTPUT_SAMPLERATE: {
+            CHECK_INTERFACE(IAudioPolicyService, data, reply);
+            int output =data.readInt32();
+            audio_stream_type_t stream =(audio_stream_type_t)data.readInt32();
+            int samplerate =data.readInt32();
+            status_t status = SampleRateRequestFocus(output,stream,&samplerate);
+            reply->writeInt32(samplerate);
+            reply->writeInt32(static_cast <uint32_t>(status));
+            return NO_ERROR;
+        }
+        case UNREQUEST_OUTPUT_SAMPLERATE: {
+            CHECK_INTERFACE(IAudioPolicyService, data, reply);
+            int output =data.readInt32();
+            audio_stream_type_t stream =(audio_stream_type_t)data.readInt32();
+            int samplerate =data.readInt32();
+            status_t status = SampleRateUnrequestFocus(output,stream,samplerate);
+            reply->writeInt32(static_cast <uint32_t>(status));
+            return NO_ERROR;
+        }
+#endif
 
         case IS_OFFLOAD_SUPPORTED: {
             CHECK_INTERFACE(IAudioPolicyService, data, reply);

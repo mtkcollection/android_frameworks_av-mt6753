@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright 2013, The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,7 +22,6 @@
 //#define LOG_NDEBUG 0
 #define LOG_TAG "RTPSender"
 #include <utils/Log.h>
-
 #include "RTPSender.h"
 
 #include <media/stagefright/foundation/ABuffer.h>
@@ -30,8 +34,277 @@
 
 #include "include/avc_utils.h"
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#include "DataPathTrace.h"
+#endif
+
 namespace android {
 
+#ifdef MTK_AOSP_ENHANCEMENT
+
+
+
+bool  refineSSRC(uint8_t* pRtpBuffer,uint32_t originalId,const sp<ABuffer> &Packets){
+    bool isVideo = false;
+    int32_t dummy=0;
+    uint32_t id = originalId;
+
+    if (Packets->meta()->findInt32("isVideo", &dummy) && dummy == 1) {
+        isVideo = true;
+        id = 0xdeadbeee ;//videoId
+    }
+
+    //maybe we must use it for -Werror
+    pRtpBuffer++;
+
+  /*
+    pRtpBuffer[8] = id >> 24;
+    pRtpBuffer[9] = (id >> 16) & 0xff;
+    pRtpBuffer[10] = (id >> 8) & 0xff;
+    pRtpBuffer[11] = id & 0xff;
+*/
+    return  isVideo;
+
+}
+bool  isVideoBuffer(const sp<ABuffer> &buffer){
+
+    bool isVideo = false;
+    int32_t dummy=0;
+
+    if (buffer->meta()->findInt32("isVideo", &dummy) && dummy == 1) {
+        isVideo = true;
+    }
+
+    return  isVideo;
+
+}
+bool  isVideoDummy(const sp<ABuffer> &buffer){
+
+    int32_t dummy;
+    if( buffer->meta()->findInt32("dummy-nal", &dummy)){
+        return true;
+    }
+
+    return false;
+}
+
+
+int64_t RTPSender::queuePackets_pre(
+        const sp<ABuffer> &Packets){
+
+    bool isVideo = false;
+    int32_t dummy;
+    int64_t timeUs;
+    CHECK(Packets->meta()->findInt64("timeUs", &timeUs));
+
+
+    if (Packets->meta()->findInt32("isVideo", &dummy) && dummy == 1) {
+        isVideo = true;
+        mVideoCount ++;
+    }
+
+    int64_t delayUs = -1;
+    int64_t whenUs = -1;
+
+    if (mFirstOutputBufferReadyTimeUs < 0ll) {
+         if ((isVideo == true) && (mVideoCount == 100))
+         {
+             mFirstOutputBufferReadyTimeUs = timeUs;
+             mFirstOutputBufferSentTimeUs = whenUs = ALooper::GetNowUs();
+             delayUs = 0ll;
+         }
+    } else {
+        int64_t nowUs = ALooper::GetNowUs();
+
+        whenUs = (timeUs - mFirstOutputBufferReadyTimeUs)
+                + mFirstOutputBufferSentTimeUs;
+
+        delayUs =  nowUs -whenUs ;
+    }
+    calcSendInBitRate(Packets);
+    return delayUs;
+
+}
+
+void RTPSender::queuePackets_pro(
+        const sp<ABuffer> &Packets, int64_t timeUs,int64_t latencyB,int64_t /*startSendUs*/,int64_t /*delayUs*/){
+
+
+    int64_t endTimeUs = ALooper::GetNowUs();
+    //int64_t netTimeUs = endTimeUs - startSendUs;
+
+    static int sendFps=-1;
+
+    bool  isVideo = isVideoBuffer(Packets);
+    bool isDummyVideo = isVideoDummy(Packets);
+
+    if(isVideo)
+    {
+        int64_t nowUsFps = 0;
+        static int64_t mStartSysTime = 0;
+        static int mCountFrames = 0;
+        int mCountFramerate;
+
+        //count framerate.
+        if(((mCountFrames % 60) == 0) && (mCountFrames != 0))
+        {
+            nowUsFps = endTimeUs;
+            mCountFramerate = (mCountFrames * 1000 * 1000) / (nowUsFps - mStartSysTime);
+            mCountFrames = 0;
+            mStartSysTime = nowUsFps;
+            sendFps = mCountFramerate;
+        }
+        //int32_t dummy;
+        if(!isDummyVideo){
+            mCountFrames ++;
+
+        }
+
+    }
+
+
+    sp<WfdDebugInfo> debugInfo= defaultWfdDebugInfo();
+  /*
+    if(!Packets->meta()->findInt32("dummy-nal", &dummy)){
+        debugInfo->addTimeInfoByKey(isVideo , timeUs, "StIn", startSendUs/1000);
+        debugInfo->addTimeInfoByKey(isVideo , timeUs, "StOt", endTimeUs/1000);
+    }
+
+
+	int64_t st = debugInfo->getTimeInfoByKey(  isVideo,   timeUs, isVideo?"RpIn":"MpIn");
+	int64_t et = debugInfo->getTimeInfoByKey(  isVideo,   timeUs, "StOt");
+
+	int64_t latencyTimeMs=-1;
+	if(st >0 && et >0 ){
+		latencyTimeMs = et -st;
+		debugInfo->addTimeInfoByKey(isVideo , timeUs, "Latency", latencyTimeMs);
+	}
+  */
+    int64_t latencyTimeMs=-1;
+    if(latencyB > 0){
+        latencyTimeMs  =   endTimeUs/1000ll - latencyB ;
+    }
+/*
+	ALOGI("[WFD_P][%s][dummy=%d]ts=%lld ms,size=%-6d,[SendFPS] =[%-3d][netTimeUs]=%-4lldms,[delayUs]=%-4lldms ,[Latency]=%-6lldms",
+			isVideo ? "video" : "audio",isDummyVideo,timeUs/1000ll,Packets->size(),sendFps,netTimeUs/1000ll,delayUs/1000ll,latencyTimeMs);
+
+    //Rock, Remove log in L
+*/
+    debugInfo->printDebugInfoByKey( isVideo,   timeUs);
+}
+
+
+status_t RTPSender::calcSendInBitRate(const sp<ABuffer> &buffer){
+    int64_t SendTimeUs = ALooper::GetNowUs();
+    mSentInHistory.add(SendTimeUs, buffer);
+
+    int64_t beginTimeUs = mSentInHistory.keyAt(0);
+    int64_t endTimeUs = SendTimeUs;
+
+    int64_t sendTotalTimeUs = endTimeUs - beginTimeUs  ;
+
+
+    if(sendTotalTimeUs > 1000000ll){//once a second
+
+        int64_t totalSize =0;
+        int64_t totalVideoSize =0;
+        //int64_t st =0;
+        //int64_t et =0;
+
+        for(uint32_t i =0 ;i < mSentInHistory.size() ;i++){
+            int32_t dummy =-1;
+            sp<ABuffer> curBuffer = mSentInHistory.editValueAt(i);
+            if ((curBuffer->meta()->findInt32("isVideo", &dummy)) &&  (dummy ==1)) {
+                totalVideoSize += buffer->size();
+            }
+            totalSize += buffer->size();
+        }
+
+        mSentInbps[0] = totalSize*1000000ll/sendTotalTimeUs;
+        mSentInbps[1] = totalVideoSize*1000000ll/sendTotalTimeUs;
+        mSentInbps[2] = (totalSize-totalVideoSize)*1000000ll/sendTotalTimeUs;
+
+        mSentInHistory.clear();
+	/*
+	ALOGI("[WFD_P]kBps:T:[%-6lld vs %-6lld],V:[%-6lld vs %-6lld],,A:[%-6lld vs %-6lld]",
+		mSentInbps[0]/1024ll,mSentRtpbps[0]/1024ll,
+		mSentInbps[1]/1024ll,mSentRtpbps[1]/1024ll,
+		mSentInbps[2]/1024ll,mSentRtpbps[2]/1024ll);
+
+	ALOGI("[WFD_P]kBps:T: %d,V: %d, A: %d",
+	mSentInbps[0]/1024ll,mSentInbps[1]/1024ll,mSentInbps[2]/1024l);
+    //Rock ,remvoe Log in L
+	*/
+
+
+    }
+    return OK;
+}
+
+
+status_t RTPSender::calcSendRtpBitRate(const sp<ABuffer> &buffer){
+    int64_t SendTimeUs = ALooper::GetNowUs();
+    mSentRtpHistory.add(SendTimeUs, buffer);
+
+    int64_t beginTimeUs = mSentRtpHistory.keyAt(0);
+    int64_t endTimeUs = SendTimeUs;
+
+    int64_t sendTotalTimeUs = endTimeUs - beginTimeUs  ;
+
+
+    if(sendTotalTimeUs > 1000000ll){//once a second
+
+        int64_t totalSize =0;
+        int64_t totalVideoSize =0;
+        //int64_t st =0;
+        //int64_t et =0;
+
+        for(uint32_t i =0 ;i < mSentRtpHistory.size() ;i++){
+            int32_t dummy =-1;
+            sp<ABuffer> curBuffer = mSentRtpHistory.editValueAt(i);
+            if ((curBuffer->meta()->findInt32("isVideo", &dummy)) &&  (dummy ==1)) {
+                totalVideoSize += buffer->size();
+            }
+            totalSize += buffer->size();
+        }
+
+        mSentRtpbps[0] = totalSize*1000000ll/sendTotalTimeUs;
+        mSentRtpbps[1] = totalVideoSize*1000000ll/sendTotalTimeUs;
+        mSentRtpbps[2] = (totalSize-totalVideoSize)*1000000ll/sendTotalTimeUs;
+
+        mSentRtpHistory.clear();
+
+    }
+    return OK;
+}
+
+
+
+
+status_t RTPSender::sendRTPPackets(
+       List<sp<ABuffer> > &packets ,int64_t timeUs) {
+
+        CHECK(mRTPConnected);
+
+     status_t err = mNetSession->sendWFDRequest(
+            mRTPSessionID, packets,timeUs);
+
+    if (err != OK) {
+        return err;
+    }
+	/*
+	List<sp<ABuffer> >::iterator it = packets.begin();
+	while (it != packets.end()) {
+		const sp<ABuffer> &buffer = *it;
+		calcSendRtpBitRate(buffer);
+	}*/
+
+        return OK;
+}
+
+
+
+#endif
 RTPSender::RTPSender(
         const sp<ANetworkSession> &netSession,
         const sp<AMessage> &notify)
@@ -50,6 +323,18 @@ RTPSender::RTPSender(
       mNumSRsSent(0),
       mRTPSeqNo(0),
       mHistorySize(0) {
+#ifdef MTK_AOSP_ENHANCEMENT
+      mFirstOutputBufferReadyTimeUs = -1;
+      mFirstOutputBufferSentTimeUs = -1;
+      mVideoCount = 0;
+      mSentRtpbps[0]= -1;
+      mSentRtpbps[1]= -1;
+      mSentRtpbps[2]= -1;
+      mSentInbps[0]= -1;
+      mSentInbps[1]= -1;
+      mSentInbps[2]= -1;
+#endif
+
 }
 
 RTPSender::~RTPSender() {
@@ -252,7 +537,31 @@ status_t RTPSender::queueTSPackets(
     int64_t timeUs;
     CHECK(tsPackets->meta()->findInt64("timeUs", &timeUs));
 
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    int64_t delayUs = queuePackets_pre(tsPackets);
+    int64_t startSendUs = ALooper::GetNowUs();
+    bool  isVideo = isVideoBuffer(tsPackets);
+    bool isDummyVideo = isVideoDummy(tsPackets);
+
+    sp<WfdDebugInfo> debugInfo= defaultWfdDebugInfo();
+    int64_t latencyB = -1;
+    int64_t LatencyToken = -1;
+    if(isDummyVideo){
+     tsPackets->meta()->findInt64("latencyB", &latencyB);
+     tsPackets->meta()->findInt64("LatencyToken", &LatencyToken);
+    }else{
+    latencyB= debugInfo->getTimeInfoByKey(  isVideo,   timeUs, isVideo?"RpIn":"MpIn");
+    }
+
+     List<sp<ABuffer> > mAllPackets ;
+     bool isFirstUdp = true;
+#endif
+
+    //const size_t numTSPackets = tsPackets->size() / 188;
+
     size_t srcOffset = 0;
+
     while (srcOffset < tsPackets->size()) {
         sp<ABuffer> udpPacket =
             new ABuffer(12 + kMaxNumTSPacketsPerRTPPacket * 188);
@@ -269,7 +578,9 @@ status_t RTPSender::queueTSPackets(
 
         int64_t nowUs = ALooper::GetNowUs();
         uint32_t rtpTime = (nowUs * 9) / 100ll;
-
+#ifdef MTK_AOSP_ENHANCEMENT
+        rtpTime = (timeUs * 9ll) / 100ll;
+#endif
         rtp[4] = rtpTime >> 24;
         rtp[5] = (rtpTime >> 16) & 0xff;
         rtp[6] = (rtpTime >> 8) & 0xff;
@@ -279,6 +590,10 @@ status_t RTPSender::queueTSPackets(
         rtp[9] = (kSourceID >> 16) & 0xff;
         rtp[10] = (kSourceID >> 8) & 0xff;
         rtp[11] = kSourceID & 0xff;
+
+#ifdef MTK_AOSP_ENHANCEMENT
+        bool isVideo = refineSSRC(rtp,kSourceID,tsPackets);//just used for reconignizing video/audio now
+#endif
 
         size_t numTSPackets = (tsPackets->size() - srcOffset) / 188;
         if (numTSPackets > kMaxNumTSPacketsPerRTPPacket) {
@@ -292,7 +607,21 @@ status_t RTPSender::queueTSPackets(
         srcOffset += numTSPackets * 188;
         bool isLastPacket = (srcOffset == tsPackets->size());
 
-        status_t err = sendRTPPacket(
+#ifdef MTK_AOSP_ENHANCEMENT
+        //set MarketBit to indicate the timestamp discontiuous
+        rtp[1] |= 0x80 & ((isLastPacket?1:0) << 7);
+                udpPacket->meta()->setInt32("isVideo", isVideo?1:0);
+                udpPacket->meta()->setInt32("isDummy", isDummyVideo?1:0);
+                udpPacket->meta()->setInt32("isLast", isLastPacket?1:0);
+                udpPacket->meta()->setInt64("latencyB", latencyB);
+                udpPacket->meta()->setInt64("LatencyToken", LatencyToken);
+                udpPacket->meta()->setInt32("isFirst", isFirstUdp? 1:0);
+              isFirstUdp =false;
+                mAllPackets.push_back(udpPacket);
+#endif
+
+#ifndef MTK_AOSP_ENHANCEMENT
+    status_t err = sendRTPPacket(
                 udpPacket,
                 true /* storeInHistory */,
                 isLastPacket /* timeValid */,
@@ -301,8 +630,18 @@ status_t RTPSender::queueTSPackets(
         if (err != OK) {
             return err;
         }
-    }
 
+#endif
+
+    }
+#ifdef MTK_AOSP_ENHANCEMENT
+    status_t err = sendRTPPackets(mAllPackets, timeUs);
+
+        if (err != OK) {
+            return err;
+        }
+     queuePackets_pro(tsPackets,timeUs, latencyB,startSendUs,delayUs);
+#endif
     return OK;
 }
 
@@ -457,8 +796,9 @@ status_t RTPSender::queueAVCBuffer(
 }
 
 status_t RTPSender::sendRTPPacket(
-        const sp<ABuffer> &buffer, bool storeInHistory,
+         const sp<ABuffer> &buffer  , bool storeInHistory,
         bool timeValid, int64_t timeUs) {
+
     CHECK(mRTPConnected);
 
     status_t err = mNetSession->sendRequest(
@@ -475,6 +815,7 @@ status_t RTPSender::sendRTPPacket(
     ++mNumRTPSent;
     mNumRTPOctetsSent += buffer->size() - 12;
 
+
     if (storeInHistory) {
         if (mHistorySize == kMaxHistorySize) {
             mHistory.erase(mHistory.begin());
@@ -484,6 +825,9 @@ status_t RTPSender::sendRTPPacket(
         mHistory.push_back(buffer);
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    calcSendRtpBitRate(buffer);
+#endif
     return OK;
 }
 
@@ -761,6 +1105,7 @@ status_t RTPSender::parseTSFB(const uint8_t *data, size_t size) {
 
     return OK;
 }
+
 
 status_t RTPSender::parseAPP(const uint8_t *data, size_t size __unused) {
     if (!memcmp("late", &data[8], 4)) {

@@ -20,4 +20,10 @@
 #define kVersionMajor 1
 #define kVersionMinor 2
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <utils/Errors.h>
+using namespace android;
+static status_t checkVideoEncoderBufferLimit(const char *mime, uint32_t &videoWidth, uint32_t &videoHeight);
+status_t checkVideoSize(uint32_t gVideoWidth,uint32_t gVideoHeight);
+#endif
 #endif /*SCREENRECORD_SCREENRECORD_H*/
